@@ -1,0 +1,55 @@
+name: CI (docs)
+
+# Companion to ci.yml, which skips docs-only changes via paths-ignore.
+#
+# The `main` ruleset requires secret-scan, check-api, check-central, check-web
+# and check-scripts. A workflow that never triggers never REPORTS those
+# contexts, and an unreported required check blocks the merge just as a failing
+# one does — so before this file, a docs-only PR sat at BLOCKED forever with
+# nothing an author could do but ask an admin to bypass.
+#
+# This declares the same job names over exactly the paths ci.yml ignores, so the
+# contexts always report. There is genuinely nothing to build or test in a prose
+# change; the point is to satisfy the ruleset, not to pretend work happened.
+#
+# INVARIANT: the `paths` below must stay the exact complement of ci.yml's
+# `paths-ignore`, and the job names here must match ci.yml's. If you add, rename
+# or remove a job there, or a required context in the ruleset, change it here in
+# the same commit. A mismatch fails open — the check silently stops reporting
+# and docs PRs go back to being unmergeable.
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'research/**'
+      - '**/*.md'
+
+concurrency:
+  group: ci-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docs-only change — ci.yml ignores these paths; nothing to scan."
+  check-api:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docs-only change — no api/ code touched."
+  check-central:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docs-only change — no central/ code touched."
+  check-web:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docs-only change — no web/ code touched."
+  check-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "docs-only change — no scripts/ touched."
