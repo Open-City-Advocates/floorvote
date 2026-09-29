@@ -48,7 +48,10 @@ async function processLsBill(msg: LsIngestorMessage, env: LsEnv, db: LsDb): Prom
       textHash: billTexts.textHash,
     })
       .from(billTexts)
-      .where(and(eq(billTexts.billId, msg.billId), isNull(billTexts.r2Key)))
+      .where(and(
+        eq(billTexts.billId, msg.billId),
+        msg.forceTextRefetch ? undefined : isNull(billTexts.r2Key),
+      ))
       .all()
 
     for (const t of textsToDownload) {
@@ -326,7 +329,7 @@ async function processLsBill(msg: LsIngestorMessage, env: LsEnv, db: LsDb): Prom
     // Download text if not already in R2
     const stored = await db.select({ r2Key: billTexts.r2Key })
       .from(billTexts).where(eq(billTexts.docId, t.doc_id)).get()
-    if (!stored?.r2Key && t.state_link) {
+    if ((msg.forceTextRefetch || !stored?.r2Key) && t.state_link) {
       await downloadTextToR2(bill.bill_id, t.doc_id, t.state_link, t.mime, env, db, t.text_size ?? null, t.text_hash ?? null)
     }
   }

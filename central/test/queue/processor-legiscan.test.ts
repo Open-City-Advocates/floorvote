@@ -600,3 +600,54 @@ describe('downloadTextToR2: fragment links', () => {
     expect(row!.fetchError).toBeNull()
   })
 })
+
+describe('forceTextRefetch', () => {
+  const fragmentLink =
+    'https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202520260AB2230#96AMD'
+  const doc = '<html>the catalogued document</html>'
+
+  async function seedStoredText(db: ReturnType<typeof drizzle>) {
+    await db.insert(schema.billTexts).values({
+      docId: 3000, billId: 9001,
+      date: '2026-04-23', type: 'Amended', typeId: 2,
+      mime: 'text/html', mimeId: 1,
+      url: 'u', stateLink: fragmentLink,
+      textSize: doc.length,
+      textHash: await md5Hex(new TextEncoder().encode(doc)),
+      r2Key: 'bills/legiscan-9001/texts/3000.html',
+    })
+    vi.mocked(legiscan.getBillText).mockReset()
+    vi.mocked(legiscan.getBillText).mockResolvedValue({
+      doc_id: 3000, bill_id: 9001, date: '2026-04-23', type: 'Amended', type_id: 2,
+      mime: 'text/html', mime_id: 1, text_size: doc.length, text_hash: 'ignored',
+      doc: toBase64(doc),
+    } as any)
+  }
+
+  it('re-downloads a document that already has an r2_key', async () => {
+    const db = drizzle(env.DB, { schema })
+    await seedStoredText(db)
+
+    await processLsIngestorQueue(
+      makeBatch(9001, { skipFetch: true, forceTextRefetch: true }),
+      makeEnv(),
+      db,
+    )
+
+    expect(legiscan.getBillText, 'the flag must defeat the r2_key guard')
+      .toHaveBeenCalledWith(3000, 'test-key', expect.any(Function))
+    const row = await db.select().from(schema.billTexts).where(eq(schema.billTexts.docId, 3000)).get()
+    expect(row!.r2Key).toBeTruthy()
+    expect(row!.fetchError).toBeNull()
+  })
+
+  it('skips a document that already has an r2_key when the flag is absent', async () => {
+    const db = drizzle(env.DB, { schema })
+    await seedStoredText(db)
+
+    await processLsIngestorQueue(makeBatch(9001, { skipFetch: true }), makeEnv(), db)
+
+    expect(legiscan.getBillText, 'a stored document is not re-fetched by default')
+      .not.toHaveBeenCalled()
+  })
+})
