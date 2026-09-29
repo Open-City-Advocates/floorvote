@@ -45,14 +45,18 @@ async function processLsBill(msg: LsIngestorMessage, env: LsEnv, db: LsDb): Prom
       stateLink: billTexts.stateLink,
       mime: billTexts.mime,
       textSize: billTexts.textSize,
+      textHash: billTexts.textHash,
     })
       .from(billTexts)
-      .where(and(eq(billTexts.billId, msg.billId), isNull(billTexts.r2Key)))
+      .where(and(
+        eq(billTexts.billId, msg.billId),
+        msg.forceTextRefetch ? undefined : isNull(billTexts.r2Key),
+      ))
       .all()
 
     for (const t of textsToDownload) {
       if (t.stateLink) {
-        await downloadTextToR2(msg.billId, t.docId, t.stateLink, t.mime ?? 'text/html', env, db, t.textSize)
+        await downloadTextToR2(msg.billId, t.docId, t.stateLink, t.mime ?? 'text/html', env, db, t.textSize, t.textHash)
       }
     }
 
@@ -325,8 +329,8 @@ async function processLsBill(msg: LsIngestorMessage, env: LsEnv, db: LsDb): Prom
     // Download text if not already in R2
     const stored = await db.select({ r2Key: billTexts.r2Key })
       .from(billTexts).where(eq(billTexts.docId, t.doc_id)).get()
-    if (!stored?.r2Key && t.state_link) {
-      await downloadTextToR2(bill.bill_id, t.doc_id, t.state_link, t.mime, env, db, t.text_size ?? null)
+    if ((msg.forceTextRefetch || !stored?.r2Key) && t.state_link) {
+      await downloadTextToR2(bill.bill_id, t.doc_id, t.state_link, t.mime, env, db, t.text_size ?? null, t.text_hash ?? null)
     }
   }
 
@@ -496,6 +500,23 @@ export function validateTextPayload(
   return null
 }
 
+/**
+ * Can this URL name a specific document version?
+ *
+ * A fragment is never transmitted to the server, so a link that selects a
+ * version with one cannot fetch that version — the server answers with
+ * whatever is current. California's leginfo does exactly this
+ * (`...billTextClient.xhtml?bill_id=...#99INT`), which is why every stored CA
+ * document held whatever was current on the day we fetched it, and why two
+ * different doc_ids for the same bill came back byte-identical.
+ *
+ * This keys on the URL, not the state. A state that adopts the same pattern is
+ * handled without a code change.
+ */
+export function isVersionAddressable(stateLink: string): boolean {
+  return !stateLink.includes('#')
+}
+
 async function downloadTextToR2(
   billId: number,
   docId: number,
@@ -504,6 +525,7 @@ async function downloadTextToR2(
   env: LsEnv,
   db: LsDb,
   declaredSize: number | null = null,
+  declaredHash: string | null = null,
 ): Promise<void> {
   const ext = mime.includes('pdf') ? 'pdf' : 'html'
   const r2Key = `bills/legiscan-${billId}/texts/${docId}.${ext}`
@@ -514,7 +536,9 @@ async function downloadTextToR2(
   let contentType = ext === 'pdf' ? 'application/pdf' : 'text/html'
   let failure: string | null = null
 
-  try {
+  if (!isVersionAddressable(stateLink)) {
+    failure = 'state_link selects its version with a fragment, which the server never sees'
+  } else try {
     const res = await safeFetch(stateLink, { headers: { 'user-agent': TEXT_FETCH_UA } })
     if (!res.ok) {
       failure = `state_link HTTP ${res.status}`
@@ -543,6 +567,12 @@ async function downloadTextToR2(
       const invalid = validateTextPayload(decoded.buffer as ArrayBuffer, text.mime || mime, text.text_size ?? declaredSize)
       if (invalid) {
         failure = `${failure}; getBillText also returned ${invalid}`
+      } else if (declaredHash && await md5Hex(decoded.buffer as ArrayBuffer) !== declaredHash) {
+        // getBillText returns byte-exact what LegiScan catalogued, so a
+        // mismatch means we did not get the document we asked for. Deliberately
+        // NOT applied to the state_link path: a live page never reproduces this
+        // hash, even when it is the correct version.
+        failure = `${failure}; getBillText hash mismatch against text_hash`
       } else {
         body = decoded.buffer as ArrayBuffer
         contentType = text.mime || contentType
@@ -576,6 +606,18 @@ async function downloadTextToR2(
   await db.update(billTexts)
     .set({ r2Key, fetchError: null, fetchAttemptedAt: attemptedAt })
     .where(eq(billTexts.docId, docId))
+}
+
+/**
+ * MD5 of a byte buffer, hex-encoded.
+ *
+ * `crypto.subtle.digest('MD5', …)` is a Cloudflare extension — it is not in the
+ * documented algorithm table but works in workerd and typechecks. Verified:
+ * md5("abc") === "900150983cd24fb0d6963f7d28e17f72".
+ */
+async function md5Hex(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest('MD5', bytes)
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
 /** Decode base64 (as LegiScan returns document bytes) without Node Buffer. */
