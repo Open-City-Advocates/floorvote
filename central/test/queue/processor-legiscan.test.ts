@@ -28,7 +28,7 @@ vi.mock('../../src/lib/legiscan', async () => {
 const fetchMock = vi.fn()
 vi.stubGlobal('fetch', fetchMock)
 
-import { processLsIngestorQueue, validateTextPayload } from '../../src/queue/processor-legiscan'
+import { processLsIngestorQueue, validateTextPayload, isVersionAddressable } from '../../src/queue/processor-legiscan'
 import * as legiscan from '../../src/lib/legiscan'
 
 function parseMigration(sql: string, name: string) {
@@ -398,6 +398,15 @@ function toBase64(s: string): string {
   return btoa(out)
 }
 
+/**
+ * Hex MD5 of a byte buffer, so a fixture can declare the hash LegiScan would
+ * publish for the exact bytes the mock returns instead of a magic literal.
+ */
+async function md5Hex(bytes: Uint8Array): Promise<string> {
+  const d = await crypto.subtle.digest('MD5', bytes as unknown as ArrayBuffer)
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 describe('validateTextPayload', () => {
   it('rejects an HTML app shell served under a PDF mime', () => {
     // The exact Indiana failure.
@@ -479,5 +488,53 @@ describe('downloadTextToR2: bot-wall handling', () => {
     expect(row!.fetchError).toMatch(/expected a PDF/)
     expect(row!.fetchError).toMatch(/403/)
     expect(row!.fetchAttemptedAt).toBeTruthy()
+  })
+})
+
+describe('isVersionAddressable', () => {
+  it('rejects a URL whose version selector is a fragment', () => {
+    expect(isVersionAddressable(
+      'https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202520260AB2230#99INT'
+    )).toBe(false)
+  })
+
+  it('accepts ordinary per-version URLs', () => {
+    expect(isVersionAddressable('https://capitol.texas.gov/tlodocs/89R/billtext/html/HB00376I.htm')).toBe(true)
+    expect(isVersionAddressable('https://pub.njleg.gov/Bills/2026/A0500/101_I1.HTM')).toBe(true)
+    expect(isVersionAddressable('https://le.utah.gov/Session/2026/bills/amended/AV_HB0014.pdf')).toBe(true)
+  })
+})
+
+describe('downloadTextToR2: fragment links', () => {
+  const caText = {
+    doc_id: 2000, date: '2026-04-23', type: 'Amended', type_id: 2,
+    mime: 'text/html', mime_id: 1, url: 'u',
+    state_link: 'https://leginfo.legislature.ca.gov/faces/billTextClient.xhtml?bill_id=202520260AB2230#96AMD',
+    text_size: 20, text_hash: '5b9613dcf29261e0306544ad273b0efb',
+    alt_bill_text: 0, alt_mime: '', alt_mime_id: 0, alt_state_link: '', alt_text_size: 0, alt_text_hash: '',
+  }
+
+  it('never fetches a fragment state_link, going straight to getBillText', async () => {
+    const db = drizzle(env.DB, { schema })
+    const doc = '<html>correct version</html>'
+    const realHash = await md5Hex(new TextEncoder().encode(doc))
+    vi.mocked(legiscan.getBill).mockResolvedValue(buildFixtureBill({
+      texts: [{ ...caText, text_hash: realHash }],
+    }))
+    fetchMock.mockClear()
+    vi.mocked(legiscan.getBillText).mockResolvedValue({
+      doc_id: 2000, bill_id: 9001, date: '2026-04-23', type: 'Amended', type_id: 2,
+      mime: 'text/html', mime_id: 1, text_size: doc.length,
+      text_hash: realHash,
+      doc: toBase64(doc),
+    } as any)
+
+    await processLsIngestorQueue(makeBatch(9001), makeEnv(), db)
+
+    expect(fetchMock, 'a fragment link must not be fetched at all').not.toHaveBeenCalled()
+    expect(legiscan.getBillText).toHaveBeenCalledWith(2000, 'test-key', expect.any(Function))
+    const row = await db.select().from(schema.billTexts).where(eq(schema.billTexts.docId, 2000)).get()
+    expect(row!.r2Key).toBeTruthy()
+    expect(row!.fetchError).toBeNull()
   })
 })

@@ -496,6 +496,23 @@ export function validateTextPayload(
   return null
 }
 
+/**
+ * Can this URL name a specific document version?
+ *
+ * A fragment is never transmitted to the server, so a link that selects a
+ * version with one cannot fetch that version — the server answers with
+ * whatever is current. California's leginfo does exactly this
+ * (`...billTextClient.xhtml?bill_id=...#99INT`), which is why every stored CA
+ * document held whatever was current on the day we fetched it, and why two
+ * different doc_ids for the same bill came back byte-identical.
+ *
+ * This keys on the URL, not the state. A state that adopts the same pattern is
+ * handled without a code change.
+ */
+export function isVersionAddressable(stateLink: string): boolean {
+  return !stateLink.includes('#')
+}
+
 async function downloadTextToR2(
   billId: number,
   docId: number,
@@ -514,7 +531,9 @@ async function downloadTextToR2(
   let contentType = ext === 'pdf' ? 'application/pdf' : 'text/html'
   let failure: string | null = null
 
-  try {
+  if (!isVersionAddressable(stateLink)) {
+    failure = 'state_link selects its version with a fragment, which the server never sees'
+  } else try {
     const res = await safeFetch(stateLink, { headers: { 'user-agent': TEXT_FETCH_UA } })
     if (!res.ok) {
       failure = `state_link HTTP ${res.status}`
