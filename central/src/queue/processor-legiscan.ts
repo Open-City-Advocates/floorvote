@@ -45,6 +45,7 @@ async function processLsBill(msg: LsIngestorMessage, env: LsEnv, db: LsDb): Prom
       stateLink: billTexts.stateLink,
       mime: billTexts.mime,
       textSize: billTexts.textSize,
+      textHash: billTexts.textHash,
     })
       .from(billTexts)
       .where(and(eq(billTexts.billId, msg.billId), isNull(billTexts.r2Key)))
@@ -52,7 +53,7 @@ async function processLsBill(msg: LsIngestorMessage, env: LsEnv, db: LsDb): Prom
 
     for (const t of textsToDownload) {
       if (t.stateLink) {
-        await downloadTextToR2(msg.billId, t.docId, t.stateLink, t.mime ?? 'text/html', env, db, t.textSize)
+        await downloadTextToR2(msg.billId, t.docId, t.stateLink, t.mime ?? 'text/html', env, db, t.textSize, t.textHash)
       }
     }
 
@@ -326,7 +327,7 @@ async function processLsBill(msg: LsIngestorMessage, env: LsEnv, db: LsDb): Prom
     const stored = await db.select({ r2Key: billTexts.r2Key })
       .from(billTexts).where(eq(billTexts.docId, t.doc_id)).get()
     if (!stored?.r2Key && t.state_link) {
-      await downloadTextToR2(bill.bill_id, t.doc_id, t.state_link, t.mime, env, db, t.text_size ?? null)
+      await downloadTextToR2(bill.bill_id, t.doc_id, t.state_link, t.mime, env, db, t.text_size ?? null, t.text_hash ?? null)
     }
   }
 
@@ -521,6 +522,7 @@ async function downloadTextToR2(
   env: LsEnv,
   db: LsDb,
   declaredSize: number | null = null,
+  declaredHash: string | null = null,
 ): Promise<void> {
   const ext = mime.includes('pdf') ? 'pdf' : 'html'
   const r2Key = `bills/legiscan-${billId}/texts/${docId}.${ext}`
@@ -562,6 +564,12 @@ async function downloadTextToR2(
       const invalid = validateTextPayload(decoded.buffer as ArrayBuffer, text.mime || mime, text.text_size ?? declaredSize)
       if (invalid) {
         failure = `${failure}; getBillText also returned ${invalid}`
+      } else if (declaredHash && await md5Hex(decoded.buffer as ArrayBuffer) !== declaredHash) {
+        // getBillText returns byte-exact what LegiScan catalogued, so a
+        // mismatch means we did not get the document we asked for. Deliberately
+        // NOT applied to the state_link path: a live page never reproduces this
+        // hash, even when it is the correct version.
+        failure = `${failure}; getBillText hash mismatch against text_hash`
       } else {
         body = decoded.buffer as ArrayBuffer
         contentType = text.mime || contentType
@@ -595,6 +603,18 @@ async function downloadTextToR2(
   await db.update(billTexts)
     .set({ r2Key, fetchError: null, fetchAttemptedAt: attemptedAt })
     .where(eq(billTexts.docId, docId))
+}
+
+/**
+ * MD5 of a byte buffer, hex-encoded.
+ *
+ * `crypto.subtle.digest('MD5', …)` is a Cloudflare extension — it is not in the
+ * documented algorithm table but works in workerd and typechecks. Verified:
+ * md5("abc") === "900150983cd24fb0d6963f7d28e17f72".
+ */
+async function md5Hex(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest('MD5', bytes)
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
 /** Decode base64 (as LegiScan returns document bytes) without Node Buffer. */

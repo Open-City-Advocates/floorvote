@@ -452,14 +452,19 @@ describe('downloadTextToR2: bot-wall handling', () => {
 
   it('falls back to getBillText when the state link returns an app shell', async () => {
     const db = drizzle(env.DB, { schema })
-    vi.mocked(legiscan.getBill).mockResolvedValue(buildFixtureBill({ texts: [pdfText] }))
+    // The recovered document is now hash-verified against the row's text_hash,
+    // so the fixture must declare the MD5 of the exact bytes the mock returns.
+    const realHash = await md5Hex(new TextEncoder().encode(REAL_PDF))
+    vi.mocked(legiscan.getBill).mockResolvedValue(buildFixtureBill({
+      texts: [{ ...pdfText, text_hash: realHash }],
+    }))
     // The state site: 200 OK, but HTML instead of the PDF.
     fetchMock.mockResolvedValue(new Response(IN_APP_SHELL, {
       status: 200, headers: { 'content-type': 'text/html' },
     }))
     vi.mocked(legiscan.getBillText).mockResolvedValue({
       doc_id: 1000, bill_id: 9001, date: '2026-01-15', type: 'Introduced', type_id: 1,
-      mime: 'application/pdf', mime_id: 2, text_size: REAL_PDF.length, text_hash: 'th',
+      mime: 'application/pdf', mime_id: 2, text_size: REAL_PDF.length, text_hash: realHash,
       doc: toBase64(REAL_PDF),
     } as any)
 
@@ -535,6 +540,63 @@ describe('downloadTextToR2: fragment links', () => {
     expect(legiscan.getBillText).toHaveBeenCalledWith(2000, 'test-key', expect.any(Function))
     const row = await db.select().from(schema.billTexts).where(eq(schema.billTexts.docId, 2000)).get()
     expect(row!.r2Key).toBeTruthy()
+    expect(row!.fetchError).toBeNull()
+  })
+
+  it('stores a getBillText document whose bytes match text_hash', async () => {
+    const db = drizzle(env.DB, { schema })
+    const doc = '<html>the catalogued document</html>'
+    vi.mocked(legiscan.getBill).mockResolvedValue(buildFixtureBill({
+      texts: [{ ...caText, text_hash: await md5Hex(new TextEncoder().encode(doc)) }],
+    }))
+    vi.mocked(legiscan.getBillText).mockResolvedValue({
+      doc_id: 2000, bill_id: 9001, date: '2026-04-23', type: 'Amended', type_id: 2,
+      mime: 'text/html', mime_id: 1, text_size: doc.length, text_hash: 'ignored', doc: toBase64(doc),
+    } as any)
+
+    await processLsIngestorQueue(makeBatch(9001), makeEnv(), db)
+
+    const row = await db.select().from(schema.billTexts).where(eq(schema.billTexts.docId, 2000)).get()
+    expect(row!.r2Key).toBeTruthy()
+    expect(row!.fetchError).toBeNull()
+  })
+
+  it('refuses a getBillText document whose bytes do not match text_hash', async () => {
+    const db = drizzle(env.DB, { schema })
+    vi.mocked(legiscan.getBill).mockResolvedValue(buildFixtureBill({
+      texts: [{ ...caText, text_hash: '00000000000000000000000000000000' }],
+    }))
+    vi.mocked(legiscan.getBillText).mockResolvedValue({
+      doc_id: 2000, bill_id: 9001, date: '2026-04-23', type: 'Amended', type_id: 2,
+      mime: 'text/html', mime_id: 1, text_size: 10, text_hash: 'ignored',
+      doc: toBase64('<html>something else entirely</html>'),
+    } as any)
+
+    await processLsIngestorQueue(makeBatch(9001), makeEnv(), db)
+
+    const row = await db.select().from(schema.billTexts).where(eq(schema.billTexts.docId, 2000)).get()
+    expect(row!.r2Key, 'a document that fails its hash must not be stored').toBeNull()
+    expect(row!.fetchError).toMatch(/hash/i)
+  })
+
+  it('does NOT hash-verify a state_link result', async () => {
+    // A live page never reproduces text_hash even when the version is right.
+    // Verifying both sources would break every non-fragment fetch.
+    const db = drizzle(env.DB, { schema })
+    const txText = {
+      ...caText, doc_id: 2001,
+      state_link: 'https://capitol.texas.gov/tlodocs/89R/billtext/html/HB00376I.htm',
+      text_hash: '00000000000000000000000000000000',
+    }
+    vi.mocked(legiscan.getBill).mockResolvedValue(buildFixtureBill({ texts: [txText] }))
+    fetchMock.mockResolvedValue(new Response('<html>live page with a timestamp</html>', {
+      status: 200, headers: { 'content-type': 'text/html' },
+    }))
+
+    await processLsIngestorQueue(makeBatch(9001), makeEnv(), db)
+
+    const row = await db.select().from(schema.billTexts).where(eq(schema.billTexts.docId, 2001)).get()
+    expect(row!.r2Key, 'state_link results are stored without hash checking').toBeTruthy()
     expect(row!.fetchError).toBeNull()
   })
 })
