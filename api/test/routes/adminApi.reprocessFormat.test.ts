@@ -59,10 +59,14 @@ describe('POST /admin/reprocess-llm-all?format=html', () => {
     expect(await res.json()).toMatchObject({ queued: 2 })
   })
 
-  it('ignores an unrecognised format value rather than filtering on it', async () => {
+  it('rejects an unrecognised format value without queueing anything', async () => {
     const res = await app.request('/api/admin/reprocess-llm-all?format=banana', {
       method: 'POST', headers: { Cookie: adminCookie },
     }, testEnv)
-    expect(await res.json()).toMatchObject({ queued: 2 })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: "unknown format; expected 'html'" })
+    // A typo must not reprocess the PDF bills the filter exists to protect, so
+    // assert on the queue too — a 400 sent *after* queueing still fails here.
+    expect(sendBatch).not.toHaveBeenCalled()
   })
 })

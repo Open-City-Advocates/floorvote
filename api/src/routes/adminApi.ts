@@ -977,7 +977,14 @@ adminApiRouter.post('/reprocess-llm-all', async (c) => {
   const scope = c.req.query('scope') === 'prioritized' ? 'prioritized' : 'all'
   // Restrict to HTML-sourced bills. The markup-preservation change only affects
   // the HTML path, so re-running PDF bills rewrites summaries it cannot improve.
-  const format = c.req.query('format') === 'html' ? 'html' : null
+  // Reject anything else rather than ignoring it: silently treating `format=htlm`
+  // as "no filter" would reprocess the very PDF bills the filter exists to spare,
+  // so this is checked before any DB read or queue send.
+  const formatParam = c.req.query('format')
+  if (formatParam !== undefined && formatParam !== 'html') {
+    return c.json({ error: "unknown format; expected 'html'" }, 400)
+  }
+  const format = formatParam === 'html' ? 'html' : null
   const db = getDb(c.env.DB)
   const conditions = [
     isNotNull(bills.externalId),
