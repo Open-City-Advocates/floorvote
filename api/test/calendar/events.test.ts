@@ -290,7 +290,7 @@ describe('POST /api/calendar/events', () => {
   it('rejects non-admins', async () => {
     const r = await SELF.fetch('http://localhost/api/calendar/events', {
       method: 'POST', headers: { Cookie: `session=${memberToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ description: 'X', date: '2026-07-01' }),
+      body: JSON.stringify({ description: 'X', date: isoDay(-30) }),
     })
     expect(r.status).toBe(403)
   })
@@ -298,7 +298,7 @@ describe('POST /api/calendar/events', () => {
   it('creates a custom event with source=custom and a uid', async () => {
     const r = await SELF.fetch('http://localhost/api/calendar/events', {
       method: 'POST', headers: { Cookie: `session=${adminToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ description: 'Board meeting', date: '2026-07-01', time: '17:30', location: 'Zoom', billIds: [billId] }),
+      body: JSON.stringify({ description: 'Board meeting', date: isoDay(-30), time: '17:30', location: 'Zoom', billIds: [billId] }),
     })
     expect(r.status).toBe(201)
     const ev = await r.json() as { id: string; source: string; uid: string; billIds: string[] }
@@ -353,7 +353,7 @@ describe('PUT /api/calendar/events/:id', () => {
     customId = crypto.randomUUID()
     await db.insert(calendarEvents).values({
       id: customId, uid: 'c@t', billId: null, source: 'custom', sequence: 0,
-      date: '2026-07-01', time: null, location: null, description: 'Old title', status: 'confirmed', eventHash: null,
+      date: isoDay(-30), time: null, location: null, description: 'Old title', status: 'confirmed', eventHash: null,
     })
   })
 
@@ -389,7 +389,7 @@ describe('DELETE /api/calendar/events/:id', () => {
     customId = crypto.randomUUID()
     await db.insert(calendarEvents).values({
       id: customId, uid: 'c@t', billId: null, source: 'custom', sequence: 2,
-      date: '2026-07-01', time: null, location: null, description: 'Meeting', status: 'confirmed', eventHash: null,
+      date: isoDay(-30), time: null, location: null, description: 'Meeting', status: 'confirmed', eventHash: null,
     })
   })
 
@@ -422,7 +422,7 @@ describe('POST /api/calendar/events/:id/restore', () => {
     customId = crypto.randomUUID()
     await db.insert(calendarEvents).values({
       id: customId, uid: 'restore-test@t', billId: null, source: 'custom', sequence: 3,
-      date: '2026-07-01', time: null, location: null, description: 'Board mtg', status: 'cancelled', eventHash: null,
+      date: isoDay(-30), time: null, location: null, description: 'Board mtg', status: 'cancelled', eventHash: null,
     })
   })
 
@@ -430,7 +430,7 @@ describe('POST /api/calendar/events/:id/restore', () => {
     // POST create → DELETE → POST restore full cycle
     const createRes = await SELF.fetch('http://localhost/api/calendar/events', {
       method: 'POST', headers: { Cookie: `session=${adminToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ description: 'Board mtg', date: '2026-07-01' }),
+      body: JSON.stringify({ description: 'Board mtg', date: isoDay(-30) }),
     })
     expect(createRes.status).toBe(201)
     const created = await createRes.json() as { id: string }
