@@ -1,8 +1,8 @@
 import { Hono } from 'hono'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, asc, eq, ne, sql } from 'drizzle-orm'
 import { requireAuth, requireAdmin } from '../middleware/auth'
 import { getDb } from '../db/client'
-import { bills, calendarEvents, deepAnalyses } from '../db/schema'
+import { bills, calendarEventBills, calendarEvents, deepAnalyses } from '../db/schema'
 import { nowDb } from '../lib/dbTime'
 import {
   buildDeepInput, deepEnabled, ensureDeepRequest, fetchBillText, fireDeepWorker, listOpenRequests, openRequest,
@@ -163,6 +163,17 @@ worker.post('/requests/:id/result', async (c) => {
 deepRouter.route('/worker', worker)
 
 // ── Team routes ──
+
+// The Council events a bill is on (a hearing notice's roundtable, a bill's
+// hearing), so its page can show each event's brief and team documents.
+deepRouter.get('/bill/:billId/hearings', requireAuth, async (c) => {
+  const db = getDb(c.env.DB)
+  const events = await db.select({ id: calendarEvents.id, date: calendarEvents.date, time: calendarEvents.time, description: calendarEvents.description })
+    .from(calendarEventBills).innerJoin(calendarEvents, eq(calendarEvents.id, calendarEventBills.eventId))
+    .where(and(eq(calendarEventBills.billId, c.req.param('billId')), eq(calendarEvents.source, 'council'), ne(calendarEvents.status, 'cancelled')))
+    .orderBy(asc(calendarEvents.date)).all()
+  return c.json({ enabled: deepEnabled(c.env), events })
+})
 
 deepRouter.get('/:kind/:subjectId', requireAuth, async (c) => {
   const kind = c.req.param('kind')

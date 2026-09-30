@@ -3,7 +3,7 @@ import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:
 import { eq } from 'drizzle-orm'
 import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedCalendarEvent } from '../helpers'
 import { getDb } from '../../src/db/client'
-import { bills, deepAnalyses } from '../../src/db/schema'
+import { bills, calendarEventBills, deepAnalyses } from '../../src/db/schema'
 import { app } from '../../src/index'
 import { ensureDeepRequest } from '../../src/lib/deepAnalysis'
 
@@ -102,6 +102,17 @@ describe('team documents', () => {
     const ev = await seedCalendarEvent(high, { source: 'council', uid: 'council-7@x', date: day(4) })
     expect((await call(`/api/links/event/${ev}`, json('POST', admin, { title: 'Redline', url: 'https://docs.google.com/d/3' }))).status).toBe(201)
     expect((await call(`/api/links/event/nope`, json('POST', admin, { title: 'Redline', url: 'https://docs.google.com/d/3' }))).status).toBe(404)
+  })
+
+  it('lists the Council events a bill is on, so its page can show their briefs and documents', async () => {
+    const council = await seedCalendarEvent(high, { source: 'council', uid: 'council-8@x', date: day(4), description: 'Youth Affairs roundtable' })
+    const gone = await seedCalendarEvent(high, { source: 'council', uid: 'council-9@x', date: day(5), status: 'cancelled' })
+    const bare = await seedCalendarEvent(high, { date: day(4), description: 'Date-only hearing' })
+    for (const eventId of [council, gone, bare]) await getDb(env.DB).insert(calendarEventBills).values({ eventId, billId: high })
+    const res = await call(`/api/deep/bill/${high}/hearings`, { headers: { Cookie: member } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ enabled: true, events: [{ id: council, date: day(4), time: '14:00:00', description: 'Youth Affairs roundtable' }] })
+    expect((await call(`/api/deep/bill/${high}/hearings`)).status).toBe(401)
   })
 })
 
