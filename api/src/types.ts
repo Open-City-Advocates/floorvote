@@ -22,6 +22,11 @@ export type Env = {
   GEMINI_API_KEY?: string
   GEMINI_MODEL?: string            // analysis model override; unset = built-in default
   GEMINI_THINKING_BUDGET?: string  // thinking tokens; "-1" lets Gemini size it, "0" disables. Unset = built-in default
+  DEEP_ANALYSIS_ENABLED?: string     // "true" turns on the deep-analysis queue (lib/deepAnalysis.ts)
+  DEEP_ANALYSIS_PRIORITIES?: string  // priorities analysed automatically, comma-separated. Unset = "high,medium"
+  DEEP_WORKER_TOKEN?: string         // secret: bearer token the external deep-analysis worker presents
+  DEEP_WORKER_FIRE_URL?: string      // optional: POSTed when requests are waiting, e.g. a Claude Code routine's /fire URL
+  DEEP_WORKER_FIRE_TOKEN?: string    // secret: bearer token for DEEP_WORKER_FIRE_URL
   APP_URL: string
   APP_DOMAINS?: string      // comma-separated registrable domains served; drives CORS apex + superadmin cookie scope. Empty/unset = same-origin only + host-only cookie.
   EMAIL_FROM?: string       // full sender address; defaults to notifications@example.com
