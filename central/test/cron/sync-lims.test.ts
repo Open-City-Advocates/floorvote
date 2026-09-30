@@ -24,7 +24,7 @@ vi.mock('../../src/lib/sync-schedule', async () => {
 const fetchMock = vi.fn()
 vi.stubGlobal('fetch', fetchMock)
 
-import { runLimsSync } from '../../src/cron/sync-lims'
+import { runLimsSync, refreshCouncilPeriod } from '../../src/cron/sync-lims'
 import { runLsSync } from '../../src/cron/sync-legiscan'
 import { processLsIngestorQueue } from '../../src/queue/processor-legiscan'
 import * as lims from '../../src/lib/lims'
@@ -459,6 +459,33 @@ describe('bill types', () => {
     await processLsIngestorQueue({ messages: [{ body: { billId: B0400 }, ack: vi.fn(), retry: vi.fn() }] } as any, makeEnv().env, db)
     const ingested = await db.select().from(schema.bills).where(eq(schema.bills.billId, B0400)).get()
     expect(ingested?.billType).toBe('Permanent Bill')
+  })
+})
+
+describe('sponsors of earlier Council Periods', () => {
+  it('keeps a sponsor who left the Council before the current period, on an imported bill', async () => {
+    const db = drizzle(env.DB, { schema })
+    const CP25 = { councilPeriodId: 25, councilPeriod: '25 (2023-24)', startDate: '2023-01-02T00:00:00', endDate: '2024-12-31T00:00:00' }
+    const gone = { id: 150, name: 'Vincent C. Gray', firstName: 'Vincent', lastName: 'Gray', middleName: 'C.', title: 'Councilmember', startDate: '2023-01-02T00:00:00', endDate: '2025-01-02T00:00:00' }
+    vi.mocked(lims.getCouncilPeriods).mockResolvedValue([PERIOD, CP25])
+    vi.mocked(lims.getMembers).mockImplementation(async (cp: number) => cp === 25 ? [gone] as any : JSON.parse(membersRaw))
+    const secureDc = { ...bulk['B26-0400'], legislationNumber: 'B25-0345', legislationHistory: bulk['B26-0400'].legislationHistory.map(h => ({ ...h, legislationNumber: 'B25-0345' })) }
+    vi.mocked(lims.getBulkData).mockImplementation(async (c: number, cp: number) => cp === 25 && c === 1 ? [secureDc] : c === 1 ? [bulk['B26-0400']] : [])
+    const { env: e } = makeEnv({ ADMIN_SECRET: 'test-secret' })
+    const { app } = await import('../../src/index-legiscan')
+    await app.fetch(new Request('http://central/api/admin/lims-import', {
+      method: 'POST', headers: { 'x-admin-secret': 'test-secret', 'content-type': 'application/json' }, body: JSON.stringify({ tenantId: 'oca', numbers: ['B25-0345'] }),
+    }), e)
+
+    await refreshCouncilPeriod('lims-key', db, '2026-09-30')
+    expect(vi.mocked(lims.getMembers).mock.calls.map(c => c[0])).toEqual(expect.arrayContaining([25, 26]))
+
+    const billId = limsBillId('B25-0345')!
+    vi.mocked(lims.getLegislationDetails).mockResolvedValue({ ...JSON.parse(details0400Raw), legislationNumber: 'B25-0345', introducers: [{ memberName: 'Gray, Vincent C.', memberTitle: 'Councilmember' }] })
+    await processLsIngestorQueue({ messages: [{ body: { billId }, ack: vi.fn(), retry: vi.fn() }] } as any, e, db)
+    const sponsors = await db.select().from(schema.billSponsors).where(eq(schema.billSponsors.billId, billId)).all()
+    expect(sponsors.map(s => s.peopleId)).toContain(1_000_000_150)
+    vi.mocked(lims.getMembers).mockResolvedValue(JSON.parse(membersRaw))
   })
 })
 

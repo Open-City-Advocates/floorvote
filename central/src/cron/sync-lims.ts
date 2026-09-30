@@ -169,8 +169,20 @@ export async function refreshCouncilPeriod(apiKey: string, db: LsDb, today: stri
     await upsertPeriod(db, previous, 1)
   }
 
-  const members = await getMembers(cp.councilPeriodId, apiKey,
-    () => trackLimsCall(db, 'Members', { councilPeriodId: cp.councilPeriodId }))
+  // Members of every Council Period whose measures central holds, not just the
+  // current one: a bill from an earlier period (the previous period, or one
+  // imported with lims-import) names sponsors who may have left the Council.
+  // The current period goes last, so its record wins where a name repeats.
+  const imported = (await db.selectDistinct({ id: limsRecords.councilPeriodId }).from(limsRecords).all()).map(r => r.id)
+  const periodIds = [...new Set([...(previous ? [previous.councilPeriodId] : []), ...imported])]
+    .filter(id => id !== cp.councilPeriodId).sort((a, b) => a - b)
+  periodIds.push(cp.councilPeriodId)
+  for (const periodId of periodIds) await upsertMembers(apiKey, db, periodId)
+}
+
+async function upsertMembers(apiKey: string, db: LsDb, councilPeriodId: number): Promise<void> {
+  const members = await getMembers(councilPeriodId, apiKey,
+    () => trackLimsCall(db, 'Members', { councilPeriodId }))
   for (const m of members) {
     const values = {
       peopleId: limsPeopleId(m.id),
