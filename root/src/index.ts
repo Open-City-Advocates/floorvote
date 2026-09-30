@@ -7,7 +7,7 @@
  * hostname this request arrived on.
  */
 import { INSTANCE_HINT_COOKIE, parseInstanceHints, type InstanceHint } from '../../shared/instanceHint'
-import { renderPicker, renderWelcome } from './pages'
+import { renderNotFound, renderPicker, renderWelcome } from './pages'
 
 export interface Env {
   MARKETING_URL?: string
@@ -20,14 +20,15 @@ const HEALTH_TIMEOUT_MS = 3000
 // form-action also covers the redirect after a form submit, so the picker's
 // GET /go -> 302 to a tenant subdomain must be allowed explicitly.
 const csp = (apex: string) =>
-  `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://*.${apex}; base-uri 'none'; frame-ancestors 'none'`
+  `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://*.${apex}; base-uri 'none'; frame-ancestors 'none'; img-src data:`
 
 function redirect(to: string): Response {
   return new Response(null, { status: 302, headers: { Location: to, 'Cache-Control': 'no-store' } })
 }
 
-function html(body: string, apex: string): Response {
+function html(body: string, apex: string, status = 200): Response {
   return new Response(body, {
+    status,
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
       'Content-Security-Policy': csp(apex),
@@ -98,7 +99,7 @@ export default {
     const [first, ...rest] = url.pathname.split('/').filter(Boolean)
     if (first) {
       const slug = first.toLowerCase()
-      if (!SLUG.test(slug)) return new Response('Not found', { status: 404 })
+      if (!SLUG.test(slug)) return html(renderNotFound(home, marketing), apex, 404)
       const origin = `https://${slug}.${apex}`
       if (!(await instanceExists(origin))) return redirect(home)
       return redirect(`${origin}/${rest.join('/')}${url.search}`)

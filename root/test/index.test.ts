@@ -106,6 +106,42 @@ describe('apex Worker', () => {
     expect(f).not.toHaveBeenCalled()
   })
 
+  it('every rendered page carries the wordmark and an SVG favicon', async () => {
+    const pages = [
+      await worker.fetch(req('/'), {}),
+      await worker.fetch(req('/', two), {}),
+      await worker.fetch(req('/favicon.ico'), {}),
+    ]
+    for (const res of pages) {
+      const body = await res.text()
+      expect(body).toContain('class="wordmark"')
+      expect(body).toContain('<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,')
+    }
+  })
+
+  it('shows the email in the picker label when present', async () => {
+    const withEmail = enc([
+      { host: 'wi.floor.vote', name: 'Wisconsin Clerks', email: 'clerk@wi.gov' },
+      { host: 'mi.floor.vote', name: 'Michigan' },
+    ])
+    const body = await (await worker.fetch(req('/', withEmail), {})).text()
+    expect(body).toContain('Wisconsin Clerks · wi.floor.vote · clerk@wi.gov')
+    expect(body).toContain('Michigan · mi.floor.vote<')
+  })
+
+  it('non-slug paths get a branded 404 page', async () => {
+    const res = await worker.fetch(req('/favicon.ico'), {})
+    expect(res.status).toBe(404)
+    expect(res.headers.get('content-type')).toContain('text/html')
+    expect(await res.text()).toContain('https://floor.vote/')
+  })
+
+  it('CSP allows data: images for the favicon and nothing external', async () => {
+    const csp = (await worker.fetch(req('/'), {})).headers.get('content-security-policy')!
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain('img-src data:')
+  })
+
   it('SINGLE_TENANT_URL sends everything to the one tenant', async () => {
     const res = await worker.fetch(req('/bills?x=1', two), { SINGLE_TENANT_URL: 'https://app.example.org' })
     expect(res.headers.get('location')).toBe('https://app.example.org/bills?x=1')

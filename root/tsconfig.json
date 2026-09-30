@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "lib": ["ES2022", "WebWorker"]
   },
-  "include": ["src", "test", "../shared/instanceHint.ts"]
+  "include": ["src", "test", "../shared/instanceHint.ts", "../shared/logo.ts", "../shared/tokens.ts", "../shared/brand.ts"]
 }
