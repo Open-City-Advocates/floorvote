@@ -10,6 +10,7 @@ import { sendMagicLink } from '../lib/email'
 import { recordAuthEvent, authReqContext } from '../lib/authEvents'
 import { getSuperAdminCookieDomain } from '../lib/superadmin'
 import { parseAppDomains } from '../lib/appDomains'
+import { rememberInstance, forgetInstance } from '../lib/instanceHint'
 import { verifySuperadminJwt } from '../../../shared/superadminJwt'
 import { isSuperadminEmailViaCentral } from '../lib/superadminCentral'
 import { checkRateLimit } from '../../../shared/rateLimit'
@@ -269,6 +270,7 @@ authRoutes.post('/verify', async (c) => {
     path: '/',
     expires: expiresInstant,
   })
+  rememberInstance(c)
 
   const verifiedUser = await db
     .select({ email: users.email, name: users.name })
@@ -320,6 +322,7 @@ authRoutes.get('/me', async (c) => {
             path: '/',
             expires: expiresInstant,
           })
+          rememberInstance(c)
           await db.update(users).set({ lastActive: nowDb() }).where(eq(users.id, localUser!.id))
           return c.json({
             id: localUser!.id,
@@ -396,6 +399,7 @@ authRoutes.get('/me', async (c) => {
     path: '/',
     expires: newExpiryInstant,
   })
+  rememberInstance(c)
 
   return c.json({
     id: sessionWithUser.userId,
@@ -465,6 +469,7 @@ authRoutes.post('/logout', async (c) => {
     await db.delete(sessions).where(eq(sessions.tokenHash, tokenHash))
   }
   deleteCookie(c, 'session', { path: '/', httpOnly: true, secure: true, sameSite: 'Lax' })
+  forgetInstance(c)
   const cookieDomain = getSuperAdminCookieDomain(c.env.APP_URL, parseAppDomains(c.env.APP_DOMAINS))
   deleteCookie(c, 'superadmin_jwt', {
     path: '/',
