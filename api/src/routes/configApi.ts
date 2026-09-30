@@ -211,7 +211,7 @@ configRouter.get('/', async (c) => {
   // reset, and on every non-demo tenant.
   const demoResetAt = demoResetAtRow?.value
 
-  return c.json({ associationName, positionVocabulary, state: c.env.STATE ?? '', states, multiState, sessions, orgNoun, instanceDomains, demoMode, demoLocked, demoResetAt, modules, operator, dataSources: dataSources.length > 0 ? dataSources : ['legiscan'], accountDeletionEnabled, tagTaxonomy, demoBanner })
+  return c.json({ associationName, positionVocabulary, state: c.env.STATE ?? '', states, multiState, sessions, orgNoun, instanceDomains, demoMode, demoLocked, demoResetAt, modules, operator, dataSources: dataSources.length > 0 ? dataSources : ['legiscan'], accountDeletionEnabled, tagTaxonomy, demoBanner, deepAnalysis: c.env.DEEP_ANALYSIS_ENABLED === 'true' })
 })
 
 // GET /config/sessions?state=NJ — per-state session list, proxied from central
