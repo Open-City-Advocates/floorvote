@@ -35,6 +35,7 @@ import { demoResetAndSeed } from './lib/demoResetAndSeed'
 import { runJob } from './lib/jobAlert'
 import { healStalledAiBills, HEAL_MAX_ATTEMPTS } from './lib/healStalledAi'
 import { nowDb } from './lib/dbTime'
+import { runEmailHealth } from './lib/emailHealthJob'
 import { ensureDemoSession, demoSessionCookie } from './lib/demoSession'
 import { demoReadOnly } from './middleware/auth'
 import type { Env, AppEnv, QueueMessage, InviteEmailMessage, TenantQueueMessage } from './types'
@@ -270,6 +271,9 @@ export default {
     // An explicit branch with its own return — the fall-through below is
     // registerWithCentral, and this must not re-register the tenant every hour.
     if (event.cron === '0 * * * *') {
+      // Email provider health. Placed before heal-ai on purpose: it must not wait
+      // behind, or be skipped by, anything else in this branch.
+      ctx.waitUntil(runJob(env, 'email-health', () => runEmailHealth(env, db)))
       ctx.waitUntil(runJob(env, 'heal-ai', async () => {
         let result
         try {

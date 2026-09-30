@@ -10,10 +10,12 @@ vi.mock('../../src/lib/digest', () => ({ runDigest: vi.fn(async () => undefined)
 vi.mock('../../src/lib/weekAhead', () => ({ runWeekAhead: vi.fn(async () => undefined) }))
 const sendEmail = vi.fn(async () => ({ ok: true, provider: 'resend' as const }))
 vi.mock('../../src/lib/email', () => ({ sendEmail: (env: any, msg: any) => sendEmail(env, msg) }))
+vi.mock('../../src/lib/emailHealthJob', () => ({ runEmailHealth: vi.fn(async () => 'none') }))
 
 import worker from '../../src/index'
 import { healStalledAiBills } from '../../src/lib/healStalledAi'
 import { registerWithCentral } from '../../src/cron/sync'
+import { runEmailHealth } from '../../src/lib/emailHealthJob'
 
 async function runScheduled(cron: string) {
   const ctx = createExecutionContext()
@@ -25,6 +27,14 @@ async function runScheduled(cron: string) {
 describe('scheduled() heal branch', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it('runs the email-health check on the hourly cron only', async () => {
+    await runScheduled('0 * * * *')
+    expect(runEmailHealth).toHaveBeenCalledOnce()
+    vi.clearAllMocks()
+    await runScheduled('0 11 * * *')
+    expect(runEmailHealth).not.toHaveBeenCalled()
   })
 
   it('runs the heal on the hourly cron and does not re-register', async () => {
