@@ -17,17 +17,20 @@ export interface Env {
 
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 const HEALTH_TIMEOUT_MS = 3000
-const CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+// form-action also covers the redirect after a form submit, so the picker's
+// GET /go -> 302 to a tenant subdomain must be allowed explicitly.
+const csp = (apex: string) =>
+  `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://*.${apex}; base-uri 'none'; frame-ancestors 'none'`
 
 function redirect(to: string): Response {
   return new Response(null, { status: 302, headers: { Location: to, 'Cache-Control': 'no-store' } })
 }
 
-function html(body: string): Response {
+function html(body: string, apex: string): Response {
   return new Response(body, {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
-      'Content-Security-Policy': CSP,
+      'Content-Security-Policy': csp(apex),
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
       // Varies by cookie, so never share a cached copy between visitors.
@@ -64,7 +67,10 @@ async function instanceExists(origin: string): Promise<boolean> {
       redirect: 'manual',
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     })
-    if (!res.ok) return false
+    if (!res.ok) {
+      await res.body?.cancel()
+      return false
+    }
     const body = await res.json() as { ok?: unknown }
     return body.ok === true
   } catch {
@@ -76,7 +82,8 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url)
     if (env.SINGLE_TENANT_URL) {
-      return redirect(new URL(url.pathname + url.search, env.SINGLE_TENANT_URL).toString())
+      const base = new URL(env.SINGLE_TENANT_URL)
+      return redirect(base.origin + '/' + url.pathname.replace(/^\/+/, '') + url.search)
     }
     const apex = url.hostname
     const home = `${url.origin}/`
@@ -99,7 +106,7 @@ export default {
 
     const hints = ownHints(req, apex)
     if (hints.length === 1) return redirect(`https://${hints[0].host}/`)
-    if (hints.length > 1) return html(renderPicker(hints, marketing))
-    return html(renderWelcome(apex, marketing))
+    if (hints.length > 1) return html(renderPicker(hints, marketing), apex)
+    return html(renderWelcome(apex, marketing), apex)
   },
 }

@@ -9,11 +9,13 @@ const two = enc([
 function req(path: string, cookie?: string): Request {
   return new Request(`https://floor.vote${path}`, cookie ? { headers: { Cookie: `fv_instances=${cookie}` } } : {})
 }
+const called: string[] = []
 function mockHealth(ok: boolean) {
-  vi.stubGlobal('fetch', vi.fn(async (u: string) => {
-    expect(String(u)).toMatch(/^https:\/\/[a-z0-9-]+\.floor\.vote\/api\/health$/)
-    return ok ? Response.json({ ok: true }) : new Response('nope', { status: 522 })
-  }))
+  mockFetch(async () => (ok ? Response.json({ ok: true }) : new Response('nope', { status: 522 })))
+}
+function mockFetch(impl: () => Promise<Response>) {
+  called.length = 0
+  vi.stubGlobal('fetch', vi.fn(async (u: string) => { called.push(String(u)); return impl() }))
 }
 afterEach(() => vi.unstubAllGlobals())
 
@@ -45,6 +47,7 @@ describe('apex Worker', () => {
     expect(body).toContain('Wisconsin Clerks · wi.floor.vote')
     expect(body).toContain('Michigan &lt;Assoc&gt; · mi.floor.vote')
     expect(body).not.toContain('<Assoc>')
+    expect(res.headers.get('content-security-policy')).toContain("form-action 'self' https://*.floor.vote")
   })
 
   it('ignores remembered hosts outside this apex', async () => {
@@ -66,11 +69,22 @@ describe('apex Worker', () => {
     const res = await worker.fetch(req('/WI/bills/123?x=1'), {})
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('https://wi.floor.vote/bills/123?x=1')
+    expect(called).toEqual(['https://wi.floor.vote/api/health'])
   })
 
   it('/<slug> for a missing instance goes to /', async () => {
     mockHealth(false)
     const res = await worker.fetch(req('/nope'), {})
+    expect(res.headers.get('location')).toBe('https://floor.vote/')
+  })
+
+  it.each([
+    ['ok:false', async () => Response.json({ ok: false })],
+    ['non-JSON 200', async () => new Response('<html>', { status: 200 })],
+    ['fetch rejects (timeout)', async () => { throw new DOMException('timeout', 'TimeoutError') }],
+  ])('/<slug> with health check %s goes to /', async (_n, impl) => {
+    mockFetch(impl)
+    const res = await worker.fetch(req('/wi'), {})
     expect(res.headers.get('location')).toBe('https://floor.vote/')
   })
 
@@ -85,5 +99,10 @@ describe('apex Worker', () => {
   it('SINGLE_TENANT_URL sends everything to the one tenant', async () => {
     const res = await worker.fetch(req('/bills?x=1', two), { SINGLE_TENANT_URL: 'https://app.example.org' })
     expect(res.headers.get('location')).toBe('https://app.example.org/bills?x=1')
+  })
+
+  it('SINGLE_TENANT_URL is not an open redirect for // paths', async () => {
+    const res = await worker.fetch(new Request('https://floor.vote//evil.com/x'), { SINGLE_TENANT_URL: 'https://app.example.org' })
+    expect(res.headers.get('location')).toBe('https://app.example.org/evil.com/x')
   })
 })

@@ -46,8 +46,7 @@ export function renderPicker(hints: InstanceHint[], marketingUrl: string): strin
 <h1>Choose your FloorVote</h1>
 <p>You've signed in to these on this browser.</p>
 <form method="get" action="/go">
-  <label for="host" hidden>Instance</label>
-  <select id="host" name="host">${options}</select>
+  <select id="host" name="host" aria-label="Instance">${options}</select>
   <button type="submit">Go</button>
 </form>
 <p class="more">New to FloorVote? <a href="${esc(marketingUrl)}">Learn more at FloorVote.org →</a></p>`)
