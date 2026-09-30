@@ -270,13 +270,13 @@ authRoutes.post('/verify', async (c) => {
     path: '/',
     expires: expiresInstant,
   })
-  rememberInstance(c)
 
   const verifiedUser = await db
     .select({ email: users.email, name: users.name })
     .from(users)
     .where(eq(users.id, userId))
     .get()
+  rememberInstance(c, verifiedUser?.email)
 
   // Tenants no longer mint the cross-tenant superadmin SSO cookie. Central is the
   // SOLE issuer: it sets the `.<parent-domain>`-scoped `superadmin_jwt` cookie on
@@ -322,7 +322,7 @@ authRoutes.get('/me', async (c) => {
             path: '/',
             expires: expiresInstant,
           })
-          rememberInstance(c)
+          rememberInstance(c, localUser!.email)
           await db.update(users).set({ lastActive: nowDb() }).where(eq(users.id, localUser!.id))
           return c.json({
             id: localUser!.id,
@@ -399,7 +399,7 @@ authRoutes.get('/me', async (c) => {
     path: '/',
     expires: newExpiryInstant,
   })
-  rememberInstance(c)
+  rememberInstance(c, sessionWithUser.email)
 
   return c.json({
     id: sessionWithUser.userId,
