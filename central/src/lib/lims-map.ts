@@ -161,8 +161,8 @@ function docHash(id: number): Promise<string> {
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 /**
- * "2025-2026 Council Period 26". The leading year span matters: tenant URLs are
- * built from it by `sessionToSlug` (shared/sessionSlug.ts).
+ * "2025-2026 Council Period 26". Tenant URLs slug it to "cp26" (sessionToSlug in
+ * shared/sessionSlug.ts); the leading year span still orders sessions.
  */
 export function councilPeriodName(cp: LimsCouncilPeriod): string {
   return `${cp.startDate.slice(0, 4)}-${cp.endDate.slice(0, 4)} Council Period ${cp.councilPeriodId}`
