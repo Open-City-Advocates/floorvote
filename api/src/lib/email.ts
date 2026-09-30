@@ -322,21 +322,21 @@ export async function sendMagicLink(
 
   const { subject, html } = renderMagicLinkEmail({ type, magicLinkUrl, appUrl: env.APP_URL, instanceName: assocName ?? '', orgPhrase })
 
-  const r = await sendEmail(env, { to: [to], subject, html, text }, db)
+  const r = await sendEmail(env, { to: [to], subject, html, text }, db, { fallback: true })
   if (db) {
-    let event: 'email_sent' | 'email_send_failed' | 'email_bounced' = 'email_sent'
-    if (!r.ok) {
+    // One row per attempt, so a send that fallback rescued shows both halves:
+    // the primary's failure (with its reason) and the other provider's success.
+    for (const a of r.attempts ?? [r]) {
       // E_RECIPIENT_SUPPRESSED = address previously hard-bounced or was reported as
       // spam, so it's effectively a bounce; everything else is a send failure.
-      // Note: this is the Cloudflare-binding path. Resend's r.error is just an HTTP
-      // status string, so Resend failures always map to email_send_failed (Resend
-      // doesn't surface suppression synchronously) — bounces there would come via Phase 2.
-      event = r.error?.includes('E_RECIPIENT_SUPPRESSED') ? 'email_bounced' : 'email_send_failed'
+      // Resend's error is just an HTTP status string and never classifies as a
+      // bounce (Resend doesn't surface suppression synchronously).
+      const event = a.ok ? 'email_sent' : isRecipientError(a) ? 'email_bounced' : 'email_send_failed'
+      await recordAuthEvent(db, {
+        event, email: to, userId: userId ?? null, reason: a.error ?? null,
+        linkType: type, provider: a.provider, messageId: a.messageId ?? null,
+      })
     }
-    await recordAuthEvent(db, {
-      event, email: to, userId: userId ?? null, reason: r.error ?? null,
-      linkType: type, provider: r.provider, messageId: r.messageId ?? null,
-    })
   }
   if (!r.ok) throw new Error(`Email send failed (${r.provider}): ${r.error}`)
 }
