@@ -385,3 +385,28 @@ export const councilEvents = sqliteTable('council_events', {
   removedAt:   text('removed_at'),
   updatedAt:   text('updated_at').notNull().default(sql`(datetime('now'))`),
 }, (t) => [index('idx_council_events_date').on(t.date)])
+
+/** DC Council committees (chair, members, key staff, agencies); see migrations-legiscan/0022_council_directory.sql. */
+export const councilCommittees = sqliteTable('council_committees', {
+  slug:         text('slug').primaryKey(),
+  name:         text('name').notNull(),
+  url:          text('url').notNull(),
+  chairJson:    text('chair_json'),
+  membersJson:  text('members_json').notNull().default('[]'),
+  staffJson:    text('staff_json').notNull().default('[]'),
+  agenciesJson: text('agencies_json').notNull().default('[]'),
+  updatedAt:    text('updated_at').notNull().default(sql`(datetime('now'))`),
+})
+
+/** The Council directory: every staffer and Councilmember with title, office, and contacts. */
+export const councilDirectory = sqliteTable('council_directory', {
+  entryKey:  text('entry_key').primaryKey(),
+  kind:      text('kind').notNull(),
+  name:      text('name').notNull(),
+  title:     text('title'),
+  office:    text('office'),
+  email:     text('email'),
+  phone:     text('phone'),
+  updatedAt: text('updated_at').notNull().default(sql`(datetime('now'))`),
+})
+

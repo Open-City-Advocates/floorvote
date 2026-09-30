@@ -5,7 +5,9 @@ import { getHearingsCalendar } from '../lib/lims-hearings'
 import { limsBillId, limsPeopleId, limsSessionId, LIMS_BILL_ID_BASE, LIMS_SESSION_ID_BASE } from '../lib/lims-ids'
 import { limsCategories, limsStates } from '../lib/lims-config'
 import { decideMode, getCurrentEtHour } from '../lib/sync-schedule'
-import { sessions, bills, billTenants, tenants, people, limsRecords, councilEvents } from '../db/schema-legiscan'
+import { sessions, bills, billTenants, tenants, people, limsRecords, councilEvents, councilCommittees, councilDirectory } from '../db/schema-legiscan'
+import { fetchCommittees, fetchDirectory } from '../lib/dccouncil-directory'
+import type { BatchItem } from 'drizzle-orm/batch'
 import { trackLimsCall } from '../lib/lims-ingest'
 import { nowDb } from '../lib/dbTime'
 import { applyMasterList } from './sync-legiscan'
@@ -116,6 +118,16 @@ export async function runLimsSync(env: LsEnv, db: LsDb, opts: { force?: boolean 
     const counts = await runLimsPass(session, covering, env, db, today)
     reports.push({ sessionId: session.sessionId, sessionName: session.sessionName, ...counts })
     await db.update(sessions).set({ lastSyncedAt: nowDb() }).where(eq(sessions.sessionId, session.sessionId))
+  }
+  // Committee rosters and staff change rarely: refresh them daily, after the
+  // bill pass so a slow dccouncil.gov (about 25 paced requests) never delays it.
+  if (opts.force || etHour === 5) {
+    try {
+      const d = await syncCouncilDirectory(db)
+      console.log(`[sync-lims] council directory: ${d.committees} committees, ${d.people} people`)
+    } catch (err) {
+      console.error('[sync-lims] council directory sync failed:', err)
+    }
   }
   return reports
 }
@@ -476,4 +488,54 @@ export async function syncCouncilCalendar(db: LsDb, today: string): Promise<{ mo
   }
   console.log(`[sync-lims] council calendar: ${events} events over ${months} months, ${removed} removed`)
   return { months, events, removed }
+}
+
+/**
+ * Refresh the committee and directory rows from dccouncil.gov. Committees and
+ * the directory are separate steps, so a failure in one keeps the other. A
+ * fetch that comes back implausibly small (a redesign or an outage) leaves the
+ * stored rows alone, and a committee whose page failed this time is kept: only
+ * committees gone from the Council's index are removed. Each replacement is
+ * one D1 batch, which runs as a transaction.
+ */
+export async function syncCouncilDirectory(db: LsDb): Promise<{ committees: number; people: number }> {
+  const now = nowDb()
+  let committeeCount = 0
+  let committeeError: unknown = null
+  try {
+    const { committees, currentSlugs } = await fetchCommittees()
+    committeeCount = committees.length
+    if (currentSlugs.length >= 5 && committees.length >= 5) {
+      const writes: BatchItem<'sqlite'>[] = [db.delete(councilCommittees).where(notInArray(councilCommittees.slug, currentSlugs))]
+      for (const c of committees) {
+        const values = {
+          slug: c.slug, name: c.name, url: c.url,
+          chairJson: c.chair ? JSON.stringify(c.chair) : null,
+          membersJson: JSON.stringify(c.members), staffJson: JSON.stringify(c.staff), agenciesJson: JSON.stringify(c.agencies),
+          updatedAt: now,
+        }
+        const { slug: _s, ...update } = values
+        writes.push(db.insert(councilCommittees).values(values).onConflictDoUpdate({ target: councilCommittees.slug, set: update }))
+      }
+      await db.batch(writes as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]])
+    }
+  } catch (err) {
+    committeeError = err
+  }
+
+  const people = await fetchDirectory()
+  const rows = new Map<string, typeof councilDirectory.$inferInsert>()
+  for (const p of people) {
+    // Staff can share an office mailbox, so the name is part of the key.
+    const entryKey = `${p.email ?? ''}|${p.name}|${p.office ?? ''}`.toLowerCase()
+    rows.set(entryKey, { entryKey, kind: p.kind, name: p.name, title: p.title, office: p.office, email: p.email, phone: p.phone, updatedAt: now })
+  }
+  if (rows.size >= 50) {
+    const all = [...rows.values()]
+    const writes: BatchItem<'sqlite'>[] = [db.delete(councilDirectory)]
+    for (let i = 0; i < all.length; i += 10) writes.push(db.insert(councilDirectory).values(all.slice(i, i + 10)))
+    await db.batch(writes as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]])
+  }
+  if (committeeError) throw committeeError
+  return { committees: committeeCount, people: rows.size }
 }

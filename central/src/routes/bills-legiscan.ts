@@ -28,6 +28,24 @@ billsLsRoutes.use('*', async (c, next) => {
 // tenants to filter with their own calendar rules. Registered before '/:id' so
 // the literal segment is not read as a bill id. Removed events are returned with
 // removedAt set, so a tenant can cancel its copy.
+// The Council's committees (chair, members, key staff, agencies) and staff
+// directory, from dccouncil.gov (cron/sync-lims.ts syncCouncilDirectory).
+billsLsRoutes.get('/council-directory', async (c) => {
+  const db = drizzle(c.env.DB, { schema })
+  const parse = <T>(s: string | null, fallback: T): T => { if (!s) return fallback; try { return JSON.parse(s) as T } catch { return fallback } }
+  const committees = await db.select().from(schema.councilCommittees).orderBy(schema.councilCommittees.name).all()
+  const people = await db.select().from(schema.councilDirectory).orderBy(schema.councilDirectory.name).all()
+  return c.json({
+    committees: committees.map(r => ({
+      slug: r.slug, name: r.name, url: r.url,
+      chair: parse(r.chairJson, null), members: parse(r.membersJson, []), staff: parse(r.staffJson, []), agencies: parse(r.agenciesJson, []),
+      updatedAt: r.updatedAt,
+    })),
+    people: people.map(r => ({ kind: r.kind, name: r.name, title: r.title, office: r.office, email: r.email, phone: r.phone })),
+    updatedAt: committees[0]?.updatedAt ?? null,
+  })
+})
+
 billsLsRoutes.get('/council-events', async (c) => {
   const from = c.req.query('from') ?? ''
   const to = c.req.query('to') ?? ''
