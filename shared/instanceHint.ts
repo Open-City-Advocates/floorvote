@@ -3,16 +3,18 @@
  * in to, so a host's bare apex (e.g. floor.vote) can offer them.
  *
  * Written by each tenant (api/src/lib/instanceHint.ts) scoped to the parent
- * domain; read by the apex Worker (root/src/index.ts). It carries no secret and
- * is never trusted for auth — the worst a tampered value can do is change what
- * the apex page shows its own viewer, and the apex Worker only redirects to its
- * own subdomains. Any server on the parent domain can overwrite this cookie
- * (HttpOnly only blocks scripts); that is acceptable because every subdomain is
- * operator-run.
+ * domain; read by the apex Worker (root/src/index.ts). It is not a credential
+ * and is never trusted for auth, but it does hold the signed-in email per
+ * instance, so logout removes that instance's entry. The worst a tampered value
+ * can do is change what the apex page shows its own viewer, and the apex Worker
+ * only redirects to its own subdomains. Any server on the parent domain can
+ * overwrite this cookie (HttpOnly only blocks scripts); that is acceptable
+ * because every subdomain is operator-run.
  *
- * Wire format keeps keys short (`h`, `n`, optional `e` for the signed-in email) because every tenant request carries it.
- * These functions work on the DECODED cookie value (plain JSON); callers own the
- * URI encoding (Hono's cookie helpers on the tenant, readCookie in root).
+ * Wire format keeps keys short (`h`, `n`, optional `e` for the signed-in email)
+ * because every tenant request carries it. These functions work on the DECODED
+ * cookie value (plain JSON); callers own the URI encoding (Hono's cookie
+ * helpers on the tenant, readCookie in root).
  */
 export const INSTANCE_HINT_COOKIE = 'fv_instances'
 export const INSTANCE_HINT_MAX_AGE_S = 60 * 60 * 24 * 365

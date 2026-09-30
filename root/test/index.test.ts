@@ -54,8 +54,10 @@ describe('apex Worker', () => {
     const res = await worker.fetch(req('/', two), {})
     expect(res.status).toBe(200)
     const body = await res.text()
-    expect(body).toContain('Wisconsin Clerks · wi.floor.vote')
-    expect(body).toContain('Michigan &lt;Assoc&gt; · mi.floor.vote')
+    expect(body).toContain('href="/go?host=wi.floor.vote"')
+    expect(body).toContain('<span class="org">Wisconsin Clerks</span>')
+    expect(body).toContain('<span class="meta">wi.floor.vote</span>')
+    expect(body).toContain('<span class="org">Michigan &lt;Assoc&gt;</span>')
     expect(body).not.toContain('<Assoc>')
     expect(res.headers.get('content-security-policy')).toContain("form-action 'self' https://*.floor.vote")
   })
@@ -125,8 +127,9 @@ describe('apex Worker', () => {
       { host: 'mi.floor.vote', name: 'Michigan' },
     ])
     const body = await (await worker.fetch(req('/', withEmail), {})).text()
-    expect(body).toContain('Wisconsin Clerks · wi.floor.vote · clerk@wi.gov')
-    expect(body).toContain('Michigan · mi.floor.vote<')
+    expect(body).toContain('<span class="org">Wisconsin Clerks</span>')
+    expect(body).toContain('<span class="meta">wi.floor.vote · clerk@wi.gov</span>')
+    expect(body).toContain('<span class="meta">mi.floor.vote</span>')
   })
 
   it('non-slug paths get a branded 404 page', async () => {

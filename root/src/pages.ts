@@ -43,9 +43,14 @@ function layout(title: string, body: string): string {
   h1 { font-size: 1.25rem; margin: 0 0 8px; }
   p { margin: 0 0 16px; color: var(--muted); }
   code { color: var(--fg); }
-  select, button { width: 100%; font: inherit; padding: 10px 12px; border-radius: 8px; }
-  select { border: 1px solid var(--border); background: var(--bg); color: var(--fg); margin-bottom: 12px; }
-  button { border: 0; background: var(--accent); color: #1c1c1a; font-weight: 600; cursor: pointer; }
+  .instances { list-style: none; margin: 0; padding: 0; }
+  .instances li + li { margin-top: 8px; }
+  .instances a { display: block; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px;
+    text-decoration: none; color: var(--fg); }
+  .instances a:hover, .instances a:focus-visible { border-color: var(--accent); }
+  .instances a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .org { display: block; font-weight: 600; overflow-wrap: anywhere; }
+  .meta { display: block; color: var(--muted); font-size: 0.875rem; overflow-wrap: anywhere; }
   a { color: inherit; }
   .more { margin: 20px 0 0; padding-top: 16px; border-top: 1px solid var(--border); }
 </style>
@@ -54,17 +59,15 @@ function layout(title: string, body: string): string {
 </html>`
 }
 
+// Links, not a <select>: a native select truncates long names, hiding the host and email.
 export function renderPicker(hints: InstanceHint[], marketingUrl: string): string {
-  const options = hints
-    .map((h) => `<option value="${esc(h.host)}">${esc(h.name)} · ${esc(h.host)}${h.email ? ` · ${esc(h.email)}` : ''}</option>`)
+  const items = hints
+    .map((h) => `<li><a href="/go?host=${encodeURIComponent(h.host)}"><span class="org">${esc(h.name)}</span><span class="meta">${esc(h.host)}${h.email ? ` · ${esc(h.email)}` : ''}</span></a></li>`)
     .join('')
   return layout('Choose your FloorVote', `
 <h1>Choose your FloorVote</h1>
 <p>You've signed in to these on this browser.</p>
-<form method="get" action="/go">
-  <select id="host" name="host" aria-label="Instance">${options}</select>
-  <button type="submit">Go</button>
-</form>
+<ul class="instances">${items}</ul>
 <p class="more">New to FloorVote? <a href="${esc(marketingUrl)}">Learn more at FloorVote.org →</a></p>`)
 }
 
