@@ -449,3 +449,16 @@ describe('POST /api/admin/lims-import', () => {
     expect((await post(e, { tenantId: 'nobody', numbers: ['B25-0345'] })).status).toBe(404)
   })
 })
+
+describe('bill types', () => {
+  it('stores the LIMS type (Emergency, Permanent, ...) on stubs and keeps it through ingest', async () => {
+    const db = drizzle(env.DB, { schema })
+    await runLimsSync(makeEnv().env, db)
+    const stub = await db.select().from(schema.bills).where(eq(schema.bills.billId, limsBillId('B26-0001')!)).get()
+    expect(stub?.billType).toBe(bulk['B26-0001'].legislationSubCategory)
+    await processLsIngestorQueue({ messages: [{ body: { billId: B0400 }, ack: vi.fn(), retry: vi.fn() }] } as any, makeEnv().env, db)
+    const ingested = await db.select().from(schema.bills).where(eq(schema.bills.billId, B0400)).get()
+    expect(ingested?.billType).toBe('Permanent Bill')
+  })
+})
+
