@@ -261,7 +261,9 @@ npx wrangler secret put CF_AIG_TOKEN --env [slug]
 ```
 
 > [!TIP]
-> **Optional fallbacks**, not used on the normal path: `GEMINI_API_KEY` (only read if you flip `AI_GATEWAY_ENABLED` to `"false"`) and `RESEND_API_KEY` (only if you set `EMAIL_PROVIDER="resend"` instead of Cloudflare Email Service). You don't set `LEGISCAN_API_KEY` on a tenant — only central calls LegiScan.
+> **Optional fallbacks.** `GEMINI_API_KEY` is only read if you flip `AI_GATEWAY_ENABLED` to `"false"`. You don't set `LEGISCAN_API_KEY` on a tenant — only central calls LegiScan.
+>
+> **`RESEND_API_KEY` is worth setting even on Cloudflare Email Service.** With it, login and invite links that Cloudflare fails to send are retried through Resend, and the hourly email-health check can alert `ALERT_EMAILS` through Resend when Cloudflare sending breaks. Without it, that alert goes through the provider that is failing. Your `EMAIL_FROM` domain must be verified on Resend for either to work. Digests and week-ahead mail never fall back.
 
 ## Step 7: Bind the tenant on central
 
