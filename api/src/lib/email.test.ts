@@ -224,4 +224,27 @@ describe('sendEmail — fallback and provider override', () => {
     expect(env.EMAIL.send).not.toHaveBeenCalled()
     expect(fetch).toHaveBeenCalledOnce()
   })
+
+  it('rescues a resend connection failure through cloudflare when fallback is on', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('network down') }))
+    const send = vi.fn(async () => ({ messageId: 'cf-1' }))
+    const env = { EMAIL_PROVIDER: 'resend' as const, RESEND_API_KEY: 'k', EMAIL: { send } }
+    const r = await sendEmail(env as never, msg, undefined, { fallback: true })
+    expect(r.ok).toBe(true)
+    expect(r.provider).toBe('cloudflare')
+    expect(r.attempts!.map(a => [a.provider, a.ok])).toEqual([['resend', false], ['cloudflare', true]])
+    expect(r.attempts![0].error).toContain('fetch failed')
+  })
+
+  it('returns ok:false instead of throwing when resend fetch rejects and there is no fallback', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('network down') }))
+    const r = await sendEmail({ RESEND_API_KEY: 'k' } as never, msg)
+    expect(r.ok).toBe(false)
+    expect(r.provider).toBe('resend')
+    expect(r.error).toContain('fetch failed')
+    expect(r.error).toContain('network down')
+  })
 })

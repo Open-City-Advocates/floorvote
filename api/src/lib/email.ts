@@ -112,11 +112,19 @@ export function otherProvider(env: Pick<Env, 'RESEND_API_KEY' | 'EMAIL'>, primar
 async function resendSend(env: Pick<Env, 'RESEND_API_KEY'>, msg: ResolvedMessage, db?: AppDb): Promise<EmailSendResult> {
   const body: Record<string, unknown> = { from: msg.from, to: msg.to, subject: msg.subject, html: msg.html, text: msg.text, reply_to: msg.replyTo }
   if (msg.headers) body.headers = msg.headers
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  let res: Response
+  try {
+    res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  } catch (err) {
+    // A connection-level failure must come back as a failed result, not a throw:
+    // a throw would skip fallback and counting, and lose sendBatch's whole tally.
+    console.error('[email:resend]', err)
+    return { ok: false, provider: 'resend', error: `fetch failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
   if (db) {
     try { await recordResendUsage(db, res); await recordResendThrottle(db, res) }
     catch (e) { console.error('[resend-record]', e) }
