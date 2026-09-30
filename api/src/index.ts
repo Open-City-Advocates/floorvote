@@ -273,7 +273,16 @@ export default {
     if (event.cron === '0 * * * *') {
       // Email provider health. Placed before heal-ai on purpose: it must not wait
       // behind, or be skipped by, anything else in this branch.
-      ctx.waitUntil(runJob(env, 'email-health', () => runEmailHealth(env, db)))
+      ctx.waitUntil(runJob(env, 'email-health', async () => {
+        try {
+          await runEmailHealth(env, db, new Date(event.scheduledTime))
+        } catch (err) {
+          // Same reasoning as heal-ai below: a transient D1 read failure (or a
+          // tenant running before migration 0073) must not email ALERT_EMAILS
+          // "cron failed: email-health". Log the cause chain and try next hour.
+          console.error(`[email-health] check failed, skipping this run: ${describeErrorCauseChain(err)}`)
+        }
+      }))
       ctx.waitUntil(runJob(env, 'heal-ai', async () => {
         let result
         try {
