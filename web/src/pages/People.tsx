@@ -9,7 +9,28 @@ interface PersonRef { name: string; url: string | null }
 interface Staff { name: string; title: string | null; email: string | null; phone: string | null; url: string | null }
 interface Committee { slug: string; name: string; url: string; chair: PersonRef | null; members: PersonRef[]; staff: Staff[]; agencies: string[] }
 interface DirectoryEntry { kind: string; name: string; title: string | null; office: string | null; email: string | null; phone: string | null }
-interface Directory { committees: Committee[]; people: DirectoryEntry[]; updatedAt: string | null }
+interface Councilmember { name: string; role: string | null; termStart: string | null; termEnd: string | null; current: boolean }
+interface CouncilChange { kind: string; committee: string | null; person: string | null; detail: string | null; detectedAt: string }
+interface Directory { committees: Committee[]; people: DirectoryEntry[]; updatedAt: string | null; councilmembers?: Councilmember[]; changes?: CouncilChange[] }
+
+/** One Council change as a sentence. */
+export function describeChange(c: CouncilChange): string {
+  const who = c.person ?? 'Someone'
+  const where = c.committee ?? 'a committee'
+  switch (c.kind) {
+    case 'member_joined': return `${who} joined the Council.${c.detail ? ` ${c.detail}` : ''}`
+    case 'member_left': return `${who} left the Council.${c.detail ? ` ${c.detail}` : ''}`
+    case 'chair_changed': return `${who} now chairs the ${where}.${c.detail ? ` ${c.detail}` : ''}`
+    case 'member_added': return `${who} joined the ${where}.`
+    case 'member_removed': return `${who} left the ${where}.`
+    case 'staff_added': return `${who}${c.detail ? `, ${c.detail},` : ''} joined the ${where} staff.`
+    case 'staff_removed': return `${who}${c.detail ? `, ${c.detail},` : ''} left the ${where} staff.`
+    case 'staff_title': return `${who} (${where}): ${c.detail ?? 'new title'}`
+    case 'committee_added': return `New committee: ${where}.`
+    case 'committee_removed': return `${where} is no longer a Council committee.`
+    default: return `${who}${c.committee ? ` (${c.committee})` : ''}: ${c.detail ?? c.kind}`
+  }
+}
 
 /** Scraped values reach an href only when they look like what they claim to be. */
 export const plainEmail = (e: string | null) => e && /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(e) ? e : null
@@ -68,6 +89,32 @@ export function People() {
       {!data && !error && <div style={{ color: color.textMuted, fontSize: fontSize.sm }}>Loading…</div>}
       {data && (
         <>
+          {(data.changes ?? []).length > 0 && !needle && (
+            <section aria-label="Recent Council changes" style={{ ...CARD, padding: 14, marginBottom: 24, fontSize: fontSize.sm }}>
+              <h2 style={{ ...SECTION_LABEL, display: 'block', marginBottom: 8 }}>Recent Council changes</h2>
+              <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.6 }}>
+                {(data.changes ?? []).slice(0, 15).map((c, i) => (
+                  <li key={i}><span style={{ color: color.textMuted }}>{c.detectedAt.slice(0, 10)}</span> {describeChange(c)}</li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {(data.councilmembers ?? []).length > 0 && !needle && (
+            <>
+              <h2 style={{ ...SECTION_LABEL, display: 'block', marginBottom: 10 }}>Councilmembers</h2>
+              <div style={{ ...CARD, padding: 14, marginBottom: 24, fontSize: fontSize.sm, lineHeight: 1.6 }}>
+                <div>{(data.councilmembers ?? []).filter(m => m.current).map(m => `${m.name}${m.role && /chair/i.test(m.role) ? ` (${m.role})` : ''}`).join(', ')}</div>
+                {(data.councilmembers ?? []).some(m => !m.current) && (
+                  <div style={{ marginTop: 6, color: color.textSecondary }}>
+                    <span style={{ color: color.textMuted }}>Not currently serving this Council Period: </span>
+                    {(data.councilmembers ?? []).filter(m => !m.current).map(m => `${m.name} (${m.termStart ?? '?'} to ${m.termEnd ?? '?'})`).join('; ')}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
           <h2 style={{ ...SECTION_LABEL, display: 'block', marginBottom: 10 }}>Committees ({committees.length})</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12, marginBottom: 28 }}>
             {committees.map(c => (

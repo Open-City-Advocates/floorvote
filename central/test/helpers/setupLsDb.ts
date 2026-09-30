@@ -23,6 +23,7 @@ import migration0019 from '../../migrations-legiscan/0019_tenant_stats_ai_stalle
 import migration0020 from '../../migrations-legiscan/0020_lims_records.sql?raw'
 import migration0021 from '../../migrations-legiscan/0021_council_events.sql?raw'
 import migration0022 from '../../migrations-legiscan/0022_council_directory.sql?raw'
+import migration0023 from '../../migrations-legiscan/0023_council_history.sql?raw'
 
 function parseMigration(sql: string, name: string) {
   const queries = sql
@@ -57,5 +58,6 @@ export async function setupLsDb(): Promise<void> {
     parseMigration(migration0020, '0020_lims_records'),
     parseMigration(migration0021, '0021_council_events'),
     parseMigration(migration0022, '0022_council_directory'),
+    parseMigration(migration0023, '0023_council_history'),
   ])
 }

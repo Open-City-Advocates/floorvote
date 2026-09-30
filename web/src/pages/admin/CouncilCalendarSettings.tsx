@@ -11,7 +11,7 @@ import {
   COUNCIL_CALENDAR_PRESETS, COUNCIL_HEARING_TYPE_HINTS, type CouncilCalendarRulesShape,
 } from '../../../../shared/councilCalendarPresets'
 
-type Loaded = { rules: CouncilCalendarRulesShape | null; committees: string[]; types: string[] }
+type Loaded = { rules: CouncilCalendarRulesShape | null; committees: string[]; types: string[]; staleCommittees?: string[] }
 type PreviewEvent = { date: string; time: string | null; title: string; url: string }
 
 const COMMITTEE_LABELS: Record<string, string> = {
@@ -162,6 +162,11 @@ export function CouncilCalendarSettings({ demoLocked }: { demoLocked: boolean })
             {preset && <span style={{ ...hint, marginTop: 0, flexBasis: '100%' }}>{COUNCIL_CALENDAR_PRESETS.find(p => p.id === preset)?.description} Replaces the choices below until you save.</span>}
           </div>
 
+          {(loaded.staleCommittees ?? []).length > 0 && (
+            <div role="alert" style={{ background: color.bgAmberPriority, border: `1px solid ${color.borderYellow}`, borderRadius: radius.md, padding: '10px 14px', fontSize: fontSize.sm, color: color.textAmberWarning, marginBottom: 16 }}>
+              {(loaded.staleCommittees ?? []).length === 1 ? 'A committee in these rules is' : 'Some committees in these rules are'} no longer on the Council's committee list: {(loaded.staleCommittees ?? []).join(', ')}. The Council may have renamed or reorganized {(loaded.staleCommittees ?? []).length === 1 ? 'it' : 'them'}. Choose the committee that now covers this work, then save.
+            </div>
+          )}
           <fieldset style={{ border: 'none', padding: 0, margin: '0 0 20px' }}>
             <legend style={label}>Committees: every event they hold</legend>
             <div style={grid}>
@@ -170,7 +175,10 @@ export function CouncilCalendarSettings({ demoLocked }: { demoLocked: boolean })
                 return (
                   <div key={name} style={checkRow}>
                     <input type="checkbox" id={`cc-${name}`} checked={on} onChange={e => toggleCommittee(name, e.target.checked)} disabled={demoLocked} />
-                    <label htmlFor={`cc-${name}`} style={{ flex: 1 }}>{COMMITTEE_LABELS[name] ?? name}</label>
+                    <label htmlFor={`cc-${name}`} style={{ flex: 1 }}>
+                      {COMMITTEE_LABELS[name] ?? name}
+                      {(loaded.staleCommittees ?? []).includes(name) && <span style={{ marginLeft: 6, fontSize: fontSize.xs, color: color.textAmberWarning }}>(no longer a committee)</span>}
+                    </label>
                     {on && (
                       <select aria-label={`Which ${name} events`} value={form.committees.get(name) ?? ''} style={select} disabled={demoLocked}
                         onChange={e => { const committees = new Map(form.committees); committees.set(name, e.target.value); edit({ committees }) }}>

@@ -12,6 +12,7 @@ import migration0006 from '../../migrations-legiscan/0006_texts_fetched_at.sql?r
 import migration0013 from '../../migrations-legiscan/0013_tenants_queue_id.sql?raw'
 import migration0016 from '../../migrations-legiscan/0016_bill_texts_fetch_error.sql?raw'
 import migration0017 from '../../migrations-legiscan/0017_tenant_ai_personalized.sql?raw'
+import migration0023 from '../../migrations-legiscan/0023_council_history.sql?raw'
 
 // Mock the LegiScan API surface. The processor calls getBill at the top of
 // processLsBill. We don't want real network calls.
@@ -53,6 +54,7 @@ beforeEach(async () => {
     parseMigration(migration0013, '0013_tenants_queue_id'),
     parseMigration(migration0016, '0016_bill_texts_fetch_error'),
     parseMigration(migration0017, '0017_tenant_ai_personalized'),
+    parseMigration(migration0023, '0023_council_history'),
   ])
   fetchMock.mockReset()
   // Default: text downloads succeed with empty html so r2_key gets stamped.

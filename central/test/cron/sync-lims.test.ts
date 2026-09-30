@@ -547,3 +547,25 @@ describe('Council hearing calendar', () => {
     expect(hearings.getHearingsCalendar).toHaveBeenCalledTimes(5)
   })
 })
+
+describe('Councilmember terms', () => {
+  it('stores LIMS term dates, and reports a seat change after the first refresh', async () => {
+    const db = drizzle(env.DB, { schema })
+    const members = JSON.parse(membersRaw) as { id: number; name: string; endDate: string; startDate: string }[]
+    vi.mocked(lims.getMembers).mockResolvedValue(members as any)
+    await refreshCouncilPeriod('lims-key', db, '2026-09-30')
+    const mcduffie = await db.select().from(schema.people).where(eq(schema.people.name, 'Kenyan R. McDuffie')).get()
+    expect(mcduffie).toMatchObject({ termStart: '2023-01-02', termEnd: '2026-01-05' })
+    expect(await db.select().from(schema.councilChanges).all()).toEqual([])
+
+    // Next refresh: Parker's term cut short, and a new member sworn in.
+    const next = members.map(m => m.name === 'Zachary Parker' ? { ...m, endDate: '2026-09-15T00:00:00' } : m)
+    next.push({ ...members[0], id: 204, name: 'New Member', startDate: '2026-09-20T00:00:00', endDate: '2027-01-01T00:00:00' })
+    vi.mocked(lims.getMembers).mockResolvedValue(next as any)
+    await refreshCouncilPeriod('lims-key', db, '2026-09-30')
+    const changes = await db.select().from(schema.councilChanges).all()
+    expect(changes.map(c => [c.kind, c.person])).toEqual([['member_left', 'Zachary Parker'], ['member_joined', 'New Member']])
+    vi.mocked(lims.getMembers).mockResolvedValue(JSON.parse(membersRaw))
+  })
+})
+

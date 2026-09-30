@@ -35,6 +35,9 @@ export const people = sqliteTable('people', {
   suffix:        text('suffix'),
   nickname:      text('nickname'),
   district:      text('district'),
+  // LIMS term dates (migration 0023). A member whose termEnd has passed is former.
+  termStart:     text('term_start'),
+  termEnd:       text('term_end'),
   ftmEid:        integer('ftm_eid'),
   votesmartId:   integer('votesmart_id'),
   opensecretsId: text('opensecrets_id'),
@@ -408,5 +411,26 @@ export const councilDirectory = sqliteTable('council_directory', {
   email:     text('email'),
   phone:     text('phone'),
   updatedAt: text('updated_at').notNull().default(sql`(datetime('now'))`),
+})
+
+/** Each version of a committee's roster (migration 0023). The open row has validTo null. */
+export const councilCommitteeHistory = sqliteTable('council_committee_history', {
+  slug:        text('slug').notNull(),
+  validFrom:   text('valid_from').notNull(),
+  validTo:     text('valid_to'),
+  name:        text('name').notNull(),
+  chair:       text('chair'),
+  membersJson: text('members_json').notNull().default('[]'),
+  staffJson:   text('staff_json').notNull().default('[]'),
+}, (t) => [primaryKey({ columns: [t.slug, t.validFrom] })])
+
+/** Council changes, newest last: seats, chairs, memberships, key staff, committees. */
+export const councilChanges = sqliteTable('council_changes', {
+  id:         integer('id').primaryKey({ autoIncrement: true }),
+  detectedAt: text('detected_at').notNull().default(sql`(datetime('now'))`),
+  kind:       text('kind').notNull(),
+  committee:  text('committee'),
+  person:     text('person'),
+  detail:     text('detail'),
 })
 
