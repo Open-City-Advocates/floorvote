@@ -226,7 +226,7 @@ const styles = {
     justifyContent: 'center',
     background: color.bgLoginPage,
     fontFamily: 'system-ui, sans-serif',
-    padding: '0 16px',
+    padding: '24px 16px',
     boxSizing: 'border-box' as const,
   } as React.CSSProperties,
   card: {

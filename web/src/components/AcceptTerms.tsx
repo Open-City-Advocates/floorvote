@@ -142,7 +142,7 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     background: color.bgLoginPage,
-    padding: '0 16px',
+    padding: '24px 16px',
     boxSizing: 'border-box' as const,
   } as React.CSSProperties,
   card: {

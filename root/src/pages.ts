@@ -28,7 +28,7 @@ function layout(title: string, body: string): string {
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(logoMarkSvg(color.accentAmber))}">
 <style>
   * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; padding: 0 16px; display: flex; flex-direction: column;
+  body { margin: 0; min-height: 100vh; padding: 24px 16px; display: flex; flex-direction: column;
     align-items: center; justify-content: center; background: ${color.bgLoginPage};
     color: ${color.textPrimary}; font-family: system-ui, sans-serif; font-size: ${fontSize.base}px; line-height: 1.5; }
   main { width: 100%; max-width: 420px; background: ${color.white}; border: 1px solid ${color.borderDefault};
