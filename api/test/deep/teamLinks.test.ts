@@ -17,6 +17,10 @@ const DIRECTORY = {
     staff: [{ name: 'Allison Bailey', title: 'Legislative Assistant', email: 'abailey@dccouncil.gov', phone: '(202) 727-7774', url: null }],
     agencies: ['Department of Youth Rehabilitation Services'] }],
   people: [], updatedAt: '2026-09-30 09:00:00',
+  councilmembers: [
+    { name: 'Zachary Parker', role: 'Councilmember', termStart: '2023-01-02', termEnd: '2027-01-01', current: true },
+    { name: 'Kenyan R. McDuffie', role: 'Councilmember', termStart: '2023-01-02', termEnd: '2026-01-05', current: false },
+  ],
 }
 const RICH = {
   byId: {
@@ -83,6 +87,10 @@ describe('team documents', () => {
     expect(input.teamDocuments).toEqual([{ title: 'Joint comment letter', url: 'https://docs.google.com/d/1' }])
     expect(input.committees[0]).toMatchObject({ name: 'Committee on Youth Affairs', chair: 'Ward 5 Councilmember Zachary Parker', staff: ['Allison Bailey, Legislative Assistant'] })
     expect(JSON.stringify(input.committees)).not.toContain('abailey@')
+    expect(input.councilmembers).toEqual([
+      { name: 'Zachary Parker', role: 'Councilmember', termStart: '2023-01-02', termEnd: '2027-01-01', status: 'current' },
+      { name: 'Kenyan R. McDuffie', role: 'Councilmember', termStart: '2023-01-02', termEnd: '2026-01-05', status: 'former' },
+    ])
     expect(input.bill.votes[0].memberVotes).toEqual([{ name: 'Zachary Parker', vote: 'Yes' }, { name: 'Brooke Pinto', vote: 'No' }])
     expect(input.votingRecord.map((b: any) => b.number)).toEqual(['B25-0345'])
     expect(input.votingRecord[0].votes[0].memberVotes).toEqual([{ name: 'Zachary Parker', vote: 'No' }])

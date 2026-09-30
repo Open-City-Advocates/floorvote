@@ -344,19 +344,30 @@ async function votingRecord(env: Env, db: AppDb, excludeId?: string) {
   }))
 }
 
-/** The Council's committees: chair, members, key staff (names and titles; contacts are shown to the team directly). */
-async function committeeRoster(env: Env) {
+/**
+ * The Council today: its committees (chair, members, key staff by name and
+ * title, since contacts are shown to the team directly) and this Council
+ * Period's members with their terms, marked current or former. A voting
+ * record can name someone who has since left, and the brief must say so.
+ */
+async function councilRoster(env: Env): Promise<{ committees: unknown[]; councilmembers: unknown[] }> {
   try {
     const res = await centralFetch(env, '/bills/council-directory')
-    if (!res.ok) return []
-    const d = await res.json() as { committees: { name: string; chair: { name: string } | null; members: { name: string }[]; staff: { name: string; title: string | null }[]; agencies: string[] }[] }
-    return d.committees.map(c => ({
-      name: c.name, chair: c.chair?.name ?? null, members: c.members.map(m => m.name),
-      staff: c.staff.map(s => s.title ? `${s.name}, ${s.title}` : s.name), agencies: c.agencies,
-    }))
+    if (!res.ok) return { committees: [], councilmembers: [] }
+    const d = await res.json() as {
+      committees: { name: string; chair: { name: string } | null; members: { name: string }[]; staff: { name: string; title: string | null }[]; agencies: string[] }[]
+      councilmembers?: { name: string; role: string | null; termStart: string | null; termEnd: string | null; current: boolean }[]
+    }
+    return {
+      committees: d.committees.map(c => ({
+        name: c.name, chair: c.chair?.name ?? null, members: c.members.map(m => m.name),
+        staff: c.staff.map(s => s.title ? `${s.name}, ${s.title}` : s.name), agencies: c.agencies,
+      })),
+      councilmembers: (d.councilmembers ?? []).map(m => ({ name: m.name, role: m.role, termStart: m.termStart, termEnd: m.termEnd, status: m.current ? 'current' : 'former' })),
+    }
   } catch (err) {
-    console.error('[deep] committee roster lookup failed', err)
-    return []
+    console.error('[deep] council roster lookup failed', err)
+    return { committees: [], councilmembers: [] }
   }
 }
 
@@ -373,7 +384,7 @@ async function teamDocuments(db: AppDb, kind: 'bill' | 'event', id: string) {
  */
 export async function buildDeepInput(env: Env, db: AppDb, row: { id: string; kind: DeepKind; subjectId: string; inputHash: string }) {
   const context = await teamContext(db)
-  const [committees, record] = await Promise.all([committeeRoster(env), votingRecord(env, db, row.kind === 'bill' ? row.subjectId : undefined)])
+  const [{ committees, councilmembers }, record] = await Promise.all([councilRoster(env), votingRecord(env, db, row.kind === 'bill' ? row.subjectId : undefined)])
   if (row.kind === 'bill') {
     const b = await db.select().from(bills).where(eq(bills.id, row.subjectId)).get()
     if (!b || b.isDraft) return null
@@ -391,6 +402,7 @@ export async function buildDeepInput(env: Env, db: AppDb, row: { id: string; kin
       text: b.externalId ? { available: true, path: `/api/deep/worker/requests/${row.id}/text` } : { available: false },
       teamDocuments: await teamDocuments(db, 'bill', b.id),
       committees,
+      councilmembers,
       votingRecord: record,
     }
   }
@@ -416,6 +428,7 @@ export async function buildDeepInput(env: Env, db: AppDb, row: { id: string; kin
     })),
     teamDocuments: await teamDocuments(db, 'event', e.id),
     committees,
+    councilmembers,
     votingRecord: record,
   }
 }

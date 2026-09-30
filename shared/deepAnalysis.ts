@@ -7,7 +7,7 @@
  * renders the same types. Bump DEEP_PROMPT_VERSION when the instructions or the
  * shape change in a way that should redo existing analyses.
  */
-export const DEEP_PROMPT_VERSION = 2
+export const DEEP_PROMPT_VERSION = 3
 
 export interface BillDeepAnalysis {
   /** Two to four sentences: what the bill does and why it matters to the team. */
@@ -119,7 +119,8 @@ const SHARED_RULES = `Rules:
 - Never include information about any individual client or person beyond public officials acting in their roles.
 - If the text is missing, partial, or unreadable, say so in caveats and keep to what you can support.
 - Use the other inputs:
-  - "committees": each Council committee's chair, members, and key staff, as the Council lists them.
+  - "committees": each Council committee's chair, members, and key staff, as the Council lists them today.
+  - "councilmembers": this Council Period's members with their terms, each "current" or "former". Membership changes during a period (resignations, expulsions, appointments, special elections). When a vote or a position comes from a former member, say so and give the dates, and never describe a former member as sitting on a committee or voting now.
   - "votingRecord": each member's recorded votes on the team's related tracked bills.
   - "votes": recorded votes on this item itself.
   - "teamDocuments": the team's own letters, testimony, and redlines. Read them first, and say what the team has already asked for, what has or has not changed since, and which points to press now.
