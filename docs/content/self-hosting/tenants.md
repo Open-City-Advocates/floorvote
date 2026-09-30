@@ -142,7 +142,7 @@ GEMINI_THINKING_BUDGET = "0"
 
 EMAIL_PROVIDER = "cloudflare"
 
-# who gets cron-failure alerts
+# who gets cron-failure and email outage alerts
 ALERT_EMAILS = "ops@example.org"
 
 # the domain this team is served on
@@ -263,7 +263,7 @@ npx wrangler secret put CF_AIG_TOKEN --env [slug]
 > [!TIP]
 > **Optional fallbacks.** `GEMINI_API_KEY` is only read if you flip `AI_GATEWAY_ENABLED` to `"false"`. You don't set `LEGISCAN_API_KEY` on a tenant — only central calls LegiScan.
 >
-> **`RESEND_API_KEY` is worth setting even on Cloudflare Email Service.** With it, login and invite links that Cloudflare fails to send are retried through Resend, and the hourly email-health check can alert `ALERT_EMAILS` through Resend when Cloudflare sending breaks. Without it, that alert goes through the provider that is failing. Your `EMAIL_FROM` domain must be verified on Resend for either to work. Digests and week-ahead mail never fall back.
+> **`RESEND_API_KEY` is worth setting even on Cloudflare Email Service**, and is required if you set `EMAIL_PROVIDER="resend"`. With both providers configured, login and invite links that the primary fails to send are retried through the other one: Resend when the primary is Cloudflare and `RESEND_API_KEY` is set, Cloudflare when the primary is Resend and the `EMAIL` binding exists. The hourly email-health check alerts `ALERT_EMAILS` through the other provider first, then the primary. With only one provider configured, there is no fallback, and the alert goes through the same provider that is failing. `EMAIL_FROM` must be verified on both providers for fallback to work. Digests and week-ahead mail never fall back.
 
 ## Step 7: Bind the tenant on central
 
