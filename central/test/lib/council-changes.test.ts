@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { diffCommittees, diffTerms, directoryKey, isCurrentMember, linkCommittees, reconcileSeated, rosterSignature, seatNote } from '../../src/lib/council-changes'
+import { diffCommittees, diffTerms, directoryKey, isCurrentMember, linkCommittees, periodMembers, reconcileSeated, rosterSignature, seatNote } from '../../src/lib/council-changes'
 
 const members = [
   { peopleId: 1000000194, name: 'Zachary Parker', role: 'Councilmember' },
@@ -115,5 +115,20 @@ describe('seated status from the Council\'s page', () => {
 
   it('keeps the stored status when the page links too few names', () => {
     expect(reconcileSeated(listed.slice(0, 9), period(1), today)).toBeNull()
+  })
+})
+
+describe('periodMembers', () => {
+  it('drops the previous period\'s terms and keeps each person\'s latest record', () => {
+    const all = [
+      { name: 'Trayon White, Sr.', termStart: '2021-01-02', termEnd: '2025-01-01' },
+      { name: 'Trayon White, Sr.', termStart: '2025-01-02', termEnd: '2025-02-04' },
+      { name: 'Vincent C. Gray', termStart: '2021-01-02', termEnd: '2025-01-01' },
+      { name: 'Robert C. White, Jr.', termStart: '2025-01-02', termEnd: '2029-01-02' },
+      // A later period's record for the same person, whose old term ends on the new one's first day.
+      { name: 'Robert C. White, Jr.', termStart: '2029-01-02', termEnd: '2033-01-02' },
+    ]
+    expect(periodMembers(all, 2025).map(m => `${m.name} ${m.termStart}`)).toEqual(['Trayon White, Sr. 2025-01-02', 'Robert C. White, Jr. 2029-01-02'])
+    expect(periodMembers(all, null)).toHaveLength(3)
   })
 })

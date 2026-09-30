@@ -129,10 +129,15 @@ describe('sitting Councilmembers', () => {
   async function seed() {
     const db = drizzle(env.DB, { schema })
     await db.insert(schema.sessions).values({ sessionId: 1_000_000_026, state: 'DC', stateId: 9, yearStart: 2025, yearEnd: 2026, sessionName: '2025-2026 Council Period 26', sessionTitle: 'CP26', prior: 0 } as any)
-    await db.insert(schema.people).values([
+    // Two inserts: D1 binds at most 100 variables per statement.
+    const rows = [
       ...CP26.map(([name, termEnd], i) => ({ peopleId: 1_000_000_190 + i, name, stateId: 9, role: 'Councilmember', termStart: name === 'Elissa Silverman' ? '2026-07-15' : '2025-01-02', termEnd })),
       { peopleId: 1_000_000_187, name: 'Trayon White, Sr.', stateId: 9, role: 'Councilmember', termStart: '2021-01-02', termEnd: '2025-01-01' },
-    ] as any)
+      { peopleId: 1_000_000_186, name: 'Robert C. White, Jr.', stateId: 9, role: 'Councilmember', termStart: '2021-01-02', termEnd: '2025-01-01' },
+      { peopleId: 1_000_000_185, name: 'Vincent C. Gray', stateId: 9, role: 'Councilmember', termStart: '2021-01-02', termEnd: '2025-01-01' },
+    ]
+    await db.insert(schema.people).values(rows.slice(0, 10) as any)
+    await db.insert(schema.people).values(rows.slice(10) as any)
     return db
   }
 
@@ -151,6 +156,8 @@ describe('sitting Councilmembers', () => {
     expect(t).toMatchObject({ current: true, note: 'Listed as serving on dccouncil.gov. LIMS shows the term ending 2025-02-04.' })
     expect(body.councilmembers.find((m: any) => m.name === 'Kenyan R. McDuffie')).toMatchObject({ current: false, note: null })
     expect(body.councilmembers.filter((m: any) => m.current)).toHaveLength(13)
+    // The CP25 records (terms ending 2025-01-01) are the previous period's, not former members of this one.
+    expect(body.councilmembers.filter((m: any) => !m.current).map((m: any) => m.name)).toEqual(['Kenyan R. McDuffie'])
   }, 60_000)
 
   it('keeps the stored status when the Councilmembers page fails or looks wrong', async () => {
