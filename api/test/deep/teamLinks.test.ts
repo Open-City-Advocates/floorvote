@@ -20,6 +20,7 @@ const DIRECTORY = {
   councilmembers: [
     { name: 'Zachary Parker', role: 'Councilmember', termStart: '2023-01-02', termEnd: '2027-01-01', current: true },
     { name: 'Kenyan R. McDuffie', role: 'Councilmember', termStart: '2023-01-02', termEnd: '2026-01-05', current: false },
+    { name: 'Trayon White, Sr.', role: 'Councilmember', termStart: '2025-01-02', termEnd: '2025-02-04', current: true, note: 'Listed as serving on dccouncil.gov. LIMS shows the term ending 2025-02-04.' },
   ],
 }
 const RICH = {
@@ -90,6 +91,7 @@ describe('team documents', () => {
     expect(input.councilmembers).toEqual([
       { name: 'Zachary Parker', role: 'Councilmember', termStart: '2023-01-02', termEnd: '2027-01-01', status: 'current' },
       { name: 'Kenyan R. McDuffie', role: 'Councilmember', termStart: '2023-01-02', termEnd: '2026-01-05', status: 'former' },
+      { name: 'Trayon White, Sr.', role: 'Councilmember', termStart: '2025-01-02', termEnd: '2025-02-04', status: 'current', note: 'Listed as serving on dccouncil.gov. LIMS shows the term ending 2025-02-04.' },
     ])
     expect(input.bill.votes[0].memberVotes).toEqual([{ name: 'Zachary Parker', vote: 'Yes' }, { name: 'Brooke Pinto', vote: 'No' }])
     expect(input.votingRecord.map((b: any) => b.number)).toEqual(['B25-0345'])
