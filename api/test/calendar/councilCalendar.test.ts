@@ -187,6 +187,16 @@ describe('council calendar settings', () => {
     expect(await getDb(env.DB).select().from(associationConfig).where(eq(associationConfig.key, COUNCIL_RULES_KEY)).get()).toBeUndefined()
   })
 
+  it('flags a saved committee the Council no longer has', async () => {
+    vi.mocked(centralFetch).mockImplementation(async (_env: unknown, path: string) => path.startsWith('/bills/council-directory')
+      ? new Response(JSON.stringify({ committees: [{ name: 'Committee on Youth Affairs' }, { name: 'Committee of the Whole' }, { name: 'Committee on Health' }] }), { status: 200 })
+      : new Response(JSON.stringify(EVENTS), { status: 200 }))
+    await setRules({ include: [{ committee: 'Youth Affairs' }, { committee: 'Legislative Meeting' }, { committee: 'Recreation and Libraries' }] })
+    const got = await (await call('GET', '')).json() as any
+    expect(got.staleCommittees).toEqual(['Recreation and Libraries'])
+    expect(got.committees).toContain('Recreation and Libraries')
+  })
+
   it('is admin-only', async () => {
     expect((await call('PUT', '', { rules: {} }, cookie)).status).toBe(403)
   })

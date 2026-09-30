@@ -1,11 +1,12 @@
 import { eq, and, or, inArray, notInArray, gte, lt, isNull, isNotNull, asc, sql } from 'drizzle-orm'
 import { getBulkData, getCouncilPeriods, getMembers, type LimsBulkRecord, type LimsCouncilPeriod } from '../lib/lims'
-import { bulkHash, clean, councilPeriodName, DC_STATE_ID, effectiveChangeHash, LIMS_STATE, limsStatusCode, sha256Hex, toMasterListEntry } from '../lib/lims-map'
+import { bulkHash, clean, councilPeriodName, DC_STATE_ID, effectiveChangeHash, LIMS_STATE, limsDate, limsStatusCode, sha256Hex, toMasterListEntry } from '../lib/lims-map'
 import { getHearingsCalendar } from '../lib/lims-hearings'
-import { limsBillId, limsPeopleId, limsSessionId, LIMS_BILL_ID_BASE, LIMS_SESSION_ID_BASE } from '../lib/lims-ids'
+import { limsBillId, limsPeopleId, limsSessionId, LIMS_BILL_ID_BASE, LIMS_PEOPLE_ID_BASE, LIMS_SESSION_ID_BASE } from '../lib/lims-ids'
 import { limsCategories, limsStates } from '../lib/lims-config'
 import { decideMode, getCurrentEtHour } from '../lib/sync-schedule'
-import { sessions, bills, billTenants, tenants, people, limsRecords, councilEvents, councilCommittees, councilDirectory } from '../db/schema-legiscan'
+import { sessions, bills, billTenants, tenants, people, limsRecords, councilEvents, councilCommittees, councilDirectory, councilCommitteeHistory, councilChanges } from '../db/schema-legiscan'
+import { diffCommittees, diffTerms, isCurrentMember, linkCommittees, rosterSignature, type MemberTerm } from '../lib/council-changes'
 import { fetchCommittees, fetchDirectory } from '../lib/dccouncil-directory'
 import type { BatchItem } from 'drizzle-orm/batch'
 import { trackLimsCall } from '../lib/lims-ingest'
@@ -194,12 +195,23 @@ export async function refreshCouncilPeriod(apiKey: string, db: LsDb, today: stri
 
   const members = await getMembers(cp.councilPeriodId, apiKey,
     () => trackLimsCall(db, 'Members', { councilPeriodId: cp.councilPeriodId }))
+  // Terms as stored before this refresh. No terms yet means this is the first
+  // run with term dates: a baseline, not a Council of newcomers.
+  const stored = await db.select({ peopleId: people.peopleId, name: people.name, termStart: people.termStart, termEnd: people.termEnd })
+    .from(people).where(and(gte(people.peopleId, LIMS_PEOPLE_ID_BASE), lt(people.peopleId, LIMS_PEOPLE_ID_BASE * 2))).all()
+  const baseline = stored.some(p => p.termEnd !== null) ? new Map(stored.map(p => [p.peopleId, p])) : null
+  const terms: MemberTerm[] = []
   for (const m of members) {
+    const termStart = limsDate(m.startDate)
+    const termEnd = limsDate(m.endDate)
+    terms.push({ peopleId: limsPeopleId(m.id), name: clean(m.name), termStart, termEnd })
     const values = {
       peopleId: limsPeopleId(m.id),
       stateId: DC_STATE_ID,
       role: clean(m.title) || 'Councilmember',
       name: clean(m.name),
+      termStart,
+      termEnd,
       firstName: clean(m.firstName) || null,
       middleName: clean(m.middleName) || null,
       lastName: clean(m.lastName) || null,
@@ -210,6 +222,8 @@ export async function refreshCouncilPeriod(apiKey: string, db: LsDb, today: stri
     const { peopleId: _id, ...update } = values
     await db.insert(people).values(values).onConflictDoUpdate({ target: people.peopleId, set: update })
   }
+  const changes = diffTerms(baseline, terms, today)
+  if (changes.length > 0) await db.insert(councilChanges).values(changes)
 }
 
 async function runLimsPass(
@@ -491,9 +505,30 @@ export async function syncCouncilDirectory(db: LsDb): Promise<{ committees: numb
   let committeeCount = 0
   let committeeError: unknown = null
   try {
-    const { committees, currentSlugs } = await fetchCommittees()
-    committeeCount = committees.length
-    if (currentSlugs.length >= 5 && committees.length >= 5) {
+    const { committees: fetched, currentSlugs } = await fetchCommittees()
+    committeeCount = fetched.length
+    if (currentSlugs.length >= 5 && fetched.length >= 5) {
+      const today = now.slice(0, 10)
+      // Link rosters to the Council as it stands today, so a roster, a vote,
+      // and a term refer to the same person.
+      const sitting = (await db.select({ peopleId: people.peopleId, name: people.name, role: people.role, termStart: people.termStart, termEnd: people.termEnd })
+        .from(people).where(and(gte(people.peopleId, LIMS_PEOPLE_ID_BASE), lt(people.peopleId, LIMS_PEOPLE_ID_BASE * 2))).all())
+        .filter(p => isCurrentMember(p, today))
+        .map(p => ({ peopleId: p.peopleId, name: p.name, role: p.role ?? 'Councilmember' }))
+      const committees = linkCommittees(fetched, sitting)
+
+      const parse = <T>(v: string | null, fallback: T): T => { if (!v) return fallback; try { return JSON.parse(v) as T } catch { return fallback } }
+      const storedRows = await db.select().from(councilCommittees).all()
+      const before = new Map(storedRows.map(r => [r.slug, {
+        name: r.name, chair: parse<{ name: string } | null>(r.chairJson, null),
+        members: parse<{ name: string }[]>(r.membersJson, []), staff: parse<{ name: string; title: string | null }[]>(r.staffJson, []),
+      }]))
+      const after = new Map(committees.map(c => [c.slug, c]))
+      const removedSlugs = storedRows.map(r => r.slug).filter(slug => !currentSlugs.includes(slug))
+      // The first directory sync sets a baseline: no stored rows, no "changes".
+      const changes = storedRows.length > 0 ? diffCommittees(before, after, removedSlugs) : []
+
+      const openRows = new Map((await db.select().from(councilCommitteeHistory).where(isNull(councilCommitteeHistory.validTo)).all()).map(r => [r.slug, r]))
       const writes: BatchItem<'sqlite'>[] = [db.delete(councilCommittees).where(notInArray(councilCommittees.slug, currentSlugs))]
       for (const c of committees) {
         const values = {
@@ -504,16 +539,31 @@ export async function syncCouncilDirectory(db: LsDb): Promise<{ committees: numb
         }
         const { slug: _s, ...update } = values
         writes.push(db.insert(councilCommittees).values(values).onConflictDoUpdate({ target: councilCommittees.slug, set: update }))
+        const open = openRows.get(c.slug)
+        const openRoster = open && { name: open.name, chair: open.chair ? { name: open.chair } : null, members: parse<{ name: string }[]>(open.membersJson, []), staff: parse<{ name: string; title: string | null }[]>(open.staffJson, []) }
+        if (!openRoster || rosterSignature(openRoster) !== rosterSignature(c)) {
+          if (open) writes.push(db.update(councilCommitteeHistory).set({ validTo: now }).where(and(eq(councilCommitteeHistory.slug, c.slug), eq(councilCommitteeHistory.validFrom, open.validFrom))))
+          writes.push(db.insert(councilCommitteeHistory).values({
+            slug: c.slug, validFrom: now, name: c.name, chair: c.chair?.name ?? null,
+            membersJson: JSON.stringify(c.members.map(m => ({ name: m.name, peopleId: m.peopleId }))),
+            staffJson: JSON.stringify(c.staff.map(st => ({ name: st.name, title: st.title }))),
+          }).onConflictDoNothing())
+        }
       }
+      for (const slug of removedSlugs) {
+        const open = openRows.get(slug)
+        if (open) writes.push(db.update(councilCommitteeHistory).set({ validTo: now }).where(and(eq(councilCommitteeHistory.slug, slug), eq(councilCommitteeHistory.validFrom, open.validFrom))))
+      }
+      if (changes.length > 0) writes.push(db.insert(councilChanges).values(changes.map(ch => ({ ...ch, detectedAt: now }))))
       await db.batch(writes as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]])
     }
   } catch (err) {
     committeeError = err
   }
 
-  const people = await fetchDirectory()
+  const directoryEntries = await fetchDirectory()
   const rows = new Map<string, typeof councilDirectory.$inferInsert>()
-  for (const p of people) {
+  for (const p of directoryEntries) {
     // Staff can share an office mailbox, so the name is part of the key.
     const entryKey = `${p.email ?? ''}|${p.name}|${p.office ?? ''}`.toLowerCase()
     rows.set(entryKey, { entryKey, kind: p.kind, name: p.name, title: p.title, office: p.office, email: p.email, phone: p.phone, updatedAt: now })
