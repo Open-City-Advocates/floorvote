@@ -37,7 +37,9 @@ export async function runEmailHealth(env: Env, db: AppDb, now: Date = new Date()
     rescued = alt.reduce((n, r) => n + r.sent, 0)
   }
 
-  const alerted = await sendHealthAlert(env, db, { decision, primary, alternate, rows, rescued, failingSince })
+  // A remind whose trip alert never got through reads as a first alert, not "still failing".
+  const wording = decision === 'remind' && !state.lastAlertedAt ? 'trip' : decision
+  const alerted = await sendHealthAlert(env, { decision: wording, primary, alternate, rows, rescued, failingSince })
 
   const next = decision === 'recover'
     ? { status: 'ok' as const, failingSince: null, recoveredAt: ts }
@@ -58,7 +60,7 @@ type AlertInput = {
 }
 
 /** Returns whether the alert was sent. Never throws. */
-async function sendHealthAlert(env: Env, db: AppDb, a: AlertInput): Promise<boolean> {
+async function sendHealthAlert(env: Env, a: AlertInput): Promise<boolean> {
   const recipients = parseEmailList(env.ALERT_EMAILS)
   if (recipients.length === 0) {
     console.error(`[email-health] ${a.primary} ${a.decision} but ALERT_EMAILS is unset — no alert sent`)
@@ -69,7 +71,11 @@ async function sendHealthAlert(env: Env, db: AppDb, a: AlertInput): Promise<bool
   }
   const { subject, text, html } = renderHealthAlert(env, a)
   try {
-    const r = await sendEmail(env, { to: recipients, subject, html, text }, db, { provider: a.alternate ?? a.primary })
+    // No db on purpose: operator mail keeps arriving during a verified-only
+    // outage, so counting it as a primary success could fake a recovery.
+    // Try the alternate first, then the primary: a stale RESEND_API_KEY or an
+    // EMAIL_FROM not verified on Resend must not swallow the alert.
+    const r = await sendEmail(env, { to: recipients, subject, html, text }, undefined, { provider: a.alternate ?? a.primary, fallback: true })
     if (!r.ok) console.error(`[email-health] alert send failed (${r.provider}): ${r.error}`)
     return r.ok
   } catch (err) {

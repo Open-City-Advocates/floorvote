@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { env } from 'cloudflare:test'
 import { resetDb, applyMigrations } from '../helpers'
 import { getDb } from '../../src/db/client'
-import { emailAlertState } from '../../src/db/schema'
+import { emailAlertState, emailSendStats } from '../../src/db/schema'
 import { recordSendStats } from '../../src/lib/emailStats'
 import { runEmailHealth } from '../../src/lib/emailHealthJob'
 
@@ -103,5 +103,64 @@ describe('runEmailHealth', () => {
     await runEmailHealth(e, db, NOW)
     const body = JSON.parse((fetch.mock.calls[0][1] as RequestInit).body as string)
     expect(body.text).toContain('3 sent through resend')
+  })
+
+  it('does not count its own alert in email_send_stats', async () => {
+    const db = getDb(env.DB)
+    await recordSendStats(db, 'cloudflare', { sent: 0, failed: 3, suppressed: 0, lastError: ERR }, LAST_HOUR)
+    const { e } = jobEnv()
+    await runEmailHealth(e, db, NOW)
+    expect(fetch).toHaveBeenCalledOnce()
+    const rows = await db.select().from(emailSendStats).all()
+    expect(rows.filter(r => r.provider === 'resend')).toHaveLength(0)
+    expect(rows.filter(r => r.provider === 'cloudflare')).toHaveLength(1)
+  })
+
+  it('rescues a rejected alternate by sending the alert through the primary', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    fetch.mockImplementation(async () => new Response('unauthorized', { status: 401 }))
+    const db = getDb(env.DB)
+    await recordSendStats(db, 'cloudflare', { sent: 0, failed: 3, suppressed: 0, lastError: ERR }, LAST_HOUR)
+    const { e, cfSend } = jobEnv()
+    expect(await runEmailHealth(e, db, NOW)).toBe('trip')
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(cfSend).toHaveBeenCalledOnce()
+    const [state] = await db.select().from(emailAlertState).all()
+    expect(state).toMatchObject({ status: 'failing', lastAlertedAt: '2026-09-23 21:00:00' })
+  })
+
+  it('when both providers fail, leaves lastAlertedAt null and retries with trip wording next hour', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    fetch.mockImplementation(async () => new Response('unauthorized', { status: 401 }))
+    const db = getDb(env.DB)
+    await recordSendStats(db, 'cloudflare', { sent: 0, failed: 3, suppressed: 0, lastError: ERR }, LAST_HOUR)
+    const { e, cfSend } = jobEnv()
+    cfSend.mockImplementation(async () => { throw new Error('cf down') })
+    expect(await runEmailHealth(e, db, NOW)).toBe('trip')
+    const [after1] = await db.select().from(emailAlertState).all()
+    expect(after1).toMatchObject({ status: 'failing', lastAlertedAt: null })
+
+    fetch.mockClear(); cfSend.mockClear()
+    expect(await runEmailHealth(e, db, new Date(NOW.getTime() + 60 * 60 * 1000))).toBe('remind')
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(cfSend).toHaveBeenCalledOnce()
+    const sent = cfSend.mock.calls[0][0] as { subject: string }
+    expect(sent.subject).toContain('is failing')
+    expect(sent.subject).not.toContain('still failing')
+  })
+
+  it('on remind, says still failing and since when', async () => {
+    const db = getDb(env.DB)
+    await db.insert(emailAlertState).values({
+      provider: 'cloudflare', status: 'failing', failingSince: '2026-09-22 10:00:00', lastAlertedAt: '2026-09-22 20:00:00',
+    })
+    await recordSendStats(db, 'cloudflare', { sent: 0, failed: 3, suppressed: 0, lastError: ERR }, LAST_HOUR)
+    const { e } = jobEnv()
+    expect(await runEmailHealth(e, db, NOW)).toBe('remind')
+    const body = JSON.parse((fetch.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.subject).toContain('still failing')
+    expect(body.text).toContain('since 2026-09-22 10:00:00 UTC')
   })
 })
