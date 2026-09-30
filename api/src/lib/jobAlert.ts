@@ -1,5 +1,6 @@
 import type { Env } from '../types'
 import { sendEmail } from './email'
+import { getDb } from '../db/client'
 import { PRODUCT_NAME } from '../../../shared/brand'
 
 /**
@@ -63,7 +64,7 @@ export async function reportJobFailure(env: Env, opts: { job: string; error: unk
   `
 
   try {
-    await sendEmail(env, { to: recipients, subject, html, text })
+    await sendEmail(env, { to: recipients, subject, html, text }, env.DB ? getDb(env.DB) : undefined)
   } catch (e) {
     console.error(`[job:${job}] alert email itself failed`, e)
   }
