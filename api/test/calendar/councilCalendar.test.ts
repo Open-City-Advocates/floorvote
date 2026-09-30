@@ -8,7 +8,7 @@ import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedCalendar
 import { getDb } from '../../src/db/client'
 import { associationConfig, calendarEvents, calendarEventBills } from '../../src/db/schema'
 import { centralFetch } from '../../src/lib/centralFetch'
-import { syncCouncilCalendarEvents, COUNCIL_RULES_KEY, councilEventTitle, councilEventMatches, parseCouncilRules } from '../../src/lib/councilCalendar'
+import { syncCouncilCalendarEvents, COUNCIL_RULES_KEY, councilEventTitle, councilEventMatches, hearingNoticeFor, parseCouncilRules } from '../../src/lib/councilCalendar'
 import { app } from '../../src/index'
 
 const day = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10)
@@ -124,6 +124,46 @@ describe('calendar display', () => {
     const events = await res.json() as any[]
     expect(events.map(e => [e.source, e.description])).toEqual([['deadline', "Mayor's response due"]])
     expect(events[0].bills.map((b: any) => b.billNumber)).toEqual(['B26-0038'])
+  })
+
+  it('links a numberless roundtable to its hearing notice, which then shows once, as the Council event', async () => {
+    const { bills } = await import('../../src/db/schema')
+    // HN26-0163: LIMS files the 10/7 DYRS roundtable as a hearing notice, whose date-only hearing is the same event.
+    const notice = await seedBill({ billNumber: 'HN26-0163', state: 'DC', matchType: 'keyword', externalId: 'legiscan:1082600163',
+      title: "Committee on Youth Affairs 10/7 Roundtable on DYRS' Fifth Rulemaking on the Community Placement of Juvenile Offenders" })
+    await getDb(env.DB).update(bills).set({ priority: 'high' }).where(eq(bills.id, notice))
+    await seedCalendarEvent(notice, { date: day(10), time: undefined as any, description: 'Committee on Youth Affairs 10/7 Roundtable', location: undefined as any })
+    await setRules(RULES)
+    serve(EVENTS)
+    await syncCouncilCalendarEvents(env as any, getDb(env.DB))
+    const dyrs = (await getDb(env.DB).select().from(calendarEvents).where(eq(calendarEvents.uid, 'council-1@lims.dccouncil.gov')).get())!
+    expect((await getDb(env.DB).select().from(calendarEventBills).where(eq(calendarEventBills.eventId, dyrs.id)).all()).map(l => l.billId)).toEqual([notice])
+
+    const events = await (await app.request(`/api/calendar/events?from=${day(0)}&to=${day(30)}`, { headers: { Cookie: cookie } }, env)).json() as any[]
+    expect(events.filter(e => e.date === day(10) && /DYRS|Roundtable/.test(e.description)).map(e => e.source)).toEqual(['council'])
+  })
+
+  it('an existing event gains its notice link on a later run, with no change to the event', async () => {
+    await setRules(RULES)
+    serve(EVENTS)
+    await syncCouncilCalendarEvents(env as any, getDb(env.DB))
+    const notice = await seedBill({ billNumber: 'HN26-0163', state: 'DC', matchType: 'keyword', externalId: 'legiscan:1082600163',
+      title: "Committee on Youth Affairs 10/7 Roundtable on DYRS' Fifth Rulemaking on the Community Placement of Juvenile Offenders" })
+    await seedCalendarEvent(notice, { date: day(10), time: undefined as any, description: 'Committee on Youth Affairs 10/7 Roundtable', location: undefined as any })
+    await syncCouncilCalendarEvents(env as any, getDb(env.DB))
+    const dyrs = (await getDb(env.DB).select().from(calendarEvents).where(eq(calendarEvents.uid, 'council-1@lims.dccouncil.gov')).get())!
+    expect(dyrs.sequence).toBe(0)
+    expect((await getDb(env.DB).select().from(calendarEventBills).where(eq(calendarEventBills.eventId, dyrs.id)).all()).map(l => l.billId)).toEqual([notice])
+  })
+
+  it('matches a notice by day and topic, and never guesses between two', () => {
+    const topic = "DYRS' Fifth Rulemaking on the Community Placement of Juvenile Offenders"
+    const n = (id: string, date: string, title: string) => ({ id, date, title })
+    const hn = n('hn', '2026-10-07', "Committee on Youth Affairs 10/7 Roundtable on DYRS\u2019 Fifth Rulemaking on the Community Placement of Juvenile Offenders")
+    expect(hearingNoticeFor(topic, '2026-10-07', [hn])).toBe('hn')
+    expect(hearingNoticeFor(topic, '2026-10-08', [hn])).toBeNull()
+    expect(hearingNoticeFor('Breakfast', '2026-10-07', [n('x', '2026-10-07', 'Breakfast Meeting notice')])).toBeNull()
+    expect(hearingNoticeFor(topic, '2026-10-07', [hn, { ...hn, id: 'hn2' }])).toBeNull()
   })
 
   it('titles an event by committee, type, and agenda', () => {
