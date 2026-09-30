@@ -116,6 +116,25 @@ export function diffTerms(before: Map<number, MemberTerm> | null, after: MemberT
   return out
 }
 
+/**
+ * The LIMS member records of the Council Period starting in `yearStart`, one
+ * per person. A term that ended by the period's first day belongs to the
+ * previous period (CP25 terms end 2025-01-01, CP26 begins 2025-01-02). A
+ * member serving in two periods has a record in each, so a name keeps its
+ * latest term.
+ */
+export function periodMembers<T extends { name: string; termStart: string | null; termEnd: string | null }>(all: T[], yearStart: number | null): T[] {
+  const first = yearStart ? `${yearStart}-01-01` : null
+  const latest = new Map<string, T>()
+  for (const m of all) {
+    if (first && m.termEnd && m.termEnd <= first) continue
+    const k = personKey(m.name)
+    const prev = latest.get(k)
+    if (!prev || (m.termStart ?? '') > (prev.termStart ?? '')) latest.set(k, m)
+  }
+  return [...latest.values()]
+}
+
 /** Whether LIMS's term dates cover a date. */
 export function termCovers(m: { termStart: string | null; termEnd: string | null }, today: string): boolean {
   return (!m.termStart || m.termStart <= today) && (!m.termEnd || m.termEnd >= today)

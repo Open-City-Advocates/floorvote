@@ -6,7 +6,7 @@ import { limsBillId, limsPeopleId, limsSessionId, LIMS_BILL_ID_BASE, LIMS_PEOPLE
 import { limsCategories, limsStates } from '../lib/lims-config'
 import { decideMode, getCurrentEtHour } from '../lib/sync-schedule'
 import { sessions, bills, billTenants, tenants, people, limsRecords, councilEvents, councilCommittees, councilDirectory, councilCommitteeHistory, councilChanges } from '../db/schema-legiscan'
-import { diffCommittees, diffTerms, isCurrentMember, linkCommittees, reconcileSeated, rosterSignature, type MemberTerm } from '../lib/council-changes'
+import { diffCommittees, diffTerms, isCurrentMember, linkCommittees, periodMembers, reconcileSeated, rosterSignature, type MemberTerm } from '../lib/council-changes'
 import { fetchCommittees, fetchCouncilmembers, fetchDirectory } from '../lib/dccouncil-directory'
 import type { BatchItem } from 'drizzle-orm/batch'
 import { trackLimsCall } from '../lib/lims-ingest'
@@ -605,18 +605,17 @@ export async function syncCouncilDirectory(db: LsDb): Promise<{ committees: numb
 
 /**
  * Mark each LIMS member seated or not from dccouncil.gov's Councilmembers
- * page. Names link to the current Council Period's members only, so a member
- * of two periods (who has two LIMS ids) links to the current record.
+ * page. Names link to the current Council Period's records only, so a member
+ * of two periods (who has two LIMS ids) links to the current one.
  */
 async function syncSeated(db: LsDb, now: string): Promise<void> {
   const listed = await fetchCouncilmembers()
   const today = now.slice(0, 10)
   const period = await db.select({ yearStart: sessions.yearStart }).from(sessions)
     .where(and(eq(sessions.state, LIMS_STATE), gte(sessions.sessionId, LIMS_SESSION_ID_BASE), lt(sessions.sessionId, LIMS_SESSION_ID_BASE * 2), eq(sessions.prior, 0))).get()
-  const periodStart = period ? `${period.yearStart}-01-01` : null
   const all = await db.select({ peopleId: people.peopleId, name: people.name, termStart: people.termStart, termEnd: people.termEnd, seated: people.seated })
     .from(people).where(and(gte(people.peopleId, LIMS_PEOPLE_ID_BASE), lt(people.peopleId, LIMS_PEOPLE_ID_BASE * 2))).all()
-  const members = all.filter(m => !periodStart || !m.termEnd || m.termEnd >= periodStart)
+  const members = periodMembers(all, period?.yearStart ?? null)
   const r = reconcileSeated(listed, members, today)
   if (!r) {
     console.warn(`[sync-lims] Councilmembers page linked too few names (${listed.length} listed); status kept`)

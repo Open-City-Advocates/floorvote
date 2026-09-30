@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { drizzle } from 'drizzle-orm/d1'
 import { eq, and, desc, inArray, gte, lt, lte } from 'drizzle-orm'
-import { isCurrentMember, seatNote } from '../lib/council-changes'
+import { isCurrentMember, periodMembers, seatNote } from '../lib/council-changes'
 import { LIMS_PEOPLE_ID_BASE, LIMS_SESSION_ID_BASE } from '../lib/lims-ids'
 import * as schema from '../db/schema-legiscan'
 import { secretsMatch } from '../lib/auth'
@@ -44,9 +44,7 @@ billsLsRoutes.get('/council-directory', async (c) => {
     .where(and(eq(schema.sessions.state, 'DC'), gte(schema.sessions.sessionId, LIMS_SESSION_ID_BASE), eq(schema.sessions.prior, 0))).get()
   const members = await db.select({ peopleId: schema.people.peopleId, name: schema.people.name, role: schema.people.role, termStart: schema.people.termStart, termEnd: schema.people.termEnd, seated: schema.people.seated })
     .from(schema.people).where(and(gte(schema.people.peopleId, LIMS_PEOPLE_ID_BASE), lt(schema.people.peopleId, LIMS_PEOPLE_ID_BASE * 2))).all()
-  const periodStart = period ? `${period.yearStart}-01-01` : null
-  const councilmembers = members
-    .filter(m => !periodStart || !m.termEnd || m.termEnd >= periodStart)
+  const councilmembers = periodMembers(members, period?.yearStart ?? null)
     .map(({ seated, ...m }) => ({ ...m, current: isCurrentMember({ ...m, seated }, today), note: seatNote({ ...m, seated }, today) }))
     .sort((a, b) => Number(b.current) - Number(a.current) || a.name.localeCompare(b.name))
   const changes = await db.select().from(schema.councilChanges)
