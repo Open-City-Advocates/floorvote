@@ -569,3 +569,22 @@ describe('Councilmember terms', () => {
   })
 })
 
+describe('Councilmember terms across periods', () => {
+  it('does not report an earlier period\'s members as newly sworn in when they are first loaded', async () => {
+    const db = drizzle(env.DB, { schema })
+    vi.mocked(lims.getCouncilPeriods).mockResolvedValue([PERIOD])
+    vi.mocked(lims.getMembers).mockResolvedValue(JSON.parse(membersRaw))
+    await refreshCouncilPeriod('lims-key', db, '2026-09-30')   // baseline for Council Period 26
+
+    const CP25 = { councilPeriodId: 25, councilPeriod: '25 (2023-24)', startDate: '2023-01-02T00:00:00', endDate: '2024-12-31T00:00:00' }
+    vi.mocked(lims.getCouncilPeriods).mockResolvedValue([PERIOD, CP25])
+    vi.mocked(lims.getMembers).mockImplementation(async (cp: number) => cp === 25
+      ? [{ id: 150, name: 'Vincent C. Gray', firstName: 'Vincent', lastName: 'Gray', middleName: 'C.', title: 'Councilmember', startDate: '2023-01-02T00:00:00', endDate: '2025-01-02T00:00:00' }] as any
+      : JSON.parse(membersRaw))
+    await refreshCouncilPeriod('lims-key', db, '2026-09-30')
+    expect(vi.mocked(lims.getMembers).mock.calls.map(c => c[0])).toContain(25)
+    expect(await db.select().from(schema.councilChanges).all()).toEqual([])
+    vi.mocked(lims.getMembers).mockResolvedValue(JSON.parse(membersRaw))
+  })
+})
+
