@@ -6,6 +6,7 @@ import * as schema from '../../src/db/schema-legiscan'
 import { setupLsDb } from '../helpers/setupLsDb'
 import youthRaw from '../fixtures/dccouncil/committee-youth-affairs.html?raw'
 import dirRaw from '../fixtures/dccouncil/council-directory-1.html?raw'
+import cmsRaw from '../fixtures/dccouncil/councilmembers.html?raw'
 import { syncCouncilDirectory } from '../../src/cron/sync-lims'
 import { app } from '../../src/index-legiscan'
 import { eq } from 'drizzle-orm'
@@ -28,9 +29,10 @@ const SLUGS = ['c-one', 'c-two', 'c-three', 'c-four', 'c-five', 'c-six']
 const index = `<html><body><main>${SLUGS.map(s => `<a href="https://dccouncil.gov/committees/${s}/">${s}</a>`).join('')}</main></body></html>`
 // Two directory pages (80 entries): drop the links to pages 3..10.
 
-function serve(opts: { failSlug?: string; failDirectory?: boolean; youth?: string; directory?: string } = {}) {
+function serve(opts: { failSlug?: string; failDirectory?: boolean; youth?: string; directory?: string; councilmembers?: string } = {}) {
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
     const url = String(input instanceof Request ? input.url : input)
+    if (url === 'https://dccouncil.gov/councilmembers/') return opts.councilmembers ? new Response(opts.councilmembers, { status: 200 }) : new Response('not found', { status: 404 })
     if (url === 'https://dccouncil.gov/committees/') return new Response(index, { status: 200 })
     if (opts.failSlug && url.includes(`/committees/${opts.failSlug}/`)) return new Response('bad gateway', { status: 502 })
     if (url.includes('/committees/')) return new Response(opts.youth ?? youthRaw, { status: 200 })
@@ -114,3 +116,51 @@ describe('council directory endpoint', () => {
   })
 })
 
+describe('sitting Councilmembers', () => {
+  // CP26 as LIMS has it on 2026-09-30: Trayon White's term still ends at his
+  // 2025 expulsion although he was re-elected and serves; his CP25 record is a
+  // second id with the same name.
+  const CP26 = [
+    ['Phil Mendelson', '2029-01-02'], ['Brianne K. Nadeau', '2027-01-02'], ['Brooke Pinto', '2029-01-02'], ['Matthew Frumin', '2027-01-02'],
+    ['Janeese Lewis George', '2027-01-02'], ['Zachary Parker', '2029-01-02'], ['Charles Allen', '2029-01-02'], ['Wendell Felder', '2029-01-02'],
+    ['Trayon White, Sr.', '2025-02-04'], ['Anita Bonds', '2027-01-02'], ['Christina Henderson', '2027-01-02'], ['Robert C. White, Jr.', '2029-01-02'],
+    ['Kenyan R. McDuffie', '2026-01-05'], ['Elissa Silverman', '2026-12-31'],
+  ] as const
+  async function seed() {
+    const db = drizzle(env.DB, { schema })
+    await db.insert(schema.sessions).values({ sessionId: 1_000_000_026, state: 'DC', stateId: 9, yearStart: 2025, yearEnd: 2026, sessionName: '2025-2026 Council Period 26', sessionTitle: 'CP26', prior: 0 } as any)
+    await db.insert(schema.people).values([
+      ...CP26.map(([name, termEnd], i) => ({ peopleId: 1_000_000_190 + i, name, stateId: 9, role: 'Councilmember', termStart: name === 'Elissa Silverman' ? '2026-07-15' : '2025-01-02', termEnd })),
+      { peopleId: 1_000_000_187, name: 'Trayon White, Sr.', stateId: 9, role: 'Councilmember', termStart: '2021-01-02', termEnd: '2025-01-01' },
+    ] as any)
+    return db
+  }
+
+  it('a member LIMS ends but the Council lists is current, with a note, and no change on the first check', async () => {
+    const db = await seed()
+    serve({ councilmembers: cmsRaw })
+    await syncCouncilDirectory(db)
+    const trayon = await db.select().from(schema.people).where(eq(schema.people.peopleId, 1_000_000_198)).get()
+    expect(trayon!.seated).toBe(1)
+    expect((await db.select().from(schema.people).where(eq(schema.people.peopleId, 1_000_000_187)).get())!.seated).toBe(0)
+    expect(await db.select().from(schema.councilChanges).all()).toEqual([])
+
+    const res = await app.request('/api/bills/council-directory', { headers: { 'x-admin-secret': 'test-secret' } }, env)
+    const body = await res.json() as any
+    const t = body.councilmembers.find((m: any) => m.name === 'Trayon White, Sr.')
+    expect(t).toMatchObject({ current: true, note: 'Listed as serving on dccouncil.gov. LIMS shows the term ending 2025-02-04.' })
+    expect(body.councilmembers.find((m: any) => m.name === 'Kenyan R. McDuffie')).toMatchObject({ current: false, note: null })
+    expect(body.councilmembers.filter((m: any) => m.current)).toHaveLength(13)
+  }, 60_000)
+
+  it('keeps the stored status when the Councilmembers page fails or looks wrong', async () => {
+    const db = await seed()
+    serve({ councilmembers: cmsRaw })
+    await syncCouncilDirectory(db)
+    serve()
+    await syncCouncilDirectory(db)
+    serve({ councilmembers: '<html><body>redesigned</body></html>' })
+    await syncCouncilDirectory(db)
+    expect((await db.select().from(schema.people).where(eq(schema.people.peopleId, 1_000_000_198)).get())!.seated).toBe(1)
+  }, 120_000)
+})

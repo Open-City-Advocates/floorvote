@@ -38,6 +38,9 @@ export const people = sqliteTable('people', {
   // LIMS term dates (migration 0023). A member whose termEnd has passed is former.
   termStart:     text('term_start'),
   termEnd:       text('term_end'),
+  // Listed on dccouncil.gov's Councilmembers page at the last directory sync
+  // (migration 0024): 1 listed, 0 not, null unchecked. It decides when known.
+  seated:        integer('seated'),
   ftmEid:        integer('ftm_eid'),
   votesmartId:   integer('votesmart_id'),
   opensecretsId: text('opensecrets_id'),

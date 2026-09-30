@@ -116,7 +116,66 @@ export function diffTerms(before: Map<number, MemberTerm> | null, after: MemberT
   return out
 }
 
-/** A member's status on a date: current while the term covers it. */
-export function isCurrentMember(m: { termStart: string | null; termEnd: string | null }, today: string): boolean {
+/** Whether LIMS's term dates cover a date. */
+export function termCovers(m: { termStart: string | null; termEnd: string | null }, today: string): boolean {
   return (!m.termStart || m.termStart <= today) && (!m.termEnd || m.termEnd >= today)
+}
+
+/**
+ * A member's status on a date. `seated` is whether dccouncil.gov's
+ * Councilmembers page listed the member at the last directory sync (null when
+ * not yet checked). The Council's page decides when known, because LIMS term
+ * dates lag: after Trayon White was expelled and then re-elected, LIMS still
+ * ended his term at the expulsion. Without the page, the LIMS term decides.
+ */
+export function isCurrentMember(m: { termStart: string | null; termEnd: string | null; seated?: number | null }, today: string): boolean {
+  if (m.seated === 1) return true
+  if (m.seated === 0) return false
+  return termCovers(m, today)
+}
+
+/**
+ * Where the Council's page and LIMS disagree, a plain note for a page or a
+ * brief. Null when they agree or the page has not been checked.
+ */
+export function seatNote(m: { termStart: string | null; termEnd: string | null; seated?: number | null }, today: string): string | null {
+  if (m.seated === 1 && !termCovers(m, today)) {
+    return `Listed as serving on dccouncil.gov. LIMS shows the term ${m.termEnd && m.termEnd < today ? `ending ${m.termEnd}` : `starting ${m.termStart}`}.`
+  }
+  if (m.seated === 0 && termCovers(m, today)) {
+    return `Not listed on dccouncil.gov's Councilmembers page. LIMS shows the term to ${m.termEnd ?? 'an open date'}.`
+  }
+  return null
+}
+
+export interface SeatedMember { peopleId: number; name: string; termStart: string | null; termEnd: string | null; seated: number | null }
+
+/**
+ * Link the Councilmembers page's names to the current Council Period's LIMS
+ * members, and describe changes. Returns null when the page does not look like
+ * the Council (too few names link), so the stored status is kept. `members`
+ * are the current period's LIMS members, with their stored `seated` values.
+ */
+export function reconcileSeated(listed: { name: string }[], members: SeatedMember[], today: string):
+  { seatedIds: Set<number>; unlinked: string[]; changes: CouncilChange[] } | null {
+  const index = indexPeople(members.map(m => ({ peopleId: m.peopleId, name: m.name, role: 'Councilmember' })))
+  const seatedIds = new Set<number>()
+  const unlinked: string[] = []
+  for (const r of listed) {
+    const p = findPerson(index, r.name.replace(/^\s*(ward\s+\d+|at[\s-]*large)\s+/i, ''))
+    if (p) seatedIds.add(p.peopleId)
+    else unlinked.push(r.name)
+  }
+  if (seatedIds.size < 10) return null
+  const changes: CouncilChange[] = []
+  for (const m of members) {
+    // The first check sets a baseline: no changes until a stored status flips.
+    if (m.seated === null) continue
+    const now = seatedIds.has(m.peopleId) ? 1 : 0
+    if (now === m.seated) continue
+    const note = seatNote({ ...m, seated: now }, today)
+    if (now === 1) changes.push({ kind: 'member_listed', committee: null, person: m.name, detail: note })
+    else changes.push({ kind: 'member_unlisted', committee: null, person: m.name, detail: note })
+  }
+  return { seatedIds, unlinked, changes }
 }

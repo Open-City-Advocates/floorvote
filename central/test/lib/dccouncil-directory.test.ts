@@ -4,7 +4,8 @@ import cowRaw from '../fixtures/dccouncil/committee-of-the-whole.html?raw'
 import dirRaw from '../fixtures/dccouncil/council-directory-1.html?raw'
 import sitemapRaw from '../fixtures/dccouncil/committees-sitemap.xml?raw'
 import indexRaw from '../fixtures/dccouncil/committees-index.html?raw'
-import { parseCommitteeIndex, parseCommitteePage, parseDirectoryPage, parseSitemap } from '../../src/lib/dccouncil-directory'
+import cmsRaw from '../fixtures/dccouncil/councilmembers.html?raw'
+import { parseCommitteeIndex, parseCommitteePage, parseCouncilmembersPage, parseDirectoryPage, parseSitemap } from '../../src/lib/dccouncil-directory'
 
 describe('dccouncil.gov parsers', () => {
   it('reads a committee page: chair, members, key staff, agencies', () => {
@@ -62,5 +63,12 @@ describe('dccouncil.gov parsers', () => {
     expect(c.staff[0].email).toBeNull()
     expect(c.chair).toEqual({ name: 'Ward 5 Councilmember Zachary Parker', url: null })
   })
-})
 
+  it('reads the sitting Councilmembers from the Councilmembers page', () => {
+    const cms = parseCouncilmembersPage(cmsRaw)
+    expect(cms).toHaveLength(13)
+    expect(cms.map(m => m.name)).toContain('Ward 8 Councilmember Trayon White, Sr.')
+    expect(cms.map(m => m.name)).toContain('Chairman Phil Mendelson')
+    expect(cms.find(m => /Trayon/.test(m.name))!.url).toBe('https://dccouncil.gov/council/councilmember-trayon-white-sr/')
+  })
+})
