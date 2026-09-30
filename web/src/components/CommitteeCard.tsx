@@ -3,15 +3,11 @@ import { color, fontSize, fontWeight, radius } from '../styles/tokens'
 import { SECTION_LABEL } from '../lib/textStyles'
 import { apiFetch } from '../lib/api'
 import { councilUrl, plainEmail } from '../pages/People'
+import { committeeKey as key } from '../../../shared/councilCommittees'
 
 interface PersonRef { name: string; url: string | null }
 interface Staff { name: string; title: string | null; email: string | null; phone: string | null }
 interface Committee { slug: string; name: string; url: string; chair: PersonRef | null; members: PersonRef[]; staff: Staff[] }
-
-/** "Committee on Youth Affairs" and "Youth Affairs roundtable: ..." share the key "youth affairs". */
-function key(name: string): string {
-  return name.toLowerCase().replace(/^(the\s+)?committee\s+(on|of)\s+(the\s+)?/, '').replace(/[^a-z ]+/g, ' ').replace(/\s+/g, ' ').trim()
-}
 
 /** The committee whose name starts an event title such as "Youth Affairs roundtable: ...". */
 export function matchCommittee<T extends { name: string }>(committees: T[], eventTitle: string): T | null {
