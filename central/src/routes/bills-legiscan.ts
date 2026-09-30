@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { drizzle } from 'drizzle-orm/d1'
-import { eq, and, desc, inArray, gte, lte } from 'drizzle-orm'
+import { eq, and, desc, inArray, gte, lt, lte } from 'drizzle-orm'
+import { isCurrentMember } from '../lib/council-changes'
+import { LIMS_PEOPLE_ID_BASE, LIMS_SESSION_ID_BASE } from '../lib/lims-ids'
 import * as schema from '../db/schema-legiscan'
 import { secretsMatch } from '../lib/auth'
 import { textCacheKey, getCachedText, putCachedText } from '../lib/billTextCache'
@@ -35,7 +37,24 @@ billsLsRoutes.get('/council-directory', async (c) => {
   const parse = <T>(s: string | null, fallback: T): T => { if (!s) return fallback; try { return JSON.parse(s) as T } catch { return fallback } }
   const committees = await db.select().from(schema.councilCommittees).orderBy(schema.councilCommittees.name).all()
   const people = await db.select().from(schema.councilDirectory).orderBy(schema.councilDirectory.name).all()
+  // The current Council Period's members with their terms, so a page or a brief
+  // can tell a sitting member from one who has left.
+  const today = new Date().toISOString().slice(0, 10)
+  const period = await db.select({ yearStart: schema.sessions.yearStart }).from(schema.sessions)
+    .where(and(eq(schema.sessions.state, 'DC'), gte(schema.sessions.sessionId, LIMS_SESSION_ID_BASE), eq(schema.sessions.prior, 0))).get()
+  const members = await db.select({ peopleId: schema.people.peopleId, name: schema.people.name, role: schema.people.role, termStart: schema.people.termStart, termEnd: schema.people.termEnd })
+    .from(schema.people).where(and(gte(schema.people.peopleId, LIMS_PEOPLE_ID_BASE), lt(schema.people.peopleId, LIMS_PEOPLE_ID_BASE * 2))).all()
+  const periodStart = period ? `${period.yearStart}-01-01` : null
+  const councilmembers = members
+    .filter(m => !periodStart || !m.termEnd || m.termEnd >= periodStart)
+    .map(m => ({ ...m, current: isCurrentMember(m, today) }))
+    .sort((a, b) => Number(b.current) - Number(a.current) || a.name.localeCompare(b.name))
+  const changes = await db.select().from(schema.councilChanges)
+    .where(gte(schema.councilChanges.detectedAt, new Date(Date.now() - 180 * 86_400_000).toISOString().slice(0, 10)))
+    .orderBy(desc(schema.councilChanges.detectedAt), desc(schema.councilChanges.id)).limit(100).all()
   return c.json({
+    councilmembers,
+    changes: changes.map(ch => ({ kind: ch.kind, committee: ch.committee, person: ch.person, detail: ch.detail, detectedAt: ch.detectedAt })),
     committees: committees.map(r => ({
       slug: r.slug, name: r.name, url: r.url,
       chair: parse(r.chairJson, null), members: parse(r.membersJson, []), staff: parse(r.staffJson, []), agencies: parse(r.agenciesJson, []),

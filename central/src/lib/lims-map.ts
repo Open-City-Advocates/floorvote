@@ -133,7 +133,7 @@ export function indexPeople(list: LimsPerson[]): Map<string, LimsPerson> {
   return map
 }
 
-function findPerson(people: Map<string, LimsPerson>, name: string): LimsPerson | undefined {
+export function findPerson(people: Map<string, LimsPerson>, name: string): LimsPerson | undefined {
   return people.get(personKey(name)) ?? people.get(personShortKey(name))
 }
 

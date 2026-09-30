@@ -7,6 +7,8 @@ import { setupLsDb } from '../helpers/setupLsDb'
 import youthRaw from '../fixtures/dccouncil/committee-youth-affairs.html?raw'
 import dirRaw from '../fixtures/dccouncil/council-directory-1.html?raw'
 import { syncCouncilDirectory } from '../../src/cron/sync-lims'
+import { app } from '../../src/index-legiscan'
+import { eq } from 'drizzle-orm'
 
 // Each directory page gets distinct people, as the real directory has (about 190 across 10 pages).
 function pageOf(url: string, html: string): string {
@@ -76,4 +78,39 @@ describe('syncCouncilDirectory (review regressions)', () => {
     expect(names).toContain('Alice Shared')
     expect(names).toContain('Bob Shared')
   }, 60_000)
+
+  it('records a chair change and closes the old roster in the history, after a first sync that only sets the baseline', async () => {
+    const db = drizzle(env.DB, { schema })
+    serve()
+    await syncCouncilDirectory(db)
+    expect(await db.select().from(schema.councilChanges).all()).toEqual([])
+    const history = await db.select().from(schema.councilCommitteeHistory).all()
+    expect(history.length).toBe(SLUGS.length)
+    expect(history.every(h => h.validTo === null)).toBe(true)
+
+    serve({ youth: youthRaw.replace('Ward 5 Councilmember Zachary Parker </a>', 'Ward 2 Councilmember Brooke Pinto </a>') })
+    await syncCouncilDirectory(db)
+    const changes = await db.select().from(schema.councilChanges).all()
+    expect(changes.filter(c => c.kind === 'chair_changed').map(c => c.person)).toContain('Ward 2 Councilmember Brooke Pinto')
+    const rows = await db.select().from(schema.councilCommitteeHistory).where(eq(schema.councilCommitteeHistory.slug, 'c-one')).all()
+    expect(rows).toHaveLength(2)
+    expect(rows.filter(r => r.validTo === null).map(r => r.chair)).toEqual(['Ward 2 Councilmember Brooke Pinto'])
+  }, 120_000)
 })
+
+describe('council directory endpoint', () => {
+  it('lists current and former members with terms, and recent changes', async () => {
+    const db = drizzle(env.DB, { schema })
+    await db.insert(schema.sessions).values({ sessionId: 1_000_000_026, state: 'DC', stateId: 9, yearStart: 2025, yearEnd: 2026, sessionName: '2025-2026 Council Period 26', sessionTitle: 'CP26', prior: 0 } as any)
+    await db.insert(schema.people).values([
+      { peopleId: 1_000_000_192, name: 'Kenyan R. McDuffie', stateId: 9, role: 'Councilmember', termStart: '2023-01-02', termEnd: '2026-01-05' },
+      { peopleId: 1_000_000_194, name: 'Zachary Parker', stateId: 9, role: 'Councilmember', termStart: '2023-01-02', termEnd: '2099-01-01' },
+    ] as any)
+    await db.insert(schema.councilChanges).values({ kind: 'member_left', person: 'Kenyan R. McDuffie', detail: 'Term ended 2026-01-05.', detectedAt: new Date().toISOString().slice(0, 19).replace('T', ' ') })
+    const res = await app.request('/api/bills/council-directory', { headers: { 'x-admin-secret': 'test-secret' } }, env)
+    const body = await res.json() as any
+    expect(body.councilmembers.map((m: any) => [m.name, m.current])).toEqual([['Zachary Parker', true], ['Kenyan R. McDuffie', false]])
+    expect(body.changes).toEqual([expect.objectContaining({ kind: 'member_left', person: 'Kenyan R. McDuffie' })])
+  })
+})
+

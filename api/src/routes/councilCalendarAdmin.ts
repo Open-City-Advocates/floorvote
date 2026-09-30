@@ -7,6 +7,8 @@ import {
   type CouncilCalendarRules,
 } from '../lib/councilCalendar'
 import { KNOWN_COUNCIL_COMMITTEES, KNOWN_COUNCIL_HEARING_TYPES } from '../../../shared/councilCalendarPresets'
+import { staleCommittees } from '../../../shared/councilCommittees'
+import { centralFetch } from '../lib/centralFetch'
 import type { AppEnv } from '../types'
 
 /**
@@ -37,10 +39,22 @@ councilCalendarAdminRouter.get('/', async (c) => {
     // The options still work from the known lists when central is unreachable.
     console.error('[council-calendar] options: central window unavailable', err)
   }
-  const committees = merged(KNOWN_COUNCIL_COMMITTEES, live.map(e => e.title), (rules?.include ?? []).map(i => i.committee))
+  // The Council's current committees, from its own site. After a
+  // reorganization a saved committee can stop existing, and the rule naming it
+  // silently stops matching, so the page flags it.
+  let current: string[] = []
+  try {
+    const res = await centralFetch(c.env, '/bills/council-directory')
+    if (res.ok) current = ((await res.json()) as { committees?: { name: string }[] }).committees?.map(x => x.name) ?? []
+  } catch (err) {
+    console.error('[council-calendar] options: council directory unavailable', err)
+  }
+  const saved = (rules?.include ?? []).map(i => i.committee)
+  const stale = current.length > 0 ? staleCommittees(saved, current) : []
+  const committees = merged(KNOWN_COUNCIL_COMMITTEES, live.map(e => e.title), saved).filter(n => !stale.includes(n) || saved.includes(n))
   const types = merged(KNOWN_COUNCIL_HEARING_TYPES, live.map(e => e.hearingType),
     (rules?.include ?? []).map(i => i.type ?? ''), rules?.types ?? [])
-  return c.json({ rules, committees, types })
+  return c.json({ rules, committees, types, staleCommittees: stale })
 })
 
 // POST /api/admin/council-calendar/preview: upcoming events the posted rules
