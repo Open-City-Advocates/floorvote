@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { diffCommittees, diffTerms, directoryKey, isCurrentMember, linkCommittees, rosterSignature } from '../../src/lib/council-changes'
+import { diffCommittees, diffTerms, directoryKey, isCurrentMember, linkCommittees, reconcileSeated, rosterSignature, seatNote } from '../../src/lib/council-changes'
 
 const members = [
   { peopleId: 1000000194, name: 'Zachary Parker', role: 'Councilmember' },
@@ -65,5 +65,55 @@ describe('seat changes from LIMS terms', () => {
     expect(isCurrentMember({ termStart: '2023-01-02', termEnd: '2026-01-05' }, '2026-09-30')).toBe(false)
     expect(isCurrentMember({ termStart: '2026-07-15', termEnd: '2026-12-31' }, '2026-09-30')).toBe(true)
     expect(isCurrentMember({ termStart: '2027-01-02', termEnd: '2031-01-02' }, '2026-09-30')).toBe(false)
+  })
+})
+
+describe('seated status from the Council\'s page', () => {
+  const today = '2026-09-30'
+  // Trayon White: expelled 2025-02-04, re-elected; LIMS still ends his term at the expulsion.
+  const trayon = { termStart: '2025-01-02', termEnd: '2025-02-04' }
+
+  it('the Council\'s page decides when known; the LIMS term decides otherwise', () => {
+    expect(isCurrentMember({ ...trayon, seated: null }, today)).toBe(false)
+    expect(isCurrentMember({ ...trayon, seated: 1 }, today)).toBe(true)
+    expect(isCurrentMember({ termStart: '2025-01-02', termEnd: '2029-01-02', seated: 0 }, today)).toBe(false)
+    expect(isCurrentMember({ termStart: '2025-01-02', termEnd: '2029-01-02' }, today)).toBe(true)
+  })
+
+  it('notes where the two disagree', () => {
+    expect(seatNote({ ...trayon, seated: 1 }, today)).toBe('Listed as serving on dccouncil.gov. LIMS shows the term ending 2025-02-04.')
+    expect(seatNote({ ...trayon, seated: 0 }, today)).toBeNull()
+    expect(seatNote({ ...trayon, seated: null }, today)).toBeNull()
+    expect(seatNote({ termStart: '2025-01-02', termEnd: '2029-01-02', seated: 0 }, today)).toMatch(/^Not listed/)
+  })
+
+  const council = [
+    'Phil Mendelson', 'Brianne K. Nadeau', 'Brooke Pinto', 'Matthew Frumin', 'Janeese Lewis George', 'Zachary Parker',
+    'Charles Allen', 'Wendell Felder', 'Trayon White, Sr.', 'Anita Bonds', 'Christina Henderson', 'Robert C. White, Jr.', 'Elissa Silverman',
+  ]
+  const listed = council.map(n => ({ name: n === 'Phil Mendelson' ? 'Chairman Phil Mendelson' : `Ward 8 Councilmember ${n}` }))
+  const period = (seated: number | null) => council.map((name, i) => ({
+    peopleId: 1_000_000_190 + i, name, termStart: '2025-01-02',
+    termEnd: name === 'Trayon White, Sr.' ? '2025-02-04' : '2029-01-02', seated,
+  }))
+
+  it('links the page to the current members; the first check reports no changes', () => {
+    const r = reconcileSeated([...listed, { name: 'Ward 9 Councilmember Nobody Known' }], period(null), today)!
+    expect(r.seatedIds.size).toBe(13)
+    expect(r.unlinked).toEqual(['Ward 9 Councilmember Nobody Known'])
+    expect(r.changes).toEqual([])
+  })
+
+  it('reports a member newly listed, or no longer listed, after the baseline', () => {
+    const stored = period(1).map(m => m.name === 'Trayon White, Sr.' ? { ...m, seated: 0 } : m)
+    const r = reconcileSeated(listed.filter(l => !/Anita Bonds/.test(l.name)), stored, today)!
+    expect(r.changes).toEqual([
+      { kind: 'member_listed', committee: null, person: 'Trayon White, Sr.', detail: 'Listed as serving on dccouncil.gov. LIMS shows the term ending 2025-02-04.' },
+      { kind: 'member_unlisted', committee: null, person: 'Anita Bonds', detail: expect.stringMatching(/^Not listed/) },
+    ])
+  })
+
+  it('keeps the stored status when the page links too few names', () => {
+    expect(reconcileSeated(listed.slice(0, 9), period(1), today)).toBeNull()
   })
 })

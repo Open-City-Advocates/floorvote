@@ -348,7 +348,9 @@ async function votingRecord(env: Env, db: AppDb, excludeId?: string) {
  * The Council today: its committees (chair, members, key staff by name and
  * title, since contacts are shown to the team directly) and this Council
  * Period's members with their terms, marked current or former. A voting
- * record can name someone who has since left, and the brief must say so.
+ * record can name someone who has since left, and the brief must say so. A
+ * note says where the Council's page and LIMS disagree, as for a member
+ * re-elected after LIMS ended the term.
  */
 async function councilRoster(env: Env): Promise<{ committees: unknown[]; councilmembers: unknown[] }> {
   try {
@@ -356,14 +358,14 @@ async function councilRoster(env: Env): Promise<{ committees: unknown[]; council
     if (!res.ok) return { committees: [], councilmembers: [] }
     const d = await res.json() as {
       committees: { name: string; chair: { name: string } | null; members: { name: string }[]; staff: { name: string; title: string | null }[]; agencies: string[] }[]
-      councilmembers?: { name: string; role: string | null; termStart: string | null; termEnd: string | null; current: boolean }[]
+      councilmembers?: { name: string; role: string | null; termStart: string | null; termEnd: string | null; current: boolean; note?: string | null }[]
     }
     return {
       committees: d.committees.map(c => ({
         name: c.name, chair: c.chair?.name ?? null, members: c.members.map(m => m.name),
         staff: c.staff.map(s => s.title ? `${s.name}, ${s.title}` : s.name), agencies: c.agencies,
       })),
-      councilmembers: (d.councilmembers ?? []).map(m => ({ name: m.name, role: m.role, termStart: m.termStart, termEnd: m.termEnd, status: m.current ? 'current' : 'former' })),
+      councilmembers: (d.councilmembers ?? []).map(m => ({ name: m.name, role: m.role, termStart: m.termStart, termEnd: m.termEnd, status: m.current ? 'current' : 'former', ...(m.note ? { note: m.note } : {}) })),
     }
   } catch (err) {
     console.error('[deep] council roster lookup failed', err)

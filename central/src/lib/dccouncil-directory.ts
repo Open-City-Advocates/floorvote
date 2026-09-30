@@ -165,6 +165,20 @@ export function parseCommitteeIndex(html: string): string[] {
   return [...new Set([...main.matchAll(/href="(https:\/\/dccouncil\.gov\/committees\/[a-z0-9-]+\/)"/gi)].map(m => m[1]))]
 }
 
+/**
+ * The sitting Councilmembers, from the Council's Councilmembers page: each is a
+ * large text link to a /council/ profile, named with the seat ("Ward 8
+ * Councilmember Trayon White, Sr.", "Chairman Phil Mendelson").
+ */
+export function parseCouncilmembersPage(html: string): CouncilPersonRef[] {
+  const out = new Map<string, CouncilPersonRef>()
+  for (const m of html.matchAll(/<a[^>]*href="(https:\/\/dccouncil\.gov\/council\/[a-z0-9-]+\/)"[^>]*class="[^"]*text--large[^"]*"[^>]*>([\s\S]*?)<\/a>/gi)) {
+    const name = textOf(m[2])
+    if (name && !out.has(m[1])) out.set(m[1], { name, url: councilUrl(m[1]) })
+  }
+  return [...out.values()]
+}
+
 const REQUEST_TIMEOUT_MS = 20_000
 
 async function get(url: string, onRequest?: () => void): Promise<string> {
@@ -193,6 +207,11 @@ export async function fetchCommittees(onRequest?: () => void): Promise<{ committ
     }
   }
   return { committees, currentSlugs: urls.map(committeeSlug) }
+}
+
+/** The sitting Councilmembers. Throws if the page fails. */
+export async function fetchCouncilmembers(onRequest?: () => void): Promise<CouncilPersonRef[]> {
+  return parseCouncilmembersPage(await get(`${SITE}/councilmembers/`, onRequest))
 }
 
 /** The whole Council directory. Throws if any page fails, so the sync keeps what it has. */

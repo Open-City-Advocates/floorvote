@@ -457,6 +457,45 @@ describe('POST /api/admin/lims-import', () => {
   })
 })
 
+describe('bill types', () => {
+  it('stores the LIMS type (Emergency, Permanent, ...) on stubs and keeps it through ingest', async () => {
+    const db = drizzle(env.DB, { schema })
+    await runLimsSync(makeEnv().env, db)
+    const stub = await db.select().from(schema.bills).where(eq(schema.bills.billId, limsBillId('B26-0001')!)).get()
+    expect(stub?.billType).toBe(bulk['B26-0001'].legislationSubCategory)
+    await processLsIngestorQueue({ messages: [{ body: { billId: B0400 }, ack: vi.fn(), retry: vi.fn() }] } as any, makeEnv().env, db)
+    const ingested = await db.select().from(schema.bills).where(eq(schema.bills.billId, B0400)).get()
+    expect(ingested?.billType).toBe('Permanent Bill')
+  })
+})
+
+describe('sponsors of earlier Council Periods', () => {
+  it('keeps a sponsor who left the Council before the current period, on an imported bill', async () => {
+    const db = drizzle(env.DB, { schema })
+    const CP25 = { councilPeriodId: 25, councilPeriod: '25 (2023-24)', startDate: '2023-01-02T00:00:00', endDate: '2024-12-31T00:00:00' }
+    const gone = { id: 150, name: 'Vincent C. Gray', firstName: 'Vincent', lastName: 'Gray', middleName: 'C.', title: 'Councilmember', startDate: '2023-01-02T00:00:00', endDate: '2025-01-02T00:00:00' }
+    vi.mocked(lims.getCouncilPeriods).mockResolvedValue([PERIOD, CP25])
+    vi.mocked(lims.getMembers).mockImplementation(async (cp: number) => cp === 25 ? [gone] as any : JSON.parse(membersRaw))
+    const secureDc = { ...bulk['B26-0400'], legislationNumber: 'B25-0345', legislationHistory: bulk['B26-0400'].legislationHistory.map(h => ({ ...h, legislationNumber: 'B25-0345' })) }
+    vi.mocked(lims.getBulkData).mockImplementation(async (c: number, cp: number) => cp === 25 && c === 1 ? [secureDc] : c === 1 ? [bulk['B26-0400']] : [])
+    const { env: e } = makeEnv({ ADMIN_SECRET: 'test-secret' })
+    const { app } = await import('../../src/index-legiscan')
+    await app.fetch(new Request('http://central/api/admin/lims-import', {
+      method: 'POST', headers: { 'x-admin-secret': 'test-secret', 'content-type': 'application/json' }, body: JSON.stringify({ tenantId: 'oca', numbers: ['B25-0345'] }),
+    }), e)
+
+    await refreshCouncilPeriod('lims-key', db, '2026-09-30')
+    expect(vi.mocked(lims.getMembers).mock.calls.map(c => c[0])).toEqual(expect.arrayContaining([25, 26]))
+
+    const billId = limsBillId('B25-0345')!
+    vi.mocked(lims.getLegislationDetails).mockResolvedValue({ ...JSON.parse(details0400Raw), legislationNumber: 'B25-0345', introducers: [{ memberName: 'Gray, Vincent C.', memberTitle: 'Councilmember' }] })
+    await processLsIngestorQueue({ messages: [{ body: { billId }, ack: vi.fn(), retry: vi.fn() }] } as any, e, db)
+    const sponsors = await db.select().from(schema.billSponsors).where(eq(schema.billSponsors.billId, billId)).all()
+    expect(sponsors.map(s => s.peopleId)).toContain(1_000_000_150)
+    vi.mocked(lims.getMembers).mockResolvedValue(JSON.parse(membersRaw))
+  })
+})
+
 describe('Council hearing calendar', () => {
   it('stores every event in the window, marks dropped ones removed, and survives a failed month', async () => {
     const hearings = await import('../../src/lib/lims-hearings')
@@ -509,18 +548,6 @@ describe('Council hearing calendar', () => {
   })
 })
 
-describe('bill types', () => {
-  it('stores the LIMS type (Emergency, Permanent, ...) on stubs and keeps it through ingest', async () => {
-    const db = drizzle(env.DB, { schema })
-    await runLimsSync(makeEnv().env, db)
-    const stub = await db.select().from(schema.bills).where(eq(schema.bills.billId, limsBillId('B26-0001')!)).get()
-    expect(stub?.billType).toBe(bulk['B26-0001'].legislationSubCategory)
-    await processLsIngestorQueue({ messages: [{ body: { billId: B0400 }, ack: vi.fn(), retry: vi.fn() }] } as any, makeEnv().env, db)
-    const ingested = await db.select().from(schema.bills).where(eq(schema.bills.billId, B0400)).get()
-    expect(ingested?.billType).toBe('Permanent Bill')
-  })
-})
-
 describe('Councilmember terms', () => {
   it('stores LIMS term dates, and reports a seat change after the first refresh', async () => {
     const db = drizzle(env.DB, { schema })
@@ -538,6 +565,25 @@ describe('Councilmember terms', () => {
     await refreshCouncilPeriod('lims-key', db, '2026-09-30')
     const changes = await db.select().from(schema.councilChanges).all()
     expect(changes.map(c => [c.kind, c.person])).toEqual([['member_left', 'Zachary Parker'], ['member_joined', 'New Member']])
+    vi.mocked(lims.getMembers).mockResolvedValue(JSON.parse(membersRaw))
+  })
+})
+
+describe('Councilmember terms across periods', () => {
+  it('does not report an earlier period\'s members as newly sworn in when they are first loaded', async () => {
+    const db = drizzle(env.DB, { schema })
+    vi.mocked(lims.getCouncilPeriods).mockResolvedValue([PERIOD])
+    vi.mocked(lims.getMembers).mockResolvedValue(JSON.parse(membersRaw))
+    await refreshCouncilPeriod('lims-key', db, '2026-09-30')   // baseline for Council Period 26
+
+    const CP25 = { councilPeriodId: 25, councilPeriod: '25 (2023-24)', startDate: '2023-01-02T00:00:00', endDate: '2024-12-31T00:00:00' }
+    vi.mocked(lims.getCouncilPeriods).mockResolvedValue([PERIOD, CP25])
+    vi.mocked(lims.getMembers).mockImplementation(async (cp: number) => cp === 25
+      ? [{ id: 150, name: 'Vincent C. Gray', firstName: 'Vincent', lastName: 'Gray', middleName: 'C.', title: 'Councilmember', startDate: '2023-01-02T00:00:00', endDate: '2025-01-02T00:00:00' }] as any
+      : JSON.parse(membersRaw))
+    await refreshCouncilPeriod('lims-key', db, '2026-09-30')
+    expect(vi.mocked(lims.getMembers).mock.calls.map(c => c[0])).toContain(25)
+    expect(await db.select().from(schema.councilChanges).all()).toEqual([])
     vi.mocked(lims.getMembers).mockResolvedValue(JSON.parse(membersRaw))
   })
 })

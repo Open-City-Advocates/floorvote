@@ -9,7 +9,7 @@ interface PersonRef { name: string; url: string | null }
 interface Staff { name: string; title: string | null; email: string | null; phone: string | null; url: string | null }
 interface Committee { slug: string; name: string; url: string; chair: PersonRef | null; members: PersonRef[]; staff: Staff[]; agencies: string[] }
 interface DirectoryEntry { kind: string; name: string; title: string | null; office: string | null; email: string | null; phone: string | null }
-interface Councilmember { name: string; role: string | null; termStart: string | null; termEnd: string | null; current: boolean }
+interface Councilmember { name: string; role: string | null; termStart: string | null; termEnd: string | null; current: boolean; note?: string | null }
 interface CouncilChange { kind: string; committee: string | null; person: string | null; detail: string | null; detectedAt: string }
 interface Directory { committees: Committee[]; people: DirectoryEntry[]; updatedAt: string | null; councilmembers?: Councilmember[]; changes?: CouncilChange[] }
 
@@ -20,6 +20,8 @@ export function describeChange(c: CouncilChange): string {
   switch (c.kind) {
     case 'member_joined': return `${who} joined the Council.${c.detail ? ` ${c.detail}` : ''}`
     case 'member_left': return `${who} left the Council.${c.detail ? ` ${c.detail}` : ''}`
+    case 'member_listed': return `${who} is listed as serving on the Council.${c.detail ? ` ${c.detail}` : ''}`
+    case 'member_unlisted': return `${who} is no longer listed as serving on the Council.${c.detail ? ` ${c.detail}` : ''}`
     case 'chair_changed': return `${who} now chairs the ${where}.${c.detail ? ` ${c.detail}` : ''}`
     case 'member_added': return `${who} joined the ${where}.`
     case 'member_removed': return `${who} left the ${where}.`
@@ -105,6 +107,9 @@ export function People() {
               <h2 style={{ ...SECTION_LABEL, display: 'block', marginBottom: 10 }}>Councilmembers</h2>
               <div style={{ ...CARD, padding: 14, marginBottom: 24, fontSize: fontSize.sm, lineHeight: 1.6 }}>
                 <div>{(data.councilmembers ?? []).filter(m => m.current).map(m => `${m.name}${m.role && /chair/i.test(m.role) ? ` (${m.role})` : ''}`).join(', ')}</div>
+                {(data.councilmembers ?? []).filter(m => m.note).map(m => (
+                  <div key={m.name} style={{ marginTop: 6, color: color.textMuted }}>{m.name}: {m.note}</div>
+                ))}
                 {(data.councilmembers ?? []).some(m => !m.current) && (
                   <div style={{ marginTop: 6, color: color.textSecondary }}>
                     <span style={{ color: color.textMuted }}>Not currently serving this Council Period: </span>

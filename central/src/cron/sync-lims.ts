@@ -6,8 +6,8 @@ import { limsBillId, limsPeopleId, limsSessionId, LIMS_BILL_ID_BASE, LIMS_PEOPLE
 import { limsCategories, limsStates } from '../lib/lims-config'
 import { decideMode, getCurrentEtHour } from '../lib/sync-schedule'
 import { sessions, bills, billTenants, tenants, people, limsRecords, councilEvents, councilCommittees, councilDirectory, councilCommitteeHistory, councilChanges } from '../db/schema-legiscan'
-import { diffCommittees, diffTerms, isCurrentMember, linkCommittees, rosterSignature, type MemberTerm } from '../lib/council-changes'
-import { fetchCommittees, fetchDirectory } from '../lib/dccouncil-directory'
+import { diffCommittees, diffTerms, isCurrentMember, linkCommittees, reconcileSeated, rosterSignature, type MemberTerm } from '../lib/council-changes'
+import { fetchCommittees, fetchCouncilmembers, fetchDirectory } from '../lib/dccouncil-directory'
 import type { BatchItem } from 'drizzle-orm/batch'
 import { trackLimsCall } from '../lib/lims-ingest'
 import { nowDb } from '../lib/dbTime'
@@ -193,13 +193,32 @@ export async function refreshCouncilPeriod(apiKey: string, db: LsDb, today: stri
     await upsertPeriod(db, previous, 1)
   }
 
-  const members = await getMembers(cp.councilPeriodId, apiKey,
-    () => trackLimsCall(db, 'Members', { councilPeriodId: cp.councilPeriodId }))
   // Terms as stored before this refresh. No terms yet means this is the first
   // run with term dates: a baseline, not a Council of newcomers.
   const stored = await db.select({ peopleId: people.peopleId, name: people.name, termStart: people.termStart, termEnd: people.termEnd })
     .from(people).where(and(gte(people.peopleId, LIMS_PEOPLE_ID_BASE), lt(people.peopleId, LIMS_PEOPLE_ID_BASE * 2))).all()
   const baseline = stored.some(p => p.termEnd !== null) ? new Map(stored.map(p => [p.peopleId, p])) : null
+
+  // Members of every Council Period whose measures central holds, not just the
+  // current one: a bill from an earlier period (the previous period, or one
+  // imported with lims-import) names sponsors who may have left the Council.
+  // The current period goes last, so its record wins where a name repeats.
+  const imported = (await db.selectDistinct({ id: limsRecords.councilPeriodId }).from(limsRecords).all()).map(r => r.id)
+  const periodIds = [...new Set([...(previous ? [previous.councilPeriodId] : []), ...imported])]
+    .filter(id => id !== cp.councilPeriodId).sort((a, b) => a - b)
+  for (const periodId of periodIds) await upsertMembers(apiKey, db, periodId)
+  const current = await upsertMembers(apiKey, db, cp.councilPeriodId)
+
+  // Seat changes are the current Council's: an earlier period's members
+  // appearing for the first time are history, not new members.
+  const changes = diffTerms(baseline, current, today)
+  if (changes.length > 0) await db.insert(councilChanges).values(changes)
+}
+
+/** Upsert one Council Period's members with their LIMS term dates, and return the terms. */
+async function upsertMembers(apiKey: string, db: LsDb, councilPeriodId: number): Promise<MemberTerm[]> {
+  const members = await getMembers(councilPeriodId, apiKey,
+    () => trackLimsCall(db, 'Members', { councilPeriodId }))
   const terms: MemberTerm[] = []
   for (const m of members) {
     const termStart = limsDate(m.startDate)
@@ -222,8 +241,7 @@ export async function refreshCouncilPeriod(apiKey: string, db: LsDb, today: stri
     const { peopleId: _id, ...update } = values
     await db.insert(people).values(values).onConflictDoUpdate({ target: people.peopleId, set: update })
   }
-  const changes = diffTerms(baseline, terms, today)
-  if (changes.length > 0) await db.insert(councilChanges).values(changes)
+  return terms
 }
 
 async function runLimsPass(
@@ -502,6 +520,13 @@ export async function syncCouncilCalendar(db: LsDb, today: string): Promise<{ mo
  */
 export async function syncCouncilDirectory(db: LsDb): Promise<{ committees: number; people: number }> {
   const now = nowDb()
+  // Who is sitting, from the Council's page, before rosters are linked to it.
+  // A failure keeps the stored status; the committees and directory still sync.
+  try {
+    await syncSeated(db, now)
+  } catch (err) {
+    console.warn('[sync-lims] Councilmembers page skipped:', err)
+  }
   let committeeCount = 0
   let committeeError: unknown = null
   try {
@@ -511,7 +536,7 @@ export async function syncCouncilDirectory(db: LsDb): Promise<{ committees: numb
       const today = now.slice(0, 10)
       // Link rosters to the Council as it stands today, so a roster, a vote,
       // and a term refer to the same person.
-      const sitting = (await db.select({ peopleId: people.peopleId, name: people.name, role: people.role, termStart: people.termStart, termEnd: people.termEnd })
+      const sitting = (await db.select({ peopleId: people.peopleId, name: people.name, role: people.role, termStart: people.termStart, termEnd: people.termEnd, seated: people.seated })
         .from(people).where(and(gte(people.peopleId, LIMS_PEOPLE_ID_BASE), lt(people.peopleId, LIMS_PEOPLE_ID_BASE * 2))).all())
         .filter(p => isCurrentMember(p, today))
         .map(p => ({ peopleId: p.peopleId, name: p.name, role: p.role ?? 'Councilmember' }))
@@ -576,4 +601,32 @@ export async function syncCouncilDirectory(db: LsDb): Promise<{ committees: numb
   }
   if (committeeError) throw committeeError
   return { committees: committeeCount, people: rows.size }
+}
+
+/**
+ * Mark each LIMS member seated or not from dccouncil.gov's Councilmembers
+ * page. Names link to the current Council Period's members only, so a member
+ * of two periods (who has two LIMS ids) links to the current record.
+ */
+async function syncSeated(db: LsDb, now: string): Promise<void> {
+  const listed = await fetchCouncilmembers()
+  const today = now.slice(0, 10)
+  const period = await db.select({ yearStart: sessions.yearStart }).from(sessions)
+    .where(and(eq(sessions.state, LIMS_STATE), gte(sessions.sessionId, LIMS_SESSION_ID_BASE), lt(sessions.sessionId, LIMS_SESSION_ID_BASE * 2), eq(sessions.prior, 0))).get()
+  const periodStart = period ? `${period.yearStart}-01-01` : null
+  const all = await db.select({ peopleId: people.peopleId, name: people.name, termStart: people.termStart, termEnd: people.termEnd, seated: people.seated })
+    .from(people).where(and(gte(people.peopleId, LIMS_PEOPLE_ID_BASE), lt(people.peopleId, LIMS_PEOPLE_ID_BASE * 2))).all()
+  const members = all.filter(m => !periodStart || !m.termEnd || m.termEnd >= periodStart)
+  const r = reconcileSeated(listed, members, today)
+  if (!r) {
+    console.warn(`[sync-lims] Councilmembers page linked too few names (${listed.length} listed); status kept`)
+    return
+  }
+  if (r.unlinked.length > 0) console.warn(`[sync-lims] Councilmembers not in LIMS: ${r.unlinked.join('; ')}`)
+  const writes: BatchItem<'sqlite'>[] = [
+    db.update(people).set({ seated: 0 }).where(and(gte(people.peopleId, LIMS_PEOPLE_ID_BASE), lt(people.peopleId, LIMS_PEOPLE_ID_BASE * 2))),
+    db.update(people).set({ seated: 1 }).where(inArray(people.peopleId, [...r.seatedIds])),
+  ]
+  if (r.changes.length > 0) writes.push(db.insert(councilChanges).values(r.changes.map(ch => ({ ...ch, detectedAt: now }))))
+  await db.batch(writes as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]])
 }

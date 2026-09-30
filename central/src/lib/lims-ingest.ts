@@ -1,4 +1,4 @@
-import { eq, and, gte, lt } from 'drizzle-orm'
+import { eq, and, gte, lt, asc } from 'drizzle-orm'
 import { getLegislationDetails, type LimsBulkRecord } from './lims'
 import { buildLimsBill, effectiveChangeHash, indexPeople } from './lims-map'
 import { limsSessionId, LIMS_PEOPLE_ID_BASE } from './lims-ids'
@@ -38,6 +38,9 @@ export async function fetchLimsBill(billId: number, env: LsEnv, db: LsDb): Promi
   const members = await db.select({ peopleId: people.peopleId, name: people.name, role: people.role })
     .from(people)
     .where(and(gte(people.peopleId, LIMS_PEOPLE_ID_BASE), lt(people.peopleId, LIMS_PEOPLE_ID_BASE * 2)))
+    // LIMS member ids grow over time: in ascending order the latest record for a
+    // name is indexed last and wins, and members who left stay findable.
+    .orderBy(asc(people.peopleId))
     .all()
   const byKey = indexPeople(members.map(m => ({ peopleId: m.peopleId, name: m.name, role: m.role ?? '' })))
 

@@ -22,6 +22,7 @@ import migration0013 from '../../migrations-legiscan/0013_tenants_queue_id.sql?r
 import migration0016 from '../../migrations-legiscan/0016_bill_texts_fetch_error.sql?raw'
 import migration0017 from '../../migrations-legiscan/0017_tenant_ai_personalized.sql?raw'
 import migration0023 from '../../migrations-legiscan/0023_council_history.sql?raw'
+import migration0024 from '../../migrations-legiscan/0024_council_seated.sql?raw'
 
 function parseMigration(sql: string, name: string) {
   const queries = sql
@@ -45,6 +46,7 @@ beforeEach(async () => {
     parseMigration(migration0016, '0016_bill_texts_fetch_error'),
     parseMigration(migration0017, '0017_tenant_ai_personalized'),
     parseMigration(migration0023, '0023_council_history'),
+    parseMigration(migration0024, '0024_council_seated'),
   ])
 })
 
