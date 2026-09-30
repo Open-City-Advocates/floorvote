@@ -226,15 +226,20 @@ const styles = {
     justifyContent: 'center',
     background: color.bgLoginPage,
     fontFamily: 'system-ui, sans-serif',
+    padding: '0 16px',
+    boxSizing: 'border-box' as const,
   } as React.CSSProperties,
   card: {
     background: color.white,
     border: `1px solid ${color.borderDefault}`,
     borderRadius: radius.xl,
-    padding: '40px 48px',
+    padding: 'clamp(24px, 6vw, 40px) clamp(20px, 6vw, 48px)',
     // 420 (border-box) → 324px content, above the Turnstile widget's 300px
     // flexible minimum so the widget, email box, and button align in width.
-    width: 420,
+    // Below ~380px viewports the widget's 300px minimum may exceed the content box; accepted.
+    width: '100%',
+    maxWidth: 420,
+    boxSizing: 'border-box' as const,
     boxShadow: shadow.sm,
   } as React.CSSProperties,
   heading: { fontSize: fontSize.xxxl, fontWeight: fontWeight.bold, color: color.textPrimary, marginBottom: 8 } as React.CSSProperties,

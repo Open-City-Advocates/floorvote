@@ -117,6 +117,9 @@ describe('apex Worker', () => {
     for (const res of pages) {
       const body = await res.text()
       expect(body).toContain('class="wordmark"')
+      expect(body).not.toContain('prefers-color-scheme')
+      expect(body).toContain('<meta name="color-scheme" content="light">')
+      expect(body.indexOf('class="wordmark"')).toBeLessThan(body.indexOf('<main'))
       expect(body).toContain('<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,')
     }
   })
