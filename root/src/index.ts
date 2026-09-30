@@ -105,7 +105,10 @@ export default {
     }
 
     const hints = ownHints(req, apex)
-    if (hints.length === 1) return redirect(`https://${hints[0].host}/`)
+    // A single remembered instance may be gone; only redirect if it still answers.
+    if (hints.length === 1 && (await instanceExists(`https://${hints[0].host}`))) {
+      return redirect(`https://${hints[0].host}/`)
+    }
     if (hints.length > 1) return html(renderPicker(hints, marketing), apex)
     return html(renderWelcome(apex, marketing), apex)
   },

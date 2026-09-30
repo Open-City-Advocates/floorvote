@@ -33,11 +33,21 @@ describe('apex Worker', () => {
     expect(body).toContain('https://example.org')
   })
 
-  it('sends a visitor with one remembered instance straight there', async () => {
+  it('sends a visitor with one remembered instance straight there when it is healthy', async () => {
+    mockHealth(true)
     const one = enc([{ host: 'wi.floor.vote', name: 'WI' }])
     const res = await worker.fetch(req('/', one), {})
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('https://wi.floor.vote/')
+    expect(called).toEqual(['https://wi.floor.vote/api/health'])
+  })
+
+  it('shows the welcome page when the single remembered instance is unhealthy', async () => {
+    mockHealth(false)
+    const one = enc([{ host: 'wi.floor.vote', name: 'WI' }])
+    const res = await worker.fetch(req('/', one), {})
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('yourorg.floor.vote')
   })
 
   it('shows a picker with names and subdomains, HTML-escaped', async () => {

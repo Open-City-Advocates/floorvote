@@ -6,7 +6,9 @@
  * domain; read by the apex Worker (root/src/index.ts). It carries no secret and
  * is never trusted for auth — the worst a tampered value can do is change what
  * the apex page shows its own viewer, and the apex Worker only redirects to its
- * own subdomains.
+ * own subdomains. Any server on the parent domain can overwrite this cookie
+ * (HttpOnly only blocks scripts); that is acceptable because every subdomain is
+ * operator-run.
  *
  * Wire format keeps keys short (`h`, `n`) because every tenant request carries it.
  * These functions work on the DECODED cookie value (plain JSON); callers own the
@@ -14,6 +16,8 @@
  */
 export const INSTANCE_HINT_COOKIE = 'fv_instances'
 export const INSTANCE_HINT_MAX_AGE_S = 60 * 60 * 24 * 365
+// Browsers drop cookies over 4096 bytes; stay well under it (URI-encoded length).
+export const INSTANCE_HINT_MAX_ENCODED = 3500
 
 const MAX_ENTRIES = 20
 const MAX_NAME = 80
@@ -44,7 +48,9 @@ export function serializeInstanceHints(list: InstanceHint[]): string {
 
 export function upsertInstanceHint(list: InstanceHint[], hint: InstanceHint): InstanceHint[] {
   const fresh = { host: hint.host, name: hint.name.slice(0, MAX_NAME) }
-  return [fresh, ...list.filter((h) => h.host !== hint.host)].slice(0, MAX_ENTRIES)
+  const out = [fresh, ...list.filter((h) => h.host !== hint.host)].slice(0, MAX_ENTRIES)
+  while (out.length > 1 && encodeURIComponent(serializeInstanceHints(out)).length > INSTANCE_HINT_MAX_ENCODED) out.pop()
+  return out
 }
 
 export function removeInstanceHint(list: InstanceHint[], host: string): InstanceHint[] {

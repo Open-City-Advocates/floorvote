@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  parseInstanceHints, serializeInstanceHints, upsertInstanceHint, removeInstanceHint,
+  parseInstanceHints, serializeInstanceHints, upsertInstanceHint, removeInstanceHint, INSTANCE_HINT_MAX_ENCODED,
 } from '../../shared/instanceHint'
 
 describe('instanceHint codec', () => {
@@ -19,6 +19,14 @@ describe('instanceHint codec', () => {
   it('drops malformed entries but keeps good ones', () => {
     const raw = JSON.stringify([{ h: 'wi.floor.vote', n: 'WI' }, { h: 5 }, { n: 'no host' }, 'str'])
     expect(parseInstanceHints(raw)).toEqual([{ host: 'wi.floor.vote', name: 'WI' }])
+  })
+
+  it('upsert keeps the encoded cookie under the size limit, keeping the fresh entry', () => {
+    const list = Array.from({ length: 20 }, (_, i) => ({ host: `h${i}.x.org`, name: 'é'.repeat(80) }))
+    const fresh = { host: 'new.x.org', name: 'é'.repeat(80) }
+    const result = upsertInstanceHint(list, fresh)
+    expect(encodeURIComponent(serializeInstanceHints(result)).length).toBeLessThanOrEqual(INSTANCE_HINT_MAX_ENCODED)
+    expect(result[0]).toEqual(fresh)
   })
 
   it('upsert moves an existing host to the front and refreshes its name', () => {

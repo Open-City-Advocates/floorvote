@@ -24,5 +24,9 @@ Two per-tenant vars (in the tenant's `[env.*.vars]`, see `api/wrangler.example.t
 | `/`, 0 / 1 / 2+ remembered instances | Welcome page / 302 to it / picker page |
 
 - **Cookie:** `fv_instances` is written by tenants on the parent domain at login and `/auth/me`, removed on logout, and lives one year. It holds only `{ host, name }` pairs (no secret); the Worker ignores any host that isn't a direct subdomain of its own apex.
+- **Tenants must be on Custom Domains** (`custom_domain = true`), not `routes`: the apex's same-zone `/api/health` probe only reaches Custom Domain Workers.
+- **`/<slug>`** works for any subdomain serving `/api/health` (e.g. central) and reveals whether a slug exists. That is accepted, since subdomain names are public in certificate-transparency logs.
+- **`go` is reserved** as a slug: `/go` is the picker endpoint.
+- **`SINGLE_TENANT_URL`** uses its origin only; any path in it is ignored.
 - **Tenants need `APP_DOMAINS` set to the apex**, or they never write the cookie.
 - **Deploy:** copy `root/wrangler.example.toml` to `root/wrangler.toml` (gitignored), set the domain, then `npx wrangler deploy -c root/wrangler.toml`.
