@@ -14,11 +14,18 @@ export const OK_STATE: HealthState = { status: 'ok', failingSince: null, lastAle
 /** A lone failure is noise. Two, at half or more of attempts, is a provider problem. */
 export const TRIP_MIN_FAILED = 2
 /**
- * Recovery needs several successes, not one. During the 2026-09-23 outage
+ * Recovery needs several successes, not one, and a failure rate of at most
+ * RECOVER_MAX_FAILURE_RATE over the window. During the 2026-09-23 outage
  * Cloudflare still delivered to verified addresses, and the operator's is one,
  * so a single operator login would otherwise have declared it fixed.
  */
 export const RECOVER_MIN_SENT = 3
+/**
+ * Recovery tolerates a few failures: one stray rate-limit error in a busy
+ * tenant's daily digest must not pin it in `failing` forever. The
+ * RECOVER_MIN_SENT minimum still blocks a lone operator login.
+ */
+export const RECOVER_MAX_FAILURE_RATE = 0.1
 export const HEALTH_WINDOW_MS = 24 * 60 * 60 * 1000
 
 export function windowStartHour(now: Date): string {
@@ -41,7 +48,8 @@ export function decideEmailHealth(now: Date, rows: HourStat[], state: HealthStat
     return failed >= TRIP_MIN_FAILED && failed >= sum(counted, 'sent') ? 'trip' : 'none'
   }
 
-  if (sum(inWindow, 'failed') === 0 && sum(inWindow, 'sent') >= RECOVER_MIN_SENT) return 'recover'
+  const windowSent = sum(inWindow, 'sent')
+  if (windowSent >= RECOVER_MIN_SENT && sum(inWindow, 'failed') <= windowSent * RECOVER_MAX_FAILURE_RATE) return 'recover'
   const alertedAt = state.lastAlertedAt ? dbTsToEpoch(state.lastAlertedAt) : null
   if (alertedAt === null || alertedAt <= now.getTime() - HEALTH_WINDOW_MS) return 'remind'
   return 'none'

@@ -96,4 +96,12 @@ describe('decideEmailHealth — rules', () => {
   it('does not recover on fewer than three successes even with zero failures', () => {
     expect(decideEmailHealth(now, [row('2026-10-05 11', 2, 0)], failing('2026-10-05 11:30:00'))).toBe('none')
   })
+
+  it('recovers with one stray failure among many successes (under 10%)', () => {
+    expect(decideEmailHealth(now, [row('2026-10-05 11', 20, 1)], failing('2026-10-05 11:30:00'))).toBe('recover')
+  })
+
+  it('does not recover when failures are 20% of sends', () => {
+    expect(decideEmailHealth(now, [row('2026-10-05 11', 5, 1)], failing('2026-10-05 11:30:00'))).toBe('none')
+  })
 })
