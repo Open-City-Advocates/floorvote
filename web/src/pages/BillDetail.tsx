@@ -28,6 +28,7 @@ import { PersonalNote } from '../components/PersonalNote'
 import { InfoTooltip } from '../components/InfoTooltip'
 import { DeepAnalysisPanel } from '../components/DeepAnalysisPanel'
 import { TeamLinks } from '../components/TeamLinks'
+import { BillHearingBriefs } from '../components/BillHearingBriefs'
 import { ReactionPicker } from '../components/ReactionPicker'
 import { Picker, type PickerOption } from '../components/Picker'
 import { pickerFieldTriggerStyle, PickerFieldCaret } from '../lib/pickerFieldStyle'
@@ -2343,6 +2344,7 @@ export function BillDetail() {
         {/* Deep analysis: a stronger model's write-up, filled by the operator's worker */}
         {!bill.isDraft && <DeepAnalysisPanel key={bill.id} kind="bill" subjectId={bill.id} isAdmin={isAdmin} />}
         {!bill.isDraft && <TeamLinks key={`links-${bill.id}`} kind="bill" subjectId={bill.id} isAdmin={isAdmin} />}
+        {!bill.isDraft && <BillHearingBriefs key={`hearings-${bill.id}`} billId={bill.id} isAdmin={isAdmin} />}
 
         {/* Draft summary + bill text — draft-only blocks replacing AI section */}
         {bill.isDraft && (
