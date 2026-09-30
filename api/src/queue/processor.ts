@@ -2,6 +2,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import { processBill } from '../lib/llm'
 import { DEFAULT_TAXONOMY, parseTaxonomyItems, filterTagsToTaxonomy } from '../lib/taxonomy'
 import { centralFetch } from '../lib/centralFetch'
+import { billHtmlToText } from '../lib/billText'
 import { matchesKeywords } from '../lib/keywords'
 import { bills, associationConfig, feedEvents, billTexts, calendarEvents } from '../db/schema'
 import { syncBillSubjects } from '../lib/billSubjects'
@@ -153,19 +154,6 @@ function classifyAiError(err: unknown): AiSkipReason | null {
     return 'unreadable_document'
   }
   return null
-}
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s{2,}/g, ' ')
-    .trim()
 }
 
 function pickLatestTextDocId(centralBill: { texts?: Array<{ docId: string; date: string }> }): string | null {
@@ -561,7 +549,7 @@ export async function processCentralNotification(
       if (textRes.ok) {
         const textData = await textRes.json() as { type: 'html' | 'pdf'; content: string }
         if (textData.type === 'pdf') billPdfBase64 = textData.content
-        else billText = stripHtml(textData.content)
+        else billText = billHtmlToText(textData.content)
         hasFullText = true
       } else if (textRes.status !== 404) {
         console.error(`[processor] central text returned ${textRes.status} for ${centralBill.number}`)

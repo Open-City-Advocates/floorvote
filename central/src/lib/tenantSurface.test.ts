@@ -121,6 +121,7 @@ describe('tenantSurface allowlist matcher', () => {
       ['GET',  '/api/bills/legiscan:123/changes',              'billsApi/lookupRoutes.ts'],
       ['GET',  '/api/bills/sessions?state=RI',                 'routes/configApi.ts'],
       ['GET',  '/api/tenants/ri/upcoming-hearings?days=14',    'routes/stats.ts'],
+      ['GET',  '/api/tenants/current-session/RI',              'billsApi/draftRoutes.ts (draft default year)'],
       ['GET',  '/api/admin/superadmin/emails',                 'lib/superadminCentral.ts'],
       ['POST', '/api/tenants/register',                        'index.ts, cron/sync.ts'],
       ['POST', '/api/tenants/reprocess/ri',                    'lib/demoResetAndSeed.ts, lib/calendarBackfill.ts'],
