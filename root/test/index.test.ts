@@ -54,8 +54,10 @@ describe('apex Worker', () => {
     const res = await worker.fetch(req('/', two), {})
     expect(res.status).toBe(200)
     const body = await res.text()
-    expect(body).toContain('Wisconsin Clerks · wi.floor.vote')
-    expect(body).toContain('Michigan &lt;Assoc&gt; · mi.floor.vote')
+    expect(body).toContain('href="/go?host=wi.floor.vote"')
+    expect(body).toContain('<span class="org">Wisconsin Clerks</span>')
+    expect(body).toContain('<span class="meta">wi.floor.vote</span>')
+    expect(body).toContain('<span class="org">Michigan &lt;Assoc&gt;</span>')
     expect(body).not.toContain('<Assoc>')
     expect(res.headers.get('content-security-policy')).toContain("form-action 'self' https://*.floor.vote")
   })
@@ -104,6 +106,46 @@ describe('apex Worker', () => {
     const res = await worker.fetch(req('/favicon.ico'), {})
     expect(res.status).toBe(404)
     expect(f).not.toHaveBeenCalled()
+  })
+
+  it('every rendered page carries the wordmark and an SVG favicon', async () => {
+    const pages = [
+      await worker.fetch(req('/'), {}),
+      await worker.fetch(req('/', two), {}),
+      await worker.fetch(req('/favicon.ico'), {}),
+    ]
+    for (const res of pages) {
+      const body = await res.text()
+      expect(body).toContain('class="wordmark"')
+      expect(body).not.toContain('prefers-color-scheme')
+      expect(body).toContain('<meta name="color-scheme" content="light">')
+      expect(body.indexOf('class="wordmark"')).toBeLessThan(body.indexOf('<main'))
+      expect(body).toContain('<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,')
+    }
+  })
+
+  it('shows the email in the picker label when present', async () => {
+    const withEmail = enc([
+      { host: 'wi.floor.vote', name: 'Wisconsin Clerks', email: 'clerk@wi.gov' },
+      { host: 'mi.floor.vote', name: 'Michigan' },
+    ])
+    const body = await (await worker.fetch(req('/', withEmail), {})).text()
+    expect(body).toContain('<span class="org">Wisconsin Clerks</span>')
+    expect(body).toContain('<span class="meta">wi.floor.vote · clerk@wi.gov</span>')
+    expect(body).toContain('<span class="meta">mi.floor.vote</span>')
+  })
+
+  it('non-slug paths get a branded 404 page', async () => {
+    const res = await worker.fetch(req('/favicon.ico'), {})
+    expect(res.status).toBe(404)
+    expect(res.headers.get('content-type')).toContain('text/html')
+    expect(await res.text()).toContain('https://floor.vote/')
+  })
+
+  it('CSP allows data: images for the favicon and nothing external', async () => {
+    const csp = (await worker.fetch(req('/'), {})).headers.get('content-security-policy')!
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain('img-src data:')
   })
 
   it('SINGLE_TENANT_URL sends everything to the one tenant', async () => {

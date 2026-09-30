@@ -35,12 +35,19 @@ function writeHints(c: Context<AppEnv>, domain: string, value: string): void {
   })
 }
 
-export function rememberInstance(c: Context<AppEnv>): void {
+export function rememberInstance(c: Context<AppEnv>, email?: string): void {
+  // A demo tenant is a public sandbox, not an instance anyone belongs to. It
+  // forgets itself instead, which also cleans up entries written before this rule.
+  if (c.env.DEMO_MODE === 'true') {
+    forgetInstance(c)
+    return
+  }
   const scope = hintScope(c)
   if (!scope) return
   const list = upsertInstanceHint(parseInstanceHints(getCookie(c, INSTANCE_HINT_COOKIE)), {
     host: scope.host,
     name: c.env.ASSOCIATION_NAME ?? c.env.TENANT_ID,
+    ...(email ? { email } : {}),
   })
   writeHints(c, scope.domain, serializeInstanceHints(list))
 }

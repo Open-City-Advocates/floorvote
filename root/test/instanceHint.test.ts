@@ -48,4 +48,20 @@ describe('instanceHint codec', () => {
     const list = [{ host: 'a.x.org', name: 'A' }, { host: 'b.x.org', name: 'B' }]
     expect(removeInstanceHint(list, 'a.x.org')).toEqual([{ host: 'b.x.org', name: 'B' }])
   })
+
+  it('round-trips an optional email and omits e when absent', () => {
+    const list = [{ host: 'wi.floor.vote', name: 'WI', email: 'a@b.org' }, { host: 'mi.floor.vote', name: 'MI' }]
+    const raw = serializeInstanceHints(list)
+    expect(JSON.parse(raw)).toEqual([{ h: 'wi.floor.vote', n: 'WI', e: 'a@b.org' }, { h: 'mi.floor.vote', n: 'MI' }])
+    expect(parseInstanceHints(raw)).toEqual(list)
+  })
+
+  it('ignores a non-string e', () => {
+    expect(parseInstanceHints(JSON.stringify([{ h: 'wi.floor.vote', n: 'WI', e: 5 }]))).toEqual([{ host: 'wi.floor.vote', name: 'WI' }])
+  })
+
+  it('upsert truncates email to 254 chars', () => {
+    const out = upsertInstanceHint([], { host: 'a.x.org', name: 'A', email: 'x'.repeat(300) })
+    expect(out[0].email).toHaveLength(254)
+  })
 })

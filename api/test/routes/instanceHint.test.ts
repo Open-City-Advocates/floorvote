@@ -29,7 +29,7 @@ describe('fv_instances reminder cookie', () => {
     expect(sc).toMatch(/Max-Age=31536000/)
     expect(sc).toMatch(/HttpOnly/)
     expect(sc).toMatch(/Secure/)
-    expect(parseInstanceHints(hintValue(sc))).toEqual([{ host: 'wi.floor.vote', name: 'Wisconsin Clerks' }])
+    expect(parseInstanceHints(hintValue(sc))).toEqual([{ host: 'wi.floor.vote', name: 'Wisconsin Clerks', email: 'a@b.com' }])
   })
 
   it('keeps other instances and moves this one to the front on /auth/me', async () => {
@@ -41,7 +41,7 @@ describe('fv_instances reminder cookie', () => {
     }, hosted)
     expect(res.status).toBe(200)
     expect(parseInstanceHints(hintValue(hintCookie(res)!))).toEqual([
-      { host: 'wi.floor.vote', name: 'Wisconsin Clerks' }, { host: 'mi.floor.vote', name: 'Michigan' },
+      { host: 'wi.floor.vote', name: 'Wisconsin Clerks', email: 'a@b.com' }, { host: 'mi.floor.vote', name: 'Michigan' },
     ])
   })
 
@@ -85,5 +85,35 @@ describe('fv_instances reminder cookie', () => {
     const res = await app.request('/api/auth/me', { headers: { Cookie: `session=${token}` } },
       { ...hosted, APP_URL: 'https://floor.vote' })
     expect(hintCookie(res)).toBeUndefined()
+  })
+
+  it('stores the signed-in email with the entry', async () => {
+    const uid = await seedUser({ email: 'clerk@wi.gov' })
+    const token = await seedSession(uid)
+    const res = await app.request('/api/auth/me', { headers: { Cookie: `session=${token}` } }, hosted)
+    expect(parseInstanceHints(hintValue(hintCookie(res)!))).toEqual([
+      { host: 'wi.floor.vote', name: 'Wisconsin Clerks', email: 'clerk@wi.gov' },
+    ])
+  })
+
+  it('stores the email after verify too', async () => {
+    const uid = await seedUser({ email: 'v@wi.gov' })
+    const raw = await seedMagicLink(uid)
+    const res = await app.request('/api/auth/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: raw }),
+    }, hosted)
+    expect(parseInstanceHints(hintValue(hintCookie(res)!))[0].email).toBe('v@wi.gov')
+  })
+
+  it('a demo tenant removes itself instead of being remembered', async () => {
+    const uid = await seedUser({ email: 'a@b.com' })
+    const token = await seedSession(uid)
+    const existing = enc([
+      { host: 'wi.floor.vote', name: 'Wisconsin Clerks' }, { host: 'mi.floor.vote', name: 'Michigan' },
+    ])
+    const res = await app.request('/api/auth/me', {
+      headers: { Cookie: `session=${token}; fv_instances=${existing}` },
+    }, { ...hosted, DEMO_MODE: 'true' })
+    expect(parseInstanceHints(hintValue(hintCookie(res)!))).toEqual([{ host: 'mi.floor.vote', name: 'Michigan' }])
   })
 })
