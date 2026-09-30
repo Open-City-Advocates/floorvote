@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { syncCouncilCalendarEvents } from './lib/councilCalendar'
+import { directoryRouter } from './routes/directoryApi'
 import { cors } from 'hono/cors'
 import { getCookie } from 'hono/cookie'
 import { bodyLimit } from 'hono/body-limit'
@@ -137,6 +138,7 @@ app.route('/api/stats', statsRouter)
 app.route('/api/feedback', feedbackRouter)
 app.route('/api/notifications', notificationsRouter)
 app.route('/api/calendar', calendarRouter)
+app.route('/api/directory', directoryRouter)
 
 app.get('/api/health', (c) => c.json({ ok: true, build: BUILD_SHA }))
 
