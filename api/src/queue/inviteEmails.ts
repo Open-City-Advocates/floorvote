@@ -1,5 +1,6 @@
 import { generateToken, hashToken } from '../lib/crypto'
 import { sendMagicLink } from '../lib/email'
+import { PermanentSendError } from '../lib/emailErrors'
 import { recordAuthEvent } from '../lib/authEvents'
 import { magicLinks } from '../db/schema'
 import type { AppDb, Env, InviteEmailMessage } from '../types'
@@ -41,7 +42,10 @@ export async function processInviteEmails(
       message.ack()
     } catch (err) {
       console.error('[invite-email] send failed for', email, err)
-      message.retry({ delaySeconds: INVITE_RETRY_DELAY_SECONDS })
+      // Retrying cannot fix a bad or suppressed address; the failure is already
+      // in auth_events, and the member stays "Invite pending" for a manual resend.
+      if (err instanceof PermanentSendError) message.ack()
+      else message.retry({ delaySeconds: INVITE_RETRY_DELAY_SECONDS })
     }
   }
 }

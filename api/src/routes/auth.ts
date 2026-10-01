@@ -20,6 +20,7 @@ import { ensureDemoSession, demoSessionCookie } from '../lib/demoSession'
 import { requireAuth } from '../middleware/auth'
 import { termsAcceptanceState } from '../lib/termsAcceptance'
 import type { AppEnv } from '../types'
+import { isValidEmail } from '../../../shared/email'
 
 export const authRoutes = new Hono<AppEnv>()
 
@@ -94,8 +95,7 @@ authRoutes.post('/magic-link', async (c) => {
   if (!body.email || typeof body.email !== 'string') {
     return c.json({ error: 'email is required' }, 400)
   }
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-  if (!emailRegex.test(body.email)) {
+  if (!isValidEmail(body.email)) {
     return c.json({ error: 'Invalid email address' }, 400)
   }
 

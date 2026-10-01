@@ -10,6 +10,8 @@ import { parseEmailList } from '../../../shared/operator'
 import { color, fontSize } from '../../../shared/tokens'
 import { renderEmailShell, emailButton, emailFooterLink } from './emailShell'
 import { isRecipientError, tally, recordSendStats } from './emailStats'
+import { PermanentSendError } from './emailErrors'
+import { isValidEmail } from '../../../shared/email'
 
 export type ProviderName = 'resend' | 'cloudflare'
 
@@ -317,6 +319,21 @@ export async function sendMagicLink(
     return
   }
 
+  // An address that fails the shared check is never sent. Neither provider
+  // can deliver it, so sending would only burn a retry cycle on each provider
+  // and count as provider failures toward the outage alert (a pasted roster
+  // with `jane@county.gov;` once produced 88 failures for 11 members). Logged
+  // without a provider: nothing was attempted.
+  if (!isValidEmail(to)) {
+    if (db) {
+      await recordAuthEvent(db, {
+        event: 'email_send_failed', email: to, userId: userId ?? null,
+        reason: 'invalid recipient address; not sent', linkType: type,
+      })
+    }
+    throw new PermanentSendError(`Invalid recipient address: ${to}`)
+  }
+
   const assocName = await resolveAssocName(env, db)
   const noun = isInvite ? await resolveOrgNounFromDb(db) : undefined
   const orgPhrase = assocName ? escHtml(assocName) : `your ${escHtml(noun ?? '')}`
@@ -346,7 +363,11 @@ export async function sendMagicLink(
       })
     }
   }
-  if (!r.ok) throw new Error(`Email send failed (${r.provider}): ${r.error}`)
+  if (!r.ok) {
+    // A suppressed recipient stays suppressed; only a provider failure is worth retrying.
+    const msg = `Email send failed (${r.provider}): ${r.error}`
+    throw isRecipientError(r) ? new PermanentSendError(msg) : new Error(msg)
+  }
 }
 
 function escHtml(s: string): string {
@@ -404,5 +425,9 @@ export async function sendFeedback(
     throw new Error('Feedback not configured — OPERATOR_CONTACT_EMAILS is empty')
   }
   const r = await sendEmail(env, { to: recipients, subject: `Feedback from ${from.email}`, html }, db)
-  if (!r.ok) throw new Error(`Email send failed (${r.provider}): ${r.error}`)
+  if (!r.ok) {
+    // A suppressed recipient stays suppressed; only a provider failure is worth retrying.
+    const msg = `Email send failed (${r.provider}): ${r.error}`
+    throw isRecipientError(r) ? new PermanentSendError(msg) : new Error(msg)
+  }
 }
