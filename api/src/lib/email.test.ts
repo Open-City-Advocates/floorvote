@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { sendEmail, sendMagicLink, unsubscribeHeaders, sendFeedback, otherProvider } from './email'
+import { PermanentSendError } from './emailErrors'
 
 type Sent = Record<string, unknown>
 
@@ -115,6 +116,39 @@ describe('sendMagicLink', () => {
     // Shell masthead shows the instance name; CTA shows the invite button label.
     expect(html).toContain('RI Clerks')
     expect(html).toContain('Accept your invitation')
+  })
+})
+
+describe('sendMagicLink — permanent failures', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('never contacts either provider for an address that fails validation', async () => {
+    const { env, sent } = fakeCfEnv(() => ({ messageId: 'm' }))
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(sendMagicLink('jane@example.gov;', 'https://x.test/v?t=1',
+      { ...env, RESEND_API_KEY: 'k', APP_URL: 'https://x.test' } as never, 'invite'))
+      .rejects.toBeInstanceOf(PermanentSendError)
+    expect(sent).toHaveLength(0)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('throws a permanent error for a suppressed recipient, without falling back', async () => {
+    const { env } = fakeCfEnv(() => { throw Object.assign(new Error('suppressed'), { code: 'E_RECIPIENT_SUPPRESSED' }) })
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(sendMagicLink('jane@example.gov', 'https://x.test/v?t=1',
+      { ...env, RESEND_API_KEY: 'k', APP_URL: 'https://x.test' } as never, 'invite'))
+      .rejects.toBeInstanceOf(PermanentSendError)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('throws a retryable (non-permanent) error when the provider itself fails', async () => {
+    const { env } = fakeCfEnv(() => { throw Object.assign(new Error('rate'), { code: 'E_RATE_LIMIT_EXCEEDED' }) })
+    const err = await sendMagicLink('jane@example.gov', 'https://x.test/v?t=1',
+      { ...env, APP_URL: 'https://x.test' } as never, 'invite').catch(e => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err).not.toBeInstanceOf(PermanentSendError)
   })
 })
 
