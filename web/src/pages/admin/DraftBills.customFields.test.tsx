@@ -102,10 +102,10 @@ async function pickMulti(user: ReturnType<typeof userEvent.setup>, field: string
   await user.click(within(fieldRow(field)).getByRole('button'))
 }
 
+// Collect mode keeps text fields open and reports every keystroke: typing is
+// enough, there is no per-field Save to click.
 async function setText(user: ReturnType<typeof userEvent.setup>, field: string, text: string) {
-  await user.click(screen.getByRole('button', { name: `Edit ${field}` }))
   await user.type(within(fieldRow(field)).getByRole('textbox'), text)
-  await user.click(within(fieldRow(field)).getByRole('button', { name: 'Save' }))
 }
 
 async function submit(user: ReturnType<typeof userEvent.setup>) {
@@ -120,8 +120,9 @@ describe('DraftBills create form: custom fields render', () => {
     renderPage()
     await openForm()
     expect(await screen.findByText('Custom fields')).toBeInTheDocument()
-    // text
-    expect(screen.getByRole('button', { name: 'Edit Notes field' })).toBeInTheDocument()
+    // text: an always-open editor, no Edit/Save toggle
+    expect(within(fieldRow('Notes field')).getByRole('textbox')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit Notes field' })).not.toBeInTheDocument()
     // date
     expect(screen.getByLabelText('Due date')).toHaveAttribute('type', 'date')
     // yes/no
@@ -208,6 +209,31 @@ describe('DraftBills create form: custom field values reach the request', () => 
     await submit(user)
     await waitFor(() => expect(posted).toHaveLength(1))
     expect(posted[0].customFields).toEqual({ 'f-text': '<p>Some notes</p>' })
+  })
+
+  it('sends text typed into a text field without any per-field save click', async () => {
+    const { posted } = mockApi()
+    renderPage()
+    const user = await openForm()
+    await screen.findByText('Custom fields')
+    await user.type(within(fieldRow('Notes field')).getByRole('textbox'), 'Typed only')
+    expect(within(fieldRow('Notes field')).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    await submit(user)
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0].customFields).toEqual({ 'f-text': '<p>Typed only</p>' })
+  })
+
+  it('sends nothing for a text field typed into and then cleared', async () => {
+    const { posted } = mockApi()
+    renderPage()
+    const user = await openForm()
+    await screen.findByText('Custom fields')
+    const box = within(fieldRow('Notes field')).getByRole('textbox')
+    await user.type(box, 'abc')
+    await user.clear(box)
+    await submit(user)
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0].customFields).toBeUndefined()
   })
 
   it('sends a date value', async () => {
@@ -335,7 +361,7 @@ describe('DraftBills create form: custom fields reset', () => {
   }
 
   function expectAllBlank() {
-    expect(screen.getByRole('button', { name: 'Edit Notes field' })).toHaveTextContent('Click to add…')
+    expect(within(fieldRow('Notes field')).getByRole('textbox')).toHaveValue('')
     expect(screen.getByLabelText('Due date')).toHaveValue('')
     expect(screen.getByRole('checkbox', { name: 'Reviewed' })).not.toBeChecked()
     expect(within(fieldRow('Topic')).getByRole('button')).toHaveTextContent('Not set')

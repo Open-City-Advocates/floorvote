@@ -264,6 +264,26 @@ export function CustomFieldsSection({ fields, billId, values, isAdmin, onUpdate,
     }
 
     if (field.type === 'text') {
+      // Collect mode: an always-open editor that reports every keystroke, like
+      // the form's other rich-text fields. An Edit/Save toggle here would drop
+      // text typed without clicking Save when the form is submitted.
+      if (collect) {
+        return (
+          <div key={field.id} style={{ ...ROW, alignItems: 'start' }}>
+            <span style={{ ...labelStyle, paddingTop: 6 }}>{field.name}</span>
+            <div>
+              <RichTextEditor
+                enableMentions={false}
+                allowEmpty
+                initialContent={currentValue ?? ''}
+                placeholder="Not set"
+                onChange={html => save(field.id, html.replace(/<[^>]*>/g, '').trim() ? html : null)}
+              />
+            </div>
+          </div>
+        )
+      }
+
       const isEditing = isAdmin && editingFieldId === field.id
 
       if (!isAdmin) {
