@@ -15,7 +15,7 @@ import { usePageTitle } from '../../hooks/usePageTitle'
 import { useDemo } from '../../context/DemoContext'
 import { color, radius, fontSize, fontWeight, shadow } from '../../styles/tokens'
 import { orgRolesLabel } from '../../lib/orgNoun'
-import { RequiredLabel, RequiredLegend, MissingRequiredReason, useRequiredSubmit } from '../../components/RequiredField'
+import { BlankValueMessage, RequiredLabel, RequiredLegend, MissingRequiredReason, useBlankValueGuard, useRequiredSubmit } from '../../components/RequiredField'
 
 type Role = { id: string; name: string }
 
@@ -169,6 +169,9 @@ export function Members() {
   const [addingRole, setAddingRole] = useState(false)
   const [editingRoleId, setEditingRoleId] = useState<string | null>(null)
   const [editingRoleName, setEditingRoleName] = useState('')
+  // A blank rename keeps the editor open with "Role name is required" rather
+  // than closing and silently putting the old name back.
+  const blankRoleName = useBlankValueGuard()
   const [openRoleDropdown, setOpenRoleDropdown] = useState<string | null>(null)
   const [dropdownAnchor, setDropdownAnchor] = useState<{ top: number; left: number; openUp: boolean } | null>(null)
   const [rolesLabel, setRolesLabel] = useState('Team roles')
@@ -403,10 +406,11 @@ export function Members() {
   }
 
   async function handleRenameRole(roleId: string, newName: string) {
+    if (blankRoleName.refuse(newName)) return
     const name = newName.trim()
     const original = orgRoles.find(r => r.id === roleId)?.name
     setEditingRoleId(null)
-    if (!name || name === original) return
+    if (name === original) return
     try {
       const updated = await apiFetch<Role>(`/admin/roles/${roleId}`, {
         method: 'PATCH',
@@ -678,11 +682,17 @@ export function Members() {
                 <input
                   // eslint-disable-next-line jsx-a11y/no-autofocus -- pre-existing: focus follows the user's own click/Enter into rename mode, out of scope for this task's focus-management redesign
                   autoFocus
+                  aria-label="Role name"
+                  {...blankRoleName.fieldProps}
                   value={editingRoleName}
-                  onChange={e => setEditingRoleName(e.target.value.replace(/@/g, ''))}
+                  onChange={e => {
+                    const next = e.target.value.replace(/@/g, '')
+                    setEditingRoleName(next)
+                    blankRoleName.onValue(next)
+                  }}
                   onKeyDown={e => {
                     if (e.key === 'Enter') handleRenameRole(role.id, editingRoleName)
-                    if (e.key === 'Escape') setEditingRoleId(null)
+                    if (e.key === 'Escape') { setEditingRoleId(null); blankRoleName.reset() }
                   }}
                   style={{
                     fontSize: fontSize.sm, border: 'none', background: 'transparent', outline: 'none',
@@ -695,7 +705,7 @@ export function Members() {
                   type="button"
                   disabled={demoLocked}
                   aria-label={`Rename role ${role.name}`}
-                  onClick={demoLocked ? undefined : () => { setEditingRoleId(role.id); setEditingRoleName(role.name) }}
+                  onClick={demoLocked ? undefined : () => { setEditingRoleId(role.id); setEditingRoleName(role.name); blankRoleName.reset() }}
                   title={demoLocked ? undefined : 'Click to rename'}
                   style={{
                     margin: 0,
@@ -730,6 +740,10 @@ export function Members() {
               >✕</button>
             </span>
           ))}
+          {/* Its own line under the chips: a chip is too small to hold it. */}
+          {editingRoleId !== null && (
+            <BlankValueMessage {...blankRoleName.messageProps} name="Role name" style={{ flexBasis: '100%' }} />
+          )}
           {orgRoles.length === 0 && (
             <span style={{ fontSize: fontSize.sm, color: color.textMuted }}>No roles yet.</span>
           )}
