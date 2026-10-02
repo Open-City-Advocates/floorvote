@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { color, radius, fontSize, fontWeight } from '../../styles/tokens'
+import { color, radius, fontSize } from '../../styles/tokens'
 import { actionBtnBlue } from '../../styles/actionRow'
 import { apiFetch, ApiError } from '../../lib/api'
 import { SettingsNav } from '../../components/SettingsNav'
 import { CARD } from '../../lib/cardStyle'
-import { CARD_TITLE } from '../../lib/textStyles'
+import { CARD_TITLE, FORM_LABEL } from '../../lib/textStyles'
 import { useDemo } from '../../context/DemoContext'
 import { RichTextEditor } from '../../components/RichTextEditor'
 import { BillBadge } from '../../components/BillBadge'
@@ -15,6 +15,7 @@ import { pickerFieldTriggerStyle, PickerFieldCaret } from '../../lib/pickerField
 import { billDisplayTitle } from '../../../../shared/billTitle'
 import { parseStoredMulti } from '../../../../shared/customFieldValues'
 import { CustomFieldsSection, type CustomFieldDef } from '../../components/CustomFieldsSection'
+import { RequiredLabel, RequiredLegend, MissingRequiredReason, requiredName, useRequiredSubmit } from '../../components/RequiredField'
 
 type CollectedValues = Record<string, { value: string; setBy: string | null; updatedAt: string }>
 
@@ -90,6 +91,11 @@ export function DraftBills() {
   // Offer a select when facets gave us something to offer; otherwise (a tenant
   // with no bills yet, or a facets outage) let the admin type the state.
   const useStateSelect = !statesResolved || stateOptions.length > 0
+  // State is the form's only required field, and only on a multi-state tenant.
+  const createGate = useRequiredSubmit({
+    missingRequired: needsState && !draftState.trim(),
+    blocked: creatingDraft || demoLocked,
+  })
 
   // Fetched when the form opens rather than on mount: the number depends on how
   // many drafts exist, so a stale value from page load could collide.
@@ -171,7 +177,6 @@ export function DraftBills() {
     }
   }
 
-  const labelStyle: React.CSSProperties = { fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: color.textSlate, display: 'block', marginBottom: 4 }
   const inputStyle: React.CSSProperties = { width: '100%', fontSize: fontSize.sm, padding: '8px 10px', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, boxSizing: 'border-box', fontFamily: 'inherit' }
   const sectionCard: React.CSSProperties = { ...CARD, padding: 24, marginBottom: 20 }
   const sectionTitle: React.CSSProperties = CARD_TITLE
@@ -204,9 +209,10 @@ export function DraftBills() {
         )}
         {showDraftForm && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {needsState && <RequiredLegend />}
             <div style={{ display: 'flex', gap: 14 }}>
               <div style={{ flex: 1 }}>
-                <label htmlFor="draft-number" style={labelStyle}>Bill number</label>
+                <label htmlFor="draft-number" style={FORM_LABEL}>Bill number</label>
                 <input
                   id="draft-number"
                   value={draftNumber}
@@ -217,7 +223,7 @@ export function DraftBills() {
               </div>
               <div style={{ flex: 1 }}>
                 {/* eslint-disable-next-line jsx-a11y/label-has-associated-control -- the Picker's trigger is a <button>, not a labelable control; it carries its own aria-label="Year" for the accessible name. */}
-                <label style={labelStyle}>Year</label>
+                <label style={FORM_LABEL}>Year</label>
                 {(() => {
                   // The held value must always be one of the options, and the
                   // current year must always be offerable — the fetched base
@@ -248,10 +254,8 @@ export function DraftBills() {
             </div>
             {needsState && (
               <div>
-                {/* eslint-disable-next-line jsx-a11y/label-has-associated-control -- htmlFor only applies in the free-text fallback branch below; the Picker branch's trigger is a <button> carrying its own aria-label="State". */}
-                <label htmlFor={useStateSelect ? undefined : 'draft-state'} style={labelStyle}>
-                  State <span style={{ fontWeight: fontWeight.semibold, color: color.textDanger }}>*</span>
-                </label>
+                {/* htmlFor only applies in the free-text fallback branch below; the Picker branch's trigger is a <button> carrying its own aria-label. */}
+                <RequiredLabel htmlFor={useStateSelect ? undefined : 'draft-state'}>State</RequiredLabel>
                 {useStateSelect ? (
                   <Picker
                     mode="single"
@@ -261,7 +265,7 @@ export function DraftBills() {
                     onChange={v => setDraftState(v ?? '')}
                     ariaLabel="State"
                     trigger={({ toggle, open }) => (
-                      <button type="button" aria-label="State" onClick={toggle} style={pickerFieldTriggerStyle()}>
+                      <button type="button" aria-label={requiredName('State')} onClick={toggle} style={pickerFieldTriggerStyle()}>
                         <span>{draftState || 'Select a state…'}</span>
                         <PickerFieldCaret open={open} />
                       </button>
@@ -274,13 +278,14 @@ export function DraftBills() {
                     onChange={e => setDraftState(e.target.value.toUpperCase())}
                     placeholder="UT"
                     maxLength={2}
+                    aria-required="true"
                     style={inputStyle}
                   />
                 )}
               </div>
             )}
             <div>
-              <label htmlFor="draft-title" style={labelStyle}>Title</label>
+              <label htmlFor="draft-title" style={FORM_LABEL}>Title</label>
               <input
                 id="draft-title"
                 value={draftTitle}
@@ -292,7 +297,7 @@ export function DraftBills() {
               />
             </div>
             <div>
-              <label htmlFor="draft-sponsor" style={labelStyle}>Sponsor(s)</label>
+              <label htmlFor="draft-sponsor" style={FORM_LABEL}>Sponsor(s)</label>
               <input
                 id="draft-sponsor"
                 value={draftSponsor}
@@ -303,7 +308,7 @@ export function DraftBills() {
             </div>
             <div>
               {/* eslint-disable-next-line jsx-a11y/label-has-associated-control -- RichTextEditor is a Tiptap wrapper with no id/aria-labelledby prop to associate with; giving it one is a component-API change out of scope here. */}
-              <label style={labelStyle}>Summary</label>
+              <label style={FORM_LABEL}>Summary</label>
               <RichTextEditor
                 onChange={html => setDraftSummary(html)}
                 initialContent={draftSummary}
@@ -314,7 +319,7 @@ export function DraftBills() {
             </div>
             <div>
               {/* eslint-disable-next-line jsx-a11y/label-has-associated-control -- RichTextEditor is a Tiptap wrapper with no id/aria-labelledby prop to associate with; giving it one is a component-API change out of scope here. */}
-              <label style={labelStyle}>Bill text</label>
+              <label style={FORM_LABEL}>Bill text</label>
               <RichTextEditor
                 onChange={html => setDraftText(html)}
                 initialContent={draftText}
@@ -338,11 +343,11 @@ export function DraftBills() {
             {createDraftError && (
               <div style={{ fontSize: fontSize.sm, color: color.textErrorRed }}>{createDraftError}</div>
             )}
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
               <button
                 onClick={handleCreateDraft}
-                disabled={(needsState && !draftState.trim()) || creatingDraft || demoLocked}
-                style={actionBtnBlue((needsState && !draftState.trim()) || creatingDraft || demoLocked)}
+                {...createGate.buttonProps}
+                style={actionBtnBlue(createGate.disabled)}
               >
                 {creatingDraft ? 'Creating…' : 'Create draft'}
               </button>
@@ -352,6 +357,7 @@ export function DraftBills() {
               >
                 Cancel
               </button>
+              <MissingRequiredReason {...createGate.reasonProps} />
             </div>
           </div>
         )}
