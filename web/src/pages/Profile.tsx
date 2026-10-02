@@ -14,7 +14,6 @@ import { actionRowStyle, actionRowStyleFirst, actionBtnBlue, actionBtnRed } from
 import { digestCadenceDescription, weekAheadCadenceDescription, isModuleEnabled } from '../lib/modules'
 import type { ModulesConfig } from '../lib/modules'
 import { DEFAULT_ORG_NOUN } from '../lib/orgNoun'
-import { RequiredLabel, RequiredLegend, MissingRequiredReason, useRequiredSubmit } from '../components/RequiredField'
 
 const SECTION_CARD: React.CSSProperties = { ...CARD, padding: 24, marginBottom: 20 }
 
@@ -165,13 +164,8 @@ export function Profile() {
     }
   }
 
-  // The name is required. The server ignores a blank name and keeps the old
-  // one, so sending it would report "Saved" for a change that never happened:
-  // block it here instead.
-  const saveGate = useRequiredSubmit({ missingRequired: !nameInput.trim(), blocked: saving || demoLocked })
-
   async function handleSave() {
-    if (saveGate.disabled) return
+    if (saving || demoLocked) return
     setSaving(true)
     try {
       const payload = {
@@ -182,7 +176,12 @@ export function Profile() {
         method: 'PATCH',
         body: JSON.stringify(payload),
       })
-      setName(nameInput.trim())
+      // Name is optional, but a set name can't be cleared: the server ignores a
+      // blank name and keeps the stored one. Show what was actually saved
+      // rather than a blank field the server never applied.
+      const trimmedName = nameInput.trim()
+      if (trimmedName) setName(trimmedName)
+      else setNameInput(user?.name ?? '')
       setSubtitle(payload.subtitle)
       setSaved(true)
       setSaveError(null)
@@ -288,17 +287,15 @@ export function Profile() {
       {/* Profile card */}
       <div style={SECTION_CARD}>
         <h1 style={CARD_TITLE}>Profile</h1>
-        <RequiredLegend style={{ marginBottom: 12 }} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
           <div>
-            <RequiredLabel htmlFor="name-input">Name</RequiredLabel>
+            <label style={FORM_LABEL} htmlFor="name-input">Name</label>
             <input
               id="name-input"
               type="text"
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
               placeholder="Your name"
-              aria-required="true"
               style={{
                 display: 'block',
                 width: '100%',
@@ -348,23 +345,22 @@ export function Profile() {
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
           <button
             onClick={handleSave}
-            {...saveGate.buttonProps}
+            disabled={saving || demoLocked}
             style={{
               background: color.accentBlue,
               color: color.white,
               border: 'none',
               borderRadius: radius.md,
               padding: '8px 20px',
-              cursor: saveGate.disabled ? 'not-allowed' : 'pointer',
+              cursor: saving || demoLocked ? 'not-allowed' : 'pointer',
               fontSize: fontSize.base,
               fontWeight: fontWeight.medium,
-              opacity: saveGate.disabled ? 0.5 : 1,
+              opacity: saving || demoLocked ? 0.5 : 1,
             }}
           >
             {saving ? 'Saving…' : 'Save'}
           </button>
-          <MissingRequiredReason {...saveGate.reasonProps} />
-          {saved && !saveGate.reasonProps.show && (
+          {saved && (
             <span style={{ fontSize: fontSize.sm, color: color.textSuccess, fontWeight: fontWeight.medium }}>Saved</span>
           )}
           {saveError && (
