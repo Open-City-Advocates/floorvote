@@ -163,7 +163,7 @@ export function DraftBills() {
       <div style={sectionCard}>
         <h1 style={sectionTitle}>Draft bills</h1>
         <div style={sectionIntro}>
-          Create draft bills to track legislation before it is officially filed. Once a bill is filed, you can link it to the draft to merge all engagement (votes, positions, comments, notes) onto the filed bill.
+          Create draft bills to track legislation before it is officially filed. Once a bill is filed, you can link the draft to it, which moves all engagement (votes, positions, comments, notes, custom fields, and calendar events) onto the filed bill.
         </div>
         {!showDraftForm && (
           <button

@@ -1124,7 +1124,7 @@ export function BillDetail() {
 
   async function handleLinkDraft() {
     if (!bill || !linkTarget || demoLocked) return
-    if (!window.confirm('Link this draft to the filed bill? The draft will be retired and all votes, positions, comments, and notes will be moved to the filed bill. This cannot be undone.')) return
+    if (!window.confirm('Link this draft to the filed bill? The draft will be retired and all votes, positions, comments, notes, custom fields, and calendar events will be moved to the filed bill. This cannot be undone.')) return
     setLinking(true)
     try {
       const result = await apiFetch<{ ok: boolean; filedBillId: string }>(`/bills/${bill.id}/link`, {
@@ -1383,7 +1383,7 @@ export function BillDetail() {
         {bill.isDraft && (
           <div style={{ background: color.bgAmberPriority, border: `1px solid ${color.borderAmber}`, borderRadius: radius.md, padding: '10px 14px', marginBottom: 10, fontSize: fontSize.sm, color: color.textAmberWarning }}>
             <p style={{ margin: '0 0 10px', fontWeight: fontWeight.medium, lineHeight: 1.5 }}>
-              An admin added this draft pre-filed bill. When the associated bill is filed, link it here to transfer all votes, positions, comments, and notes to the filed bill:
+              An admin added this draft pre-filed bill. When the associated bill is filed, link it here to transfer all votes, positions, comments, notes, custom fields, and calendar events to the filed bill:
             </p>
             {isAdmin ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
