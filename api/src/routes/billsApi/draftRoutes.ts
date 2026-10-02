@@ -12,6 +12,7 @@ import { centralFetch } from '../../lib/centralFetch'
 import { backfillCalendar, parseLegiScanId } from '../../lib/calendarBackfill'
 import { nowDb } from '../../lib/dbTime'
 import { nextDraftNumber, findNumberCollision } from '../../lib/draftNumber'
+import { resolveCustomFieldValues } from '../../lib/customFieldValues'
 
 // Latch a bill as triaged. Idempotent: the isNull guard means only the first
 // triage (dismiss or priority-set) records the actor/timestamp, so re-triaging
@@ -56,7 +57,7 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     const db = getDb(c.env.DB)
     const body = await c.req.json<{
       billNumber?: string; title?: string | null; summary?: string; sponsor?: string
-      text?: string; state?: string; year?: number
+      text?: string; state?: string; year?: number; customFields?: unknown
     }>().catch(() => ({} as Record<string, string>))
     // A draft may be untitled: a request often has a number months before it
     // has a title. bills.title is NOT NULL, so an untitled draft stores '' and
@@ -73,6 +74,16 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     if (!state) {
       return c.json({ error: 'This instance tracks multiple states. Include a state when creating a draft.' }, 400)
     }
+    // Custom field values set on the create form, in the same format and under
+    // the same rules as the bill page's PUT /bills/:id/custom-fields. Validated
+    // before anything is written, so a bad value leaves no draft behind.
+    const cf = 'customFields' in body ? body.customFields : undefined
+    if (cf !== undefined && cf !== null && (typeof cf !== 'object' || Array.isArray(cf))) {
+      return c.json({ error: 'customFields must be an object of field ID to value' }, 400)
+    }
+    const resolved = await resolveCustomFieldValues(db, (cf ?? {}) as Record<string, unknown>)
+    if (!resolved.ok) return c.json(resolved.error, 400)
+
     const year = Number.isInteger(body.year) ? Number(body.year) : await defaultDraftYear(c, db, state)
     const billNumber = body.billNumber?.trim() || await nextDraftNumber(db, state)
 
@@ -81,29 +92,42 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
       return c.json({ error: `${billNumber} is already used by another ${state} bill in ${year}.` }, 409)
     }
 
-    await db.insert(bills).values({
-      id,
-      externalId: null,
-      billNumber,
-      title,
-      state,
-      yearStart: year,
-      yearEnd: year,
-      matchType: 'manual',
-      isDraft: true,
-      draftText: body.text?.trim() || null,
-      tenantSummary: body.summary?.trim() || null,
-      sponsor: body.sponsor?.trim() || null,
-      addedBy: user.id,
-    })
-
-    await db.insert(feedEvents).values({
+    // One timestamp for the draft and its values: they are set "at creation".
+    const now = nowDb()
+    // The draft, its custom field values, and its feed event in one batch:
+    // either all are written or none are. A null (or empty multi-select) value
+    // means "not set", which on a new draft is simply no row.
+    const ops: Parameters<typeof db.batch>[0][number][] = [
+      db.insert(bills).values({
+        id,
+        externalId: null,
+        billNumber,
+        title,
+        state,
+        yearStart: year,
+        yearEnd: year,
+        matchType: 'manual',
+        isDraft: true,
+        draftText: body.text?.trim() || null,
+        tenantSummary: body.summary?.trim() || null,
+        sponsor: body.sponsor?.trim() || null,
+        addedBy: user.id,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    ]
+    for (const { fieldId, value } of resolved.values) {
+      if (value === null) continue
+      ops.push(db.insert(billCustomFieldValues).values({ billId: id, fieldId, value, setBy: user.id, updatedAt: now }))
+    }
+    ops.push(db.insert(feedEvents).values({
       id: crypto.randomUUID(),
       type: 'bill_added',
       billId: id,
       userId: user.id,
       metadata: JSON.stringify({ draft: true, billNumber, title }),
-    })
+    }))
+    await db.batch(ops as unknown as Parameters<typeof db.batch>[0])
 
     return c.json({ id, billNumber, title, year, isDraft: true }, 201)
   })

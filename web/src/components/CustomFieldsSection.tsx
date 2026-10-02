@@ -19,13 +19,18 @@ export type CustomFieldDef = {
   pinned: boolean
 }
 
-interface CustomFieldsSectionProps {
+type CustomFieldsSectionProps = {
   fields: CustomFieldDef[]
-  billId: string
   values: Record<string, { value: string; setBy: string | null; updatedAt: string }>
   isAdmin: boolean
   onUpdate: (fieldId: string, value: string | null, setBy: string) => void
-}
+} & (
+  // Bill page: each change is saved to this bill immediately.
+  | { billId: string; collect?: false }
+  // Collect-values mode (the create-draft form): each change only goes to
+  // onUpdate, for the caller to send later; values have no "Set by" line yet.
+  | { billId?: undefined; collect: true }
+)
 
 function parseMultiValue(raw: string | null): string[] {
   if (raw === null) return []
@@ -95,7 +100,7 @@ const inputStyle: React.CSSProperties = {
   width: 200,
 }
 
-export function CustomFieldsSection({ fields, billId, values, isAdmin, onUpdate }: CustomFieldsSectionProps) {
+export function CustomFieldsSection({ fields, billId, values, isAdmin, onUpdate, collect }: CustomFieldsSectionProps) {
   const [editingFieldId, setEditingFieldId] = useState<string | null>(null)
   const [hoveredFieldId, setHoveredFieldId] = useState<string | null>(null)
 
@@ -107,10 +112,12 @@ export function CustomFieldsSection({ fields, billId, values, isAdmin, onUpdate 
   const sorted = [...fields].sort((a, b) => a.displayOrder - b.displayOrder)
 
   async function save(fieldId: string, value: string | string[] | null) {
-    await apiFetch(`/bills/${billId}/custom-fields`, {
-      method: 'PUT',
-      body: JSON.stringify({ [fieldId]: value }),
-    })
+    if (!collect) {
+      await apiFetch(`/bills/${billId}/custom-fields`, {
+        method: 'PUT',
+        body: JSON.stringify({ [fieldId]: value }),
+      })
+    }
     // Local state holds the canonical serialized form so subsequent reads parse identically.
     const serialized: string | null = value === null
       ? null
@@ -122,7 +129,7 @@ export function CustomFieldsSection({ fields, billId, values, isAdmin, onUpdate 
   }
 
   function auditLine(entry: { setBy: string | null; updatedAt: string } | undefined) {
-    if (!entry) return null
+    if (!entry || collect) return null
     return (
       <div title={absoluteTime(entry.updatedAt)} style={auditStyle}>
         Set by {entry.setBy ?? 'Unknown'} · {relativeTime(entry.updatedAt)}
@@ -181,7 +188,7 @@ export function CustomFieldsSection({ fields, billId, values, isAdmin, onUpdate 
               </span>
             </label>
           </div>
-          {entry && <><div />{auditLine(entry)}</>}
+          {entry && !collect && <><div />{auditLine(entry)}</>}
         </div>
       )
     }
@@ -218,7 +225,7 @@ export function CustomFieldsSection({ fields, billId, values, isAdmin, onUpdate 
                 <span style={arrayValue.length === 0 ? notSetStyle : { fontSize: fontSize.sm, color: color.textSlate }}>{display}</span>
               )}
             </div>
-            {entry && <><div />{auditLine(entry)}</>}
+            {entry && !collect && <><div />{auditLine(entry)}</>}
           </div>
         )
       }
@@ -251,7 +258,7 @@ export function CustomFieldsSection({ fields, billId, values, isAdmin, onUpdate 
               <span style={singleValue ? { fontSize: fontSize.sm, color: color.textSlate } : notSetStyle}>{display}</span>
             )}
           </div>
-          {entry && <><div />{auditLine(entry)}</>}
+          {entry && !collect && <><div />{auditLine(entry)}</>}
         </div>
       )
     }
@@ -339,7 +346,7 @@ export function CustomFieldsSection({ fields, billId, values, isAdmin, onUpdate 
               : <span style={currentValue ? { fontSize: fontSize.sm, color: color.textSlate } : notSetStyle}>{currentValue ?? 'Not set'}</span>
             }
           </div>
-          {entry && <><div />{auditLine(entry)}</>}
+          {entry && !collect && <><div />{auditLine(entry)}</>}
         </div>
       )
     }

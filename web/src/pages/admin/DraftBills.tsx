@@ -13,6 +13,10 @@ import { BillBadge } from '../../components/BillBadge'
 import { Picker, type PickerOption } from '../../components/Picker'
 import { pickerFieldTriggerStyle, PickerFieldCaret } from '../../lib/pickerFieldStyle'
 import { billDisplayTitle } from '../../../../shared/billTitle'
+import { parseStoredMulti } from '../../../../shared/customFieldValues'
+import { CustomFieldsSection, type CustomFieldDef } from '../../components/CustomFieldsSection'
+
+type CollectedValues = Record<string, { value: string; setBy: string | null; updatedAt: string }>
 
 
 export function DraftBills() {
@@ -32,6 +36,12 @@ export function DraftBills() {
   const [draftState, setDraftState] = useState('')
   const [creatingDraft, setCreatingDraft] = useState(false)
   const [createDraftError, setCreateDraftError] = useState<string | null>(null)
+  // Custom fields shown on the create form, and the values collected for them.
+  // The values are held in the bill page's serialized form (multi-select as a
+  // JSON array string) because the same CustomFieldsSection renders them; they
+  // are converted back to the request format on submit.
+  const [customFieldDefs, setCustomFieldDefs] = useState<CustomFieldDef[]>([])
+  const [customFieldValues, setCustomFieldValues] = useState<CollectedValues>({})
   const [draftList, setDraftList] = useState<{ id: string; billNumber: string; title: string; state: string | null }[] | null>(null)
   // Source for the State field's option list. This admin page isn't wired
   // into useBillFilters' searchParams/facetCounts plumbing, so it calls
@@ -59,6 +69,13 @@ export function DraftBills() {
     apiFetch<{ drafts: { id: string; billNumber: string; title: string; state: string | null }[] }>('/bills/drafts')
       .then(r => setDraftList(r.drafts))
       .catch(() => setDraftList([]))
+  }, [])
+
+  useEffect(() => {
+    // A failure only hides the custom fields; the draft can still be created.
+    apiFetch<CustomFieldDef[]>('/config/custom-fields')
+      .then(defs => setCustomFieldDefs(Array.isArray(defs) ? defs : []))
+      .catch(() => setCustomFieldDefs([]))
   }, [])
 
   useEffect(() => {
@@ -115,6 +132,12 @@ export function DraftBills() {
       if (draftNumber.trim()) body.billNumber = draftNumber.trim()
       if (draftYear.trim()) body.year = Number(draftYear)
       if (draftState.trim()) body.state = draftState.trim()
+      const multipleById = new Map(customFieldDefs.map(f => [f.id, !!f.multiple]))
+      const customFields = Object.fromEntries(
+        Object.entries(customFieldValues).map(([fieldId, { value }]) =>
+          [fieldId, multipleById.get(fieldId) ? parseStoredMulti(value) : value]),
+      )
+      if (Object.keys(customFields).length > 0) body.customFields = customFields
       const created = await apiFetch<{ id: string }>('/bills/draft', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -137,6 +160,7 @@ export function DraftBills() {
         setDraftNumber('')
         setDraftYear(String(new Date().getFullYear()))
         setDraftState('')
+        setCustomFieldValues({})
         setCreateDraftError(null)
       })
       navigate('/bills/' + created.id)
@@ -299,6 +323,18 @@ export function DraftBills() {
                 allowEmpty
               />
             </div>
+            <CustomFieldsSection
+              collect
+              fields={customFieldDefs}
+              values={customFieldValues}
+              isAdmin
+              onUpdate={(fieldId, value) => setCustomFieldValues(prev => {
+                const next = { ...prev }
+                if (value === null) delete next[fieldId]
+                else next[fieldId] = { value, setBy: null, updatedAt: '' }
+                return next
+              })}
+            />
             {createDraftError && (
               <div style={{ fontSize: fontSize.sm, color: color.textErrorRed }}>{createDraftError}</div>
             )}
@@ -311,7 +347,7 @@ export function DraftBills() {
                 {creatingDraft ? 'Creating…' : 'Create draft'}
               </button>
               <button
-                onClick={() => { setShowDraftForm(false); setDraftTitle(''); setDraftSummary(''); setDraftSponsor(''); setDraftText(''); setDraftNumber(''); setDraftYear(String(new Date().getFullYear())); setDraftState(''); setCreateDraftError(null) }}
+                onClick={() => { setShowDraftForm(false); setDraftTitle(''); setDraftSummary(''); setDraftSponsor(''); setDraftText(''); setDraftNumber(''); setDraftYear(String(new Date().getFullYear())); setDraftState(''); setCustomFieldValues({}); setCreateDraftError(null) }}
                 style={{ fontSize: fontSize.sm, color: color.textSecondary, background: 'none', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, padding: '8px 14px', cursor: 'pointer' }}
               >
                 Cancel
