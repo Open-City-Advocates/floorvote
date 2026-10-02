@@ -20,6 +20,7 @@ import { aiInstructionsChanged, configChanged, type ConfigSnapshot, centralSyncW
 import { buildDefaultAiContext, buildDefaultRelevanceQuestion, isAiConfigDefault } from '../../../../shared/aiDefaults'
 import { DEFAULT_TAXONOMY, serializeTaxonomy, type TaxonomyItem } from '../../../../shared/taxonomy'
 import { useUnsavedRegistration } from '../../lib/unsavedText'
+import { RequiredLabel, RequiredLegend, MissingRequiredReason, useRequiredSubmit } from '../../components/RequiredField'
 import TagTaxonomyTable from './TagTaxonomyTable'
 import { rowsFromTaxonomy, rowsToTaxonomy, type TaxonomyRow } from './taxonomyRows'
 
@@ -56,6 +57,9 @@ const aiTextareaStyle: React.CSSProperties = {
   fontSize: fontSize.sm,
   lineHeight: 1.5,
 }
+
+// The add-custom-field form's labels keep its compact, muted look.
+const CF_LABEL: React.CSSProperties = { fontWeight: fontWeight.normal, color: color.textSecondary, marginBottom: 2 }
 
 export function Config() {
   usePageTitle('Settings')
@@ -541,14 +545,19 @@ export function Config() {
     }
   }
 
+  // Name is required, and a dropdown also needs at least one option. The
+  // server rejects an option-less dropdown too; that check stays as the
+  // backstop, but the button is blocked here first so it never gets that far.
+  const cfParsedOptions = cfOptions.split(',').map(s => s.trim()).filter(Boolean)
+  const cfMissingRequired = !cfName.trim() || (cfType === 'dropdown' && cfParsedOptions.length === 0)
+  const cfGate = useRequiredSubmit({ missingRequired: cfMissingRequired, blocked: cfAdding || demoLocked })
+
   async function handleAddCustomField() {
     const name = cfName.trim()
-    if (!name) return
+    if (cfGate.disabled) return
     setCfAdding(true)
     try {
-      const options = cfType === 'dropdown'
-        ? cfOptions.split(',').map(s => s.trim()).filter(Boolean)
-        : undefined
+      const options = cfType === 'dropdown' ? cfParsedOptions : undefined
       const created = await apiFetch<CustomFieldDef>('/admin/custom-fields', {
         method: 'POST',
         body: JSON.stringify({ name, type: cfType, options, multiple: cfType === 'dropdown' ? cfMultiple : undefined }),
@@ -1158,21 +1167,26 @@ export function Config() {
         )}
 
         {/* Add new field form */}
+        <div role="group" aria-label="Add custom field">
+        <RequiredLegend style={{ marginBottom: 6 }} />
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div>
-            <div style={{ fontSize: fontSize.sm, color: color.textSecondary, marginBottom: 2 }}>Name</div>
+            <RequiredLabel htmlFor="cf-new-name" style={CF_LABEL}>Name</RequiredLabel>
             <input
+              id="cf-new-name"
               type="text"
               value={cfName}
               onChange={e => setCfName(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleAddCustomField()}
               placeholder="Field name…"
+              aria-required="true"
               style={{ fontSize: fontSize.sm, padding: '5px 10px', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, width: 180, fontFamily: 'inherit', color: color.textSlate }}
             />
           </div>
           <div>
-            <div style={{ fontSize: fontSize.sm, color: color.textSecondary, marginBottom: 2 }}>Type</div>
+            <label htmlFor="cf-new-type" style={{ ...FORM_LABEL, ...CF_LABEL }}>Type</label>
             <select
+              id="cf-new-type"
               value={cfType}
               onChange={e => setCfType(e.target.value as typeof cfType)}
               style={{ ...selectStyle, width: '100%' }}
@@ -1186,12 +1200,15 @@ export function Config() {
           {cfType === 'dropdown' && (
             <>
               <div>
-                <div style={{ fontSize: fontSize.sm, color: color.textSecondary, marginBottom: 2 }}>Options (comma-separated)</div>
+                <RequiredLabel htmlFor="cf-new-options" style={CF_LABEL}>Options (comma-separated)</RequiredLabel>
                 <input
+                  id="cf-new-options"
                   type="text"
                   value={cfOptions}
                   onChange={e => setCfOptions(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleAddCustomField()}
                   placeholder="Option 1, Option 2, Option 3"
+                  aria-required="true"
                   style={{ fontSize: fontSize.sm, padding: '5px 10px', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, width: 260, fontFamily: 'inherit', color: color.textSlate }}
                 />
               </div>
@@ -1208,11 +1225,13 @@ export function Config() {
           )}
           <button
             onClick={handleAddCustomField}
-            disabled={cfAdding || !cfName.trim() || demoLocked}
-            style={{ background: cfName.trim() && !demoLocked ? color.accentBlue : color.borderDefault, color: cfName.trim() && !demoLocked ? color.white : color.textMuted, border: 'none', borderRadius: radius.md, padding: '8px 20px', cursor: cfName.trim() && !demoLocked ? 'pointer' : 'not-allowed', fontSize: fontSize.sm, fontWeight: fontWeight.medium }}
+            {...cfGate.buttonProps}
+            style={{ background: !cfGate.disabled ? color.accentBlue : color.borderDefault, color: !cfGate.disabled ? color.white : color.textMuted, border: 'none', borderRadius: radius.md, padding: '8px 20px', cursor: !cfGate.disabled ? 'pointer' : 'not-allowed', fontSize: fontSize.sm, fontWeight: fontWeight.medium }}
           >
             {cfAdding ? 'Adding…' : 'Add field'}
           </button>
+          <MissingRequiredReason {...cfGate.reasonProps} style={{ paddingBottom: 8 }} />
+        </div>
         </div>
 
       </div>

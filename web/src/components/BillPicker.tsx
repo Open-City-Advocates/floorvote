@@ -18,12 +18,16 @@ export interface BillOption {
 
 const MAX_RESULTS = 8
 
-export function BillPicker({ options, value, onChange, multiState, single }: {
+export function BillPicker({ options, value, onChange, multiState, single, inputId, required }: {
   options: BillOption[]
   value: string[]
   onChange: (ids: string[]) => void
   multiState: boolean
   single?: boolean
+  /** id for the search input, so a <label htmlFor> can name it. */
+  inputId?: string
+  /** Marks the search input aria-required (the required-field pattern). */
+  required?: boolean
 }) {
   const [query, setQuery] = useState('')
   const [highlight, setHighlight] = useState(0)
@@ -87,6 +91,8 @@ export function BillPicker({ options, value, onChange, multiState, single }: {
         </div>
       )}
       <input
+        id={inputId}
+        aria-required={required ? 'true' : undefined}
         style={field}
         placeholder="Search bills…"
         value={query}

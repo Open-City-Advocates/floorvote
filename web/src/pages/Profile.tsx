@@ -14,6 +14,7 @@ import { actionRowStyle, actionRowStyleFirst, actionBtnBlue, actionBtnRed } from
 import { digestCadenceDescription, weekAheadCadenceDescription, isModuleEnabled } from '../lib/modules'
 import type { ModulesConfig } from '../lib/modules'
 import { DEFAULT_ORG_NOUN } from '../lib/orgNoun'
+import { RequiredLabel, RequiredLegend, MissingRequiredReason, useRequiredSubmit } from '../components/RequiredField'
 
 const SECTION_CARD: React.CSSProperties = { ...CARD, padding: 24, marginBottom: 20 }
 
@@ -164,7 +165,13 @@ export function Profile() {
     }
   }
 
+  // The name is required. The server ignores a blank name and keeps the old
+  // one, so sending it would report "Saved" for a change that never happened:
+  // block it here instead.
+  const saveGate = useRequiredSubmit({ missingRequired: !nameInput.trim(), blocked: saving || demoLocked })
+
   async function handleSave() {
+    if (saveGate.disabled) return
     setSaving(true)
     try {
       const payload = {
@@ -281,15 +288,17 @@ export function Profile() {
       {/* Profile card */}
       <div style={SECTION_CARD}>
         <h1 style={CARD_TITLE}>Profile</h1>
+        <RequiredLegend style={{ marginBottom: 12 }} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
           <div>
-            <label style={FORM_LABEL} htmlFor="name-input">Name</label>
+            <RequiredLabel htmlFor="name-input">Name</RequiredLabel>
             <input
               id="name-input"
               type="text"
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
               placeholder="Your name"
+              aria-required="true"
               style={{
                 display: 'block',
                 width: '100%',
@@ -336,25 +345,26 @@ export function Profile() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
           <button
             onClick={handleSave}
-            disabled={saving || demoLocked}
+            {...saveGate.buttonProps}
             style={{
               background: color.accentBlue,
               color: color.white,
               border: 'none',
               borderRadius: radius.md,
               padding: '8px 20px',
-              cursor: saving || demoLocked ? 'not-allowed' : 'pointer',
+              cursor: saveGate.disabled ? 'not-allowed' : 'pointer',
               fontSize: fontSize.base,
               fontWeight: fontWeight.medium,
-              opacity: saving || demoLocked ? 0.5 : 1,
+              opacity: saveGate.disabled ? 0.5 : 1,
             }}
           >
             {saving ? 'Saving…' : 'Save'}
           </button>
-          {saved && (
+          <MissingRequiredReason {...saveGate.reasonProps} />
+          {saved && !saveGate.reasonProps.show && (
             <span style={{ fontSize: fontSize.sm, color: color.textSuccess, fontWeight: fontWeight.medium }}>Saved</span>
           )}
           {saveError && (

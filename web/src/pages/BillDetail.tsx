@@ -61,6 +61,7 @@ import { CollapsibleSection } from '../components/CollapsibleSection'
 import { useMultiState } from '../context/ConfigContext'
 import { AnalysisBox, AnalysisProgressChip, DIMMED_WHILE_RUNNING } from '../components/AnalysisBox'
 import { pollForAnalysis, analysisOutcomeMessage } from '../lib/analysisPoll'
+import { RequiredLabel, RequiredLegend, MissingRequiredReason, useRequiredSubmit } from '../components/RequiredField'
 
 function PartyBadge({ party }: { party: string }) {
   const bg = party === 'D' ? color.bgBlueChip : party === 'R' ? color.bgRedPriority : color.surfaceMuted
@@ -649,6 +650,9 @@ export function BillDetail() {
   const [hoveredPinnedFieldId, setHoveredPinnedFieldId] = useState<string | null>(null)
   const [linkTarget, setLinkTarget] = useState<string | null>(null)
   const [linking, setLinking] = useState(false)
+  // Linking needs a filed bill chosen; demo lock and an in-flight link are the
+  // button's other disabled reasons.
+  const linkGate = useRequiredSubmit({ missingRequired: !linkTarget, blocked: linking || demoLocked })
   const [deletingDraft, setDeletingDraft] = useState(false)
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null)
   const [filedOptions, setFiledOptions] = useState<BillOption[]>([])
@@ -1387,7 +1391,9 @@ export function BillDetail() {
               An admin added this draft pre-filed bill. When the associated bill is filed, link it here to transfer all votes, positions, comments, notes, custom fields, and calendar events to the filed bill:
             </p>
             {isAdmin ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div role="group" aria-label="Link to filed bill" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <RequiredLegend style={{ color: color.textAmberWarning }} />
+                <RequiredLabel htmlFor="link-draft-target" style={{ color: color.textAmberWarning, marginBottom: 0 }}>Filed bill</RequiredLabel>
                 {/* Picker + link button on one row */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <div style={{ flex: 1 }}>
@@ -1397,16 +1403,18 @@ export function BillDetail() {
                       onChange={ids => setLinkTarget(ids[0] ?? null)}
                       multiState={filedOptions.some(o => o.state !== filedOptions[0]?.state)}
                       single
+                      inputId="link-draft-target"
+                      required
                     />
                   </div>
                   <button
                     type="button"
                     onClick={handleLinkDraft}
-                    disabled={!linkTarget || linking || demoLocked}
+                    {...linkGate.buttonProps}
                     style={{
-                      background: (!linkTarget || linking || demoLocked) ? color.accentBlueMuted : color.accentBlue,
+                      background: linkGate.disabled ? color.accentBlueMuted : color.accentBlue,
                       color: color.white, border: 'none', borderRadius: radius.md,
-                      padding: '8px 14px', cursor: (!linkTarget || linking || demoLocked) ? 'not-allowed' : 'pointer',
+                      padding: '8px 14px', cursor: linkGate.disabled ? 'not-allowed' : 'pointer',
                       fontSize: fontSize.sm, fontWeight: fontWeight.medium, lineHeight: 1.4, whiteSpace: 'nowrap',
                       opacity: demoLocked ? 0.5 : 1,
                     }}
@@ -1414,6 +1422,7 @@ export function BillDetail() {
                     {linking ? 'Linking…' : 'Link & merge into filed bill'}
                   </button>
                 </div>
+                <MissingRequiredReason {...linkGate.reasonProps} style={{ color: color.textAmberWarning, alignSelf: 'flex-end' }} />
               </div>
             ) : null}
           </div>
