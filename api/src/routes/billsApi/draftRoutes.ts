@@ -5,6 +5,7 @@ import { requireAdmin } from '../../middleware/auth'
 import { getDb } from '../../db/client'
 import {
   bills, memberVotes, officialPositions, comments, notes, feedEvents, billTexts,
+  billCustomFieldValues, calendarEventBills,
 } from '../../db/schema'
 import type { AppEnv } from '../../types'
 import { centralFetch } from '../../lib/centralFetch'
@@ -36,7 +37,7 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
       db.select({ id: comments.id }).from(comments).where(and(eq(comments.billId, id), isNull(comments.deletedAt))).get(),
       db.select({ id: notes.id }).from(notes).where(and(eq(notes.billId, id), ne(notes.content, ''))).get(),
     ])
-    if (v || p || cm || nt) return c.json({ error: 'This draft has engagement; unlink or merge it into a filed bill instead.' }, 409)
+    if (v || p || cm || nt) return c.json({ error: 'This draft has engagement; link it to a filed bill instead.' }, 409)
 
     await db.batch([
       db.delete(feedEvents).where(eq(feedEvents.billId, id)),
@@ -105,7 +106,7 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     return c.json({ id, billNumber, title, year, isDraft: true }, 201)
   })
 
-  // POST /bills/:id/link — merge a draft into a filed bill (admin/owner only). :id is the DRAFT.
+  // POST /bills/:id/link — link a draft to its filed bill (admin/owner only). :id is the DRAFT.
   router.post('/:id/link', requireAdmin, async (c) => {
     const db = getDb(c.env.DB)
     const draftId = c.req.param('id')
@@ -127,6 +128,10 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
       .from(notes).where(eq(notes.billId, filedBillId)).all()).map(r => r.userId)
     const filedVoteUserIds = (await db.select({ userId: memberVotes.userId })
       .from(memberVotes).where(eq(memberVotes.billId, filedBillId)).all()).map(r => r.userId)
+    const filedFieldIds = (await db.select({ fieldId: billCustomFieldValues.fieldId })
+      .from(billCustomFieldValues).where(eq(billCustomFieldValues.billId, filedBillId)).all()).map(r => r.fieldId)
+    const filedEventIds = (await db.select({ eventId: calendarEventBills.eventId })
+      .from(calendarEventBills).where(eq(calendarEventBills.billId, filedBillId)).all()).map(r => r.eventId)
 
     // Heterogeneous update/delete queries collected for db.batch(); type as the element array.
     const ops: Parameters<typeof db.batch>[0][number][] = []
@@ -144,6 +149,17 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
       ops.push(db.delete(memberVotes).where(and(eq(memberVotes.billId, draftId), inArray(memberVotes.userId, filedVoteUserIds))))
     }
     ops.push(db.update(memberVotes).set({ billId: filedBillId }).where(eq(memberVotes.billId, draftId)))
+    // Custom field values cascade-delete with the draft, so they must move first.
+    // Filed bill wins on a shared field; set_by/updated_at are kept as-is.
+    if (filedFieldIds.length) {
+      ops.push(db.delete(billCustomFieldValues).where(and(eq(billCustomFieldValues.billId, draftId), inArray(billCustomFieldValues.fieldId, filedFieldIds))))
+    }
+    ops.push(db.update(billCustomFieldValues).set({ billId: filedBillId }).where(eq(billCustomFieldValues.billId, draftId)))
+    // calendar_event_bills has no FK, so unmoved rows would orphan on the dead draft id.
+    if (filedEventIds.length) {
+      ops.push(db.delete(calendarEventBills).where(and(eq(calendarEventBills.billId, draftId), inArray(calendarEventBills.eventId, filedEventIds))))
+    }
+    ops.push(db.update(calendarEventBills).set({ billId: filedBillId }).where(eq(calendarEventBills.billId, draftId)))
     ops.push(db.update(feedEvents).set({ billId: filedBillId }).where(eq(feedEvents.billId, draftId)))
     ops.push(db.delete(bills).where(eq(bills.id, draftId)))
 
