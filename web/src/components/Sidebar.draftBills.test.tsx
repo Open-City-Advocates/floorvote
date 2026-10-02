@@ -116,3 +116,24 @@ describe('Sidebar prioritized-bills draft marker', () => {
     expect(badge.textContent).not.toContain('draft')
   })
 })
+
+describe('Sidebar prioritized-bills untitled draft title', () => {
+  beforeEach(() => { priorityBills = [] })
+
+  it('labels an untitled draft "Untitled draft", in text and in the link name', async () => {
+    await renderSidebar([makeBill({ isDraft: true, title: '' })])
+    expect(screen.getByText('Untitled draft')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /H 100, draft, Untitled draft/ })).toBeInTheDocument()
+  })
+
+  it("keeps a titled draft's own title", async () => {
+    await renderSidebar([makeBill({ isDraft: true, title: 'Draft bill title' })])
+    expect(screen.getByText('Draft bill title')).toBeInTheDocument()
+    expect(screen.queryByText('Untitled draft')).toBeNull()
+  })
+
+  it('never labels a filed bill "Untitled draft"', async () => {
+    await renderSidebar([makeBill({ isDraft: false, title: '' })])
+    expect(screen.queryByText('Untitled draft')).toBeNull()
+  })
+})

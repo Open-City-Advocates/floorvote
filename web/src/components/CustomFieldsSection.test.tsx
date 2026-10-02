@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { CustomFieldsSection, type CustomFieldDef } from './CustomFieldsSection'
+import * as api from '../lib/api'
 
 // Heavy editor component that breaks in jsdom.
 vi.mock('./RichTextEditor', () => ({
@@ -72,5 +73,37 @@ describe('CustomFieldsSection text field inline edit keyboard access', () => {
     expect(screen.queryByRole('button', { name: /edit committee notes/i })).not.toBeInTheDocument()
     // Non-admin read-only content is still shown.
     expect(screen.getByText('Some notes')).toBeInTheDocument()
+  })
+})
+
+const DATE_FIELD: CustomFieldDef = {
+  id: 'f2', name: 'Due date', slug: 'due', type: 'date', options: null, multiple: false, displayOrder: 0, pinned: false,
+}
+const DATED = { f2: { value: '2027-01-15', setBy: 'Admin', updatedAt: '2025-01-01 00:00:00' } }
+
+// The bill page saves each change at once; the create-draft form only collects.
+describe('CustomFieldsSection saving vs collecting', () => {
+  it('on the bill page, saves a change to the bill and shows who set it', async () => {
+    const spy = vi.spyOn(api, 'apiFetch').mockResolvedValue({ ok: true } as never)
+    const onUpdate = vi.fn()
+    render(<CustomFieldsSection fields={[DATE_FIELD]} billId="b1" values={DATED} isAdmin onUpdate={onUpdate} />)
+    expect(screen.getByText(/set by admin/i)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Due date'), { target: { value: '2027-02-01' } })
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('f2', '2027-02-01', 'You'))
+    expect(spy).toHaveBeenCalledWith('/bills/b1/custom-fields', expect.objectContaining({
+      method: 'PUT', body: JSON.stringify({ f2: '2027-02-01' }),
+    }))
+    spy.mockRestore()
+  })
+
+  it('in collect mode, hands the change to onUpdate without saving it and shows no "Set by" line', async () => {
+    const spy = vi.spyOn(api, 'apiFetch').mockResolvedValue({ ok: true } as never)
+    const onUpdate = vi.fn()
+    render(<CustomFieldsSection collect fields={[DATE_FIELD]} values={DATED} isAdmin onUpdate={onUpdate} />)
+    expect(screen.queryByText(/set by/i)).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Due date'), { target: { value: '2027-02-01' } })
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('f2', '2027-02-01', 'You'))
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 })

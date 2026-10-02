@@ -115,6 +115,8 @@ export interface MentionEmailInput {
   author: { name: string; subtitle: string | null }
   bill: {
     id: string; billNumber: string; title: string
+    /** Lets the card label an untitled draft "Untitled draft". Absent = filed. */
+    isDraft?: boolean
     state: string | null; session: string
     priority: 'high' | 'medium' | 'low' | null
     tenantSummary: string | null
@@ -139,7 +141,7 @@ export function renderMentionEmail(input: MentionEmailInput): string {
   const model = buildBillCardModel({
     key: bill.id, billId: bill.id, billNumber: bill.billNumber, billTitle: bill.title,
     billSessionSlug: null, billState: bill.state, billSummary: bill.tenantSummary ?? null,
-    billPriority: bill.priority, billMatchType: null, date: '', events: [],
+    billPriority: bill.priority, billMatchType: null, billIsDraft: bill.isDraft ?? false, date: '', events: [],
   })
   const billHref = `${appUrl}${billUrl({ id: bill.id, state: bill.state, session: bill.session, billNumber: bill.billNumber })}`
   const commentUrl = `${billHref}#comment-${comment.id}`
@@ -318,6 +320,7 @@ async function sendMentionEmails(
     .select({
       billNumber: bills.billNumber,
       title: bills.title,
+      isDraft: bills.isDraft,
       id: bills.id,
       state: bills.state,
       session: bills.session,
@@ -355,7 +358,7 @@ async function sendMentionEmails(
       appUrl: env.APP_URL,
       author: { name: author.name, subtitle: author.subtitle },
       bill: {
-        id: bill.id, billNumber: bill.billNumber, title: bill.title,
+        id: bill.id, billNumber: bill.billNumber, title: bill.title, isDraft: bill.isDraft,
         state: bill.state, session: bill.session, priority: bill.priority,
         tenantSummary: bill.tenantSummary,
       },

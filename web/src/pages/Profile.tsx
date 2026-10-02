@@ -165,6 +165,7 @@ export function Profile() {
   }
 
   async function handleSave() {
+    if (saving || demoLocked) return
     setSaving(true)
     try {
       const payload = {
@@ -175,7 +176,12 @@ export function Profile() {
         method: 'PATCH',
         body: JSON.stringify(payload),
       })
-      setName(nameInput.trim())
+      // Name is optional, but a set name can't be cleared: the server ignores a
+      // blank name and keeps the stored one. Show what was actually saved
+      // rather than a blank field the server never applied.
+      const trimmedName = nameInput.trim()
+      if (trimmedName) setName(trimmedName)
+      else setNameInput(user?.name ?? '')
       setSubtitle(payload.subtitle)
       setSaved(true)
       setSaveError(null)
@@ -336,7 +342,7 @@ export function Profile() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
           <button
             onClick={handleSave}
             disabled={saving || demoLocked}

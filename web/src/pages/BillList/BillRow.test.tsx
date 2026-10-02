@@ -379,3 +379,28 @@ describe('BillRow tooltips escape the row stacking context', () => {
     expect(container.contains(screen.getByText(/priority level/i))).toBe(false)
   })
 })
+
+describe('BillRow untitled draft title', () => {
+  it('shows "Untitled draft" for a draft with no title', () => {
+    renderRow(false, { bill: { billNumber: 'D1', title: '', isDraft: true, matchType: 'manual' } })
+    expect(screen.getByText('Untitled draft')).toBeInTheDocument()
+    expect(screen.getAllByText('D1').length).toBeGreaterThan(0)
+  })
+
+  it('shows "Untitled draft" for a draft with a whitespace-only title', () => {
+    renderRow(true, { bill: { billNumber: 'D1', title: '   ', isDraft: true, matchType: 'manual' } })
+    expect(screen.getByText('Untitled draft')).toBeInTheDocument()
+  })
+
+  it("shows a titled draft's own title", () => {
+    renderRow(false, { bill: { billNumber: 'D1', title: 'Draft bill title', isDraft: true, matchType: 'manual' } })
+    expect(screen.getByText('Draft bill title')).toBeInTheDocument()
+    expect(screen.queryByText('Untitled draft')).toBeNull()
+  })
+
+  it('never labels a filed bill "Untitled draft" — a blank filed title still falls back to the abstract', () => {
+    renderRow(false, { bill: { title: '', isDraft: false, abstract: 'Filed bill abstract' } })
+    expect(screen.getByText('Filed bill abstract')).toBeInTheDocument()
+    expect(screen.queryByText('Untitled draft')).toBeNull()
+  })
+})
