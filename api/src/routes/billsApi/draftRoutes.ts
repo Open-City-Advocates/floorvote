@@ -55,11 +55,13 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
   router.post('/draft', requireAdmin, async (c) => {
     const db = getDb(c.env.DB)
     const body = await c.req.json<{
-      billNumber?: string; title?: string; summary?: string; sponsor?: string
+      billNumber?: string; title?: string | null; summary?: string; sponsor?: string
       text?: string; state?: string; year?: number
     }>().catch(() => ({} as Record<string, string>))
-    const title = body.title?.trim()
-    if (!title) return c.json({ error: 'title is required' }, 400)
+    // A draft may be untitled: a request often has a number months before it
+    // has a title. bills.title is NOT NULL, so an untitled draft stores '' and
+    // display falls back to "Untitled draft" (shared/billTitle.ts).
+    const title = typeof body.title === 'string' ? body.title.trim() : ''
 
     const id = crypto.randomUUID()
     const user = c.get('user')
@@ -177,17 +179,16 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     if (!existing.isDraft) return c.json({ error: 'not a draft bill' }, 400)
 
     const body = await c.req.json<{
-      title?: string; sponsor?: string; summary?: string; text?: string
+      title?: string | null; sponsor?: string; summary?: string; text?: string
       billNumber?: string; year?: number; state?: string
     }>().catch(() => ({} as Record<string, string>))
 
     // Build update object — only include fields present in body
     const patch: Partial<typeof existing> = {}
-    if ('title' in body) {
-      const t = body.title?.trim()
-      if (t) patch.title = t
-      // empty title is silently ignored (cannot clear required field)
-    }
+    // A blank title clears it: a draft may be untitled (stored as '', shown as
+    // "Untitled draft"). Filed bills never reach here — the isDraft guard above
+    // 400s them — so a source title can't be blanked through this endpoint.
+    if ('title' in body) patch.title = typeof body.title === 'string' ? body.title.trim() : ''
     if ('sponsor' in body) patch.sponsor = body.sponsor?.trim() || null
     if ('summary' in body) patch.tenantSummary = body.summary?.trim() || null
     if ('text' in body) patch.draftText = body.text?.trim() || null

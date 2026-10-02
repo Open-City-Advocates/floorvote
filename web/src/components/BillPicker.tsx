@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { color, radius, fontSize, fontWeight } from '../styles/tokens'
+import { billDisplayTitle } from '../../../shared/billTitle'
 import { BillBadge } from './BillBadge'
 
 export interface BillOption {
@@ -35,7 +36,7 @@ export function BillPicker({ options, value, onChange, multiState, single }: {
       .filter(o => !value.includes(o.id))
       .filter(o =>
         o.billNumber.toLowerCase().includes(q) ||
-        o.title.toLowerCase().includes(q) ||
+        billDisplayTitle(o).toLowerCase().includes(q) ||
         (o.state ?? '').toLowerCase().includes(q))
       .slice(0, MAX_RESULTS)
   }, [query, options, value])
@@ -106,7 +107,7 @@ export function BillPicker({ options, value, onChange, multiState, single }: {
                   is the same mistake the badge exists to prevent, and a
                   full-width row has room for the word. */}
               {o.isDraft && <span style={{ fontSize: fontSize.xs, fontWeight: fontWeight.semibold, color: color.textSecondary, marginLeft: 6 }}>Draft</span>}
-              <span style={{ fontSize: fontSize.xs, color: color.textMuted }}> — {o.title}</span>
+              <span style={{ fontSize: fontSize.xs, color: color.textMuted }}> — {billDisplayTitle(o)}</span>
             </button>
           ))}
         </div>

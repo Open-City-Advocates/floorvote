@@ -18,6 +18,7 @@ import { TAG_CHIP, TAG_CHIP_HOVERED, TAG_CHIP_ACTIVE } from '../../lib/tagChipSt
 import { TOOLTIP_STYLE } from '../../lib/chipStyles'
 import { SECTION_LABEL, CHROME_TEXT } from '../../lib/textStyles'
 import { color, radius, fontSize, fontWeight } from '../../styles/tokens'
+import { billDisplayTitle } from '../../../../shared/billTitle'
 import { voteButtonStyle, type VoteKey } from '../../lib/voteButtonStyle'
 import { useConfig } from '../../context/ConfigContext'
 import { DEFAULT_ORG_NOUN } from '../../lib/orgNoun'
@@ -292,7 +293,7 @@ export const BillRow = memo(function BillRow({
               appears where .bill-col-status is hidden and the mobile row
               hasn't taken over — same @container-block pairing as before. */}
           {bill.isDraft && <TitleDraftMarker className="bill-title-draft-marker" />}
-          {bill.title || bill.abstract}
+          {billDisplayTitle(bill) || bill.abstract}
         </div>
         {(bill.tenantSummary || (bill.title && bill.abstract && bill.abstract.trim().toLowerCase() !== bill.title.trim().toLowerCase())) && (
           <div style={{

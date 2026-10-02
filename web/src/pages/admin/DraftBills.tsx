@@ -12,6 +12,7 @@ import { RichTextEditor } from '../../components/RichTextEditor'
 import { BillBadge } from '../../components/BillBadge'
 import { Picker, type PickerOption } from '../../components/Picker'
 import { pickerFieldTriggerStyle, PickerFieldCaret } from '../../lib/pickerFieldStyle'
+import { billDisplayTitle } from '../../../../shared/billTitle'
 
 
 export function DraftBills() {
@@ -97,14 +98,17 @@ export function DraftBills() {
   }, [showDraftForm, draftState])
 
   async function handleCreateDraft() {
+    // Title is optional: a draft may be tracked by its number alone and shows
+    // as "Untitled draft" until it gets one.
     const title = draftTitle.trim()
-    if (!title || demoLocked) return
+    if (demoLocked) return
     if (needsState && !draftState.trim()) return
     setCreatingDraft(true)
     setCreateDraftError(null)
     try {
       const hasContent = (html: string) => html.replace(/<[^>]*>/g, '').trim().length > 0
-      const body: Record<string, unknown> = { title }
+      const body: Record<string, unknown> = {}
+      if (title) body.title = title
       if (draftSponsor.trim()) body.sponsor = draftSponsor.trim()
       if (hasContent(draftSummary)) body.summary = draftSummary
       if (hasContent(draftText)) body.text = draftText
@@ -252,7 +256,7 @@ export function DraftBills() {
               </div>
             )}
             <div>
-              <label htmlFor="draft-title" style={labelStyle}>Title <span style={{ fontWeight: fontWeight.semibold, color: color.textDanger }}>*</span></label>
+              <label htmlFor="draft-title" style={labelStyle}>Title</label>
               <input
                 id="draft-title"
                 value={draftTitle}
@@ -301,8 +305,8 @@ export function DraftBills() {
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
               <button
                 onClick={handleCreateDraft}
-                disabled={!draftTitle.trim() || (needsState && !draftState.trim()) || creatingDraft || demoLocked}
-                style={actionBtnBlue(!draftTitle.trim() || (needsState && !draftState.trim()) || creatingDraft || demoLocked)}
+                disabled={(needsState && !draftState.trim()) || creatingDraft || demoLocked}
+                style={actionBtnBlue((needsState && !draftState.trim()) || creatingDraft || demoLocked)}
               >
                 {creatingDraft ? 'Creating…' : 'Create draft'}
               </button>
@@ -326,7 +330,7 @@ export function DraftBills() {
                       {/* Every row here is a draft by construction (this list comes from
                           /bills/drafts) — isDraft is a literal true, not a field read off d. */}
                       <BillBadge billNumber={d.billNumber} state={d.state} to={'/bills/' + d.id} isDraft />
-                      <span style={{ fontSize: fontSize.sm, color: color.textSecondary, flex: 1 }}>{d.title}</span>
+                      <span style={{ fontSize: fontSize.sm, color: color.textSecondary, flex: 1 }}>{billDisplayTitle({ title: d.title, isDraft: true })}</span>
                       <button
                         onClick={async (e) => {
                           e.stopPropagation()

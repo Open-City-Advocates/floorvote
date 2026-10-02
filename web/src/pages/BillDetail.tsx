@@ -48,6 +48,7 @@ import { useNotifications } from '../context/NotificationsContext'
 import { markMentionsRead } from '../lib/demoReadState'
 import { relativeTime, absoluteTime } from '../lib/time'
 import { COMMENT_STYLE } from '../../../shared/commentStyle'
+import { billDisplayTitle } from '../../../shared/billTitle'
 import { getScrollContainer } from '../lib/scrollUtils'
 import { billUrl } from '../lib/sessionSlug'
 import { todayIso } from '../lib/calendarGrid'
@@ -601,7 +602,7 @@ export function BillDetail() {
   const [triageDismissed, setTriageDismissed] = useState(false)
   const [loading, setLoading] = useState(() => prefetchedBill ? false : true)
   const [error, setError] = useState<string | null>(null)
-  usePageTitle(bill ? `${bill.state} ${bill.billNumber} — ${bill.title ?? bill.abstract}` : null)
+  usePageTitle(bill ? `${bill.state} ${bill.billNumber} — ${billDisplayTitle(bill) || bill.abstract || ''}` : null)
   const [myVote, setMyVote] = useState<'support' | 'oppose' | 'neutral' | null>(prefetchedBill?.myVote ?? null)
   const [priority, setPriority] = useState<'high' | 'medium' | 'low' | null>(prefetchedBill?.priority ?? null)
   const [position, setPosition] = useState<string | null>(prefetchedBill?.position?.position ?? null)
@@ -1425,11 +1426,17 @@ export function BillDetail() {
                 e.preventDefault()
                 if (demoLocked) return
                 const form = e.currentTarget
+                // A blank value clears the title: a draft may be untitled, and
+                // then shows as "Untitled draft" (shared/billTitle.ts).
                 const val = (form.elements.namedItem('draftTitle') as HTMLInputElement).value.trim()
-                if (!val) return
-                await apiFetch(`/bills/${bill.id}/draft`, { method: 'PATCH', body: JSON.stringify({ title: val }) })
-                setBill(prev => prev ? { ...prev, title: val } : prev)
-                setEditingDraftField(null)
+                try {
+                  await apiFetch(`/bills/${bill.id}/draft`, { method: 'PATCH', body: JSON.stringify({ title: val }) })
+                  setBill(prev => prev ? { ...prev, title: val } : prev)
+                  setEditingDraftField(null)
+                  setDraftFieldError(null)
+                } catch (err) {
+                  setDraftFieldError(err instanceof ApiError ? err.message : 'Failed to save title.')
+                }
               }}
               style={{ display: 'flex', gap: 8, alignItems: 'center' }}
             >
@@ -1438,7 +1445,7 @@ export function BillDetail() {
                 defaultValue={bill.title ?? ''}
                 // eslint-disable-next-line jsx-a11y/no-autofocus -- pre-existing: focus follows the user's own click/Enter into edit mode, out of scope for this task's focus-management redesign
                 autoFocus
-                onKeyDown={e => { if (e.key === 'Escape') setEditingDraftField(null) }}
+                onKeyDown={e => { if (e.key === 'Escape') { setEditingDraftField(null); setDraftFieldError(null) } }}
                 style={{
                   flex: 1,
                   fontSize: fontSize.xxxl,
@@ -1453,7 +1460,7 @@ export function BillDetail() {
                 }}
               />
               <button type="submit" style={{ fontSize: fontSize.sm, fontWeight: fontWeight.medium, background: color.accentBlue, color: color.white, border: 'none', borderRadius: radius.md, padding: '6px 12px', cursor: 'pointer' }}>Save</button>
-              <button type="button" onClick={() => setEditingDraftField(null)} style={{ fontSize: fontSize.sm, color: color.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px' }}>Cancel</button>
+              <button type="button" onClick={() => { setEditingDraftField(null); setDraftFieldError(null) }} style={{ fontSize: fontSize.sm, color: color.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px' }}>Cancel</button>
             </form>
           </div>
         ) : bill.isDraft && isAdmin ? (
@@ -1484,7 +1491,7 @@ export function BillDetail() {
                 opacity: demoLocked ? 0.5 : 1,
               }}
             >
-              {bill.title || bill.abstract}
+              {billDisplayTitle(bill) || bill.abstract}
             </button>
           </h1>
         ) : (
@@ -1493,7 +1500,7 @@ export function BillDetail() {
               fontSize: fontSize.xxxl, fontWeight: fontWeight.bold, color: color.textPrimary, margin: '0 0 4px', fontFamily: "'Source Serif 4', serif",
             }}
           >
-            {bill.title || bill.abstract}
+            {billDisplayTitle(bill) || bill.abstract}
           </h1>
         )}
         {bill.abstract && bill.title && bill.abstract.trim().toLowerCase() !== bill.title.trim().toLowerCase() && (
