@@ -8,6 +8,7 @@ import { usePolling } from '../hooks/usePolling'
 import { useRegisterSidebarRefresh } from '../context/SidebarRefreshContext'
 import { Wordmark } from './Wordmark'
 import { PRODUCT_NAME } from '../../../shared/brand'
+import { billDisplayTitle } from '../../../shared/billTitle'
 import { FeedbackModal } from './FeedbackModal'
 import { OperatorBranding } from './OperatorBranding'
 import { useBillTooltip, type TooltipBill } from './BillHoverTooltip'
@@ -814,7 +815,7 @@ export function Sidebar({ isOpen, onClose, containerRef }: SidebarProps) {
                               it, so the name matches what is on screen. */}
                           <Link
                             className="sidebar-priority-bill-link"
-                            aria-label={`${multiState && bill.state ? `${bill.state} ` : ''}${bill.billNumber}${bill.isDraft ? ', draft' : ''}, ${bill.title}`}
+                            aria-label={`${multiState && bill.state ? `${bill.state} ` : ''}${bill.billNumber}${bill.isDraft ? ', draft' : ''}, ${billDisplayTitle(bill)}`}
                             to={billUrl({ id: bill.id, state: bill.state, sessionSlug: bill.sessionSlug, billNumber: bill.billNumber })}
                             onClick={() => onClose()}
                             style={{ display: 'block', textDecoration: 'none' }}
@@ -823,7 +824,7 @@ export function Sidebar({ isOpen, onClose, containerRef }: SidebarProps) {
                             onMouseLeave={handleBillTitleLeave}
                           >
                             <span style={{ fontSize: fontSize.xs, fontWeight: fontWeight.bold, color: color.tooltipBg, fontFamily: "'Source Serif 4', serif", lineHeight: 1.4, display: 'block' }}>
-                              {bill.title}
+                              {billDisplayTitle(bill)}
                             </span>
                           </Link>
                         </div>

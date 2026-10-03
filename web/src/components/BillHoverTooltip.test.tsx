@@ -48,3 +48,19 @@ describe('useBillTooltip', () => {
     expect(screen.queryByText('A bill about elections')).toBeNull()
   })
 })
+
+describe('BillHoverTooltip untitled drafts', () => {
+  it('shows "Untitled draft" for a draft with a blank title', () => {
+    render(<BillHoverTooltip bill={{ billNumber: 'D1', title: '', isDraft: true, summary: 'S.', priority: null }} cursor={{ x: 0, y: 0 }} />)
+    expect(screen.getByText('Untitled draft')).toBeInTheDocument()
+  })
+  it("shows a titled draft's own title", () => {
+    render(<BillHoverTooltip bill={{ billNumber: 'D1', title: 'Draft bill title', isDraft: true, summary: 'S.', priority: null }} cursor={{ x: 0, y: 0 }} />)
+    expect(screen.getByText('Draft bill title')).toBeInTheDocument()
+    expect(screen.queryByText('Untitled draft')).toBeNull()
+  })
+  it('never labels a filed bill "Untitled draft"', () => {
+    render(<BillHoverTooltip bill={{ billNumber: 'H 1', title: '', summary: 'S.', priority: null }} cursor={{ x: 0, y: 0 }} />)
+    expect(screen.queryByText('Untitled draft')).toBeNull()
+  })
+})

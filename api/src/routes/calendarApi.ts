@@ -10,6 +10,7 @@ import { billUrl } from '../../../shared/sessionSlug'
 import { collectPriorityLegiscanIds, backfillCalendar } from '../lib/calendarBackfill'
 import { nowDb } from '../lib/dbTime'
 import { PRODUCT_NAME } from '../../../shared/brand'
+import { billDisplayTitle } from '../../../shared/billTitle'
 import { importUid, importEventHash, type ImportRow } from '../lib/calendarImport'
 import type { AppEnv } from '../types'
 
@@ -132,7 +133,7 @@ calendarRouter.get('/events', requireAuth, async (c) => {
       .all()
     for (const l of links) {
       const list = linkMap.get(l.eventId) ?? []
-      list.push({ id: l.id, billNumber: l.billNumber, billTitle: l.billTitle, state: l.state, priority: l.priority, isDraft: l.isDraft })
+      list.push({ id: l.id, billNumber: l.billNumber, billTitle: billDisplayTitle({ title: l.billTitle, isDraft: l.isDraft }), state: l.state, priority: l.priority, isDraft: l.isDraft })
       linkMap.set(l.eventId, list)
     }
   }
@@ -156,7 +157,7 @@ calendarRouter.get('/events', requireAuth, async (c) => {
     const billsArr: EventBill[] = r.source === 'custom' || r.source === 'council'
       ? (linkMap.get(r.id) ?? [])
       : (r.billNumber
-          ? [{ id: r.billId!, billNumber: r.billNumber, billTitle: r.billTitle ?? '', state: r.billState, priority: r.priority, isDraft: r.billIsDraft ?? false }]
+          ? [{ id: r.billId!, billNumber: r.billNumber, billTitle: billDisplayTitle({ title: r.billTitle, isDraft: r.billIsDraft }), state: r.billState, priority: r.priority, isDraft: r.billIsDraft ?? false }]
           : [])
     return {
       id: r.id, uid: r.uid, source: r.source, billId: r.billId,
@@ -394,7 +395,7 @@ calendarRouter.get('/feed/:slugIcs', async (c) => {
       details: calendarEvents.details, url: calendarEvents.url,
       billId: calendarEvents.billId,
       billNumber: bills.billNumber, billTitle: bills.title, priority: bills.priority, state: bills.state,
-      session: bills.session,
+      session: bills.session, billIsDraft: bills.isDraft,
     })
     .from(calendarEvents)
     .leftJoin(bills, eq(calendarEvents.billId, bills.id))
@@ -475,7 +476,7 @@ calendarRouter.get('/feed/:slugIcs', async (c) => {
       url = customUrl({ url: r.url, billHref, calendarHref })
     } else if (r.billNumber && r.billId) {
       const billHref = encodeURI(`https://${host}${billUrl({ id: r.billId, state: r.state, session: r.session, billNumber: r.billNumber })}`)
-      description = hearingBody({ billNumber: r.billNumber, billTitle: r.billTitle ?? null, priority: r.priority, billHref, assoc: assocName })
+      description = hearingBody({ billNumber: r.billNumber, billTitle: billDisplayTitle({ title: r.billTitle, isDraft: r.billIsDraft }) || null, priority: r.priority, billHref, assoc: assocName })
       url = billHref
     }
 

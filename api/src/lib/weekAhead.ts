@@ -6,6 +6,7 @@ import { nowDb } from './dbTime'
 import type { AppDb, Env } from '../types'
 import { isModuleEnabled, getModuleSetting } from '../../../shared/modules'
 import { PRODUCT_NAME } from '../../../shared/brand'
+import { billDisplayTitle } from '../../../shared/billTitle'
 
 const WEEKDAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -62,6 +63,7 @@ export async function runWeekAhead(env: Env, db: AppDb): Promise<void> {
       billNumber: bills.billNumber,
       billState: bills.state,
       billTitle: bills.title,
+      billIsDraft: bills.isDraft,
       billPriority: bills.priority,
     })
     .from(calendarEvents)
@@ -125,7 +127,7 @@ export async function runWeekAhead(env: Env, db: AppDb): Promise<void> {
         billNumber: row.billNumber ?? '',
         state: row.billState,
         priority: row.billPriority as 'high' | 'medium' | 'low' | null,
-        billTitle: row.billTitle,
+        billTitle: billDisplayTitle({ title: row.billTitle, isDraft: row.billIsDraft }),
       })
     }
   }

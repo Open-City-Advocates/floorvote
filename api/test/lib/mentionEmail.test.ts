@@ -77,3 +77,19 @@ describe('renderMentionEmail', () => {
     expect(html).not.toContain(long)
   })
 })
+
+describe('renderMentionEmail — untitled drafts', () => {
+  it('labels an untitled draft "Untitled draft" on the bill card', () => {
+    const html = renderMentionEmail({ ...base, bill: { ...base.bill, billNumber: 'D1', title: '', isDraft: true } })
+    expect(html).toContain('Untitled draft')
+  })
+  it('keeps a titled draft\'s own title', () => {
+    const html = renderMentionEmail({ ...base, bill: { ...base.bill, title: 'Draft bill title', isDraft: true } })
+    expect(html).toContain('Draft bill title')
+    expect(html).not.toContain('Untitled draft')
+  })
+  it('never labels a filed bill "Untitled draft", even with a blank title', () => {
+    const html = renderMentionEmail({ ...base, bill: { ...base.bill, title: '', isDraft: false } })
+    expect(html).not.toContain('Untitled draft')
+  })
+})

@@ -165,3 +165,20 @@ describe('renderDigestEmail', () => {
     expect(html).toMatchSnapshot()
   })
 })
+
+describe('renderDigestEmail — untitled drafts', () => {
+  it('labels an untitled draft "Untitled draft" on its card', () => {
+    const html = renderDigestEmail({ events: [ev({ billNumber: 'D1', billTitle: '', billIsDraft: true })], assocName: 'X', appUrl: 'https://x' })
+    expect(html).toContain('Untitled draft')
+    expect(html).toContain('D1')
+  })
+  it('keeps a titled draft\'s own title', () => {
+    const html = renderDigestEmail({ events: [ev({ billNumber: 'D1', billTitle: 'Draft bill title', billIsDraft: true })], assocName: 'X', appUrl: 'https://x' })
+    expect(html).toContain('Draft bill title')
+    expect(html).not.toContain('Untitled draft')
+  })
+  it('never labels a filed bill "Untitled draft", even with a blank title', () => {
+    const html = renderDigestEmail({ events: [ev({ billTitle: '', billIsDraft: false })], assocName: 'X', appUrl: 'https://x' })
+    expect(html).not.toContain('Untitled draft')
+  })
+})
