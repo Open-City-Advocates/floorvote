@@ -5,7 +5,8 @@ import { useConfig } from '../context/ConfigContext'
 import { isMac } from '../lib/tiptap-utils'
 import { useIsBreakpoint } from '../hooks/use-is-breakpoint'
 import { Dialog } from './ui/Dialog'
-import { RequiredLabel, RequiredLegend, MissingRequiredReason, useRequiredSubmit } from './RequiredField'
+import { FORM_LABEL } from '../lib/textStyles'
+import { MissingRequiredReason, useRequiredSubmit } from './RequiredField'
 
 interface FeedbackModalProps {
   onClose: () => void
@@ -57,8 +58,7 @@ export function FeedbackModal({ onClose }: FeedbackModalProps) {
         <p role="alert" style={{ fontSize: fontSize.base, color: color.textSuccessDark, margin: 0 }}>Feedback sent — thanks!</p>
       ) : (
         <>
-          <RequiredLegend style={{ marginBottom: 8 }} />
-          <RequiredLabel htmlFor="feedback-message">Your message</RequiredLabel>
+          <label htmlFor="feedback-message" style={FORM_LABEL}>Your message</label>
           <textarea
             id="feedback-message"
             ref={textareaRef}
@@ -98,8 +98,7 @@ export function FeedbackModal({ onClose }: FeedbackModalProps) {
 
           <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
             <button
-              onClick={handleSubmit}
-              {...gate.buttonProps}
+              {...gate.buttonProps(handleSubmit)}
               style={{
                 padding: '8px 20px', background: color.billBadgeNavy, color: color.white,
                 border: 'none', borderRadius: radius.md, fontSize: fontSize.sm, fontWeight: fontWeight.semibold,
@@ -109,13 +108,14 @@ export function FeedbackModal({ onClose }: FeedbackModalProps) {
             >
               {status === 'sending' ? 'Sending…' : 'Send feedback'}
             </button>
-            <MissingRequiredReason {...gate.reasonProps} />
             {status !== 'sending' && !isMobile && (
               <span style={{ fontSize: fontSize.sm, color: color.textMuted }}>
                 {isMac() ? '⌘↵' : 'Ctrl+Enter'} to send
               </span>
             )}
           </div>
+          {/* Below the button row, never in it: revealing it must not move Send. */}
+          <MissingRequiredReason {...gate.reasonProps} />
         </>
       )}
     </Dialog>
