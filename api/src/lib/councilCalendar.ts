@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNotNull, lte } from 'drizzle-orm'
+import { and, eq, gte, inArray, isNotNull, like, lte } from 'drizzle-orm'
 import { associationConfig, bills, calendarEventBills, calendarEvents } from '../db/schema'
 import { centralFetch } from './centralFetch'
 import { matchesUnion } from './keywords'
@@ -140,7 +140,46 @@ export async function loadCouncilWindow(env: Env, db: AppDb) {
     for (const r of rows) byNumber.set(r.billNumber, { id: r.id, tracked: !!r.matchType || !!r.priority })
   }
   const tracked = new Set([...byNumber].filter(([, v]) => v.tracked).map(([k]) => k))
-  return { from, to, events, byNumber, tracked }
+
+  // Hearing notices and the day each is scheduled for. An oversight roundtable's
+  // topic carries no measure number, so it links to its notice by day and topic.
+  const notices = await db.select({ id: bills.id, title: bills.title, date: calendarEvents.date })
+    .from(calendarEvents).innerJoin(bills, eq(bills.id, calendarEvents.billId))
+    .where(and(eq(calendarEvents.source, 'hearing'), gte(calendarEvents.date, from), lte(calendarEvents.date, to),
+      eq(bills.state, 'DC'), like(bills.billNumber, 'HN%'))).all()
+  return { from, to, events, byNumber, tracked, notices }
+}
+
+function topicKey(s: string): string {
+  return s.toLowerCase().replace(/['\u2019]/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+/**
+ * The hearing notice a numberless topic belongs to: the one notice set for the
+ * same day whose title names the topic ("Committee on Youth Affairs 10/7
+ * Roundtable on DYRS' Fifth Rulemaking on ..."). None when zero or several match.
+ */
+export function hearingNoticeFor(topic: string, date: string, notices: { id: string; title: string | null; date: string | null }[]): string | null {
+  const k = topicKey(topic)
+  if (k.length < 12) return null
+  const hits = notices.filter(n => n.date === date && topicKey(n.title ?? '').includes(k))
+  return hits.length === 1 ? hits[0].id : null
+}
+
+/** The tenant bills a Council event covers: numbered topics, and numberless ones by their hearing notice. */
+function eventBillIds(e: CouncilEvent, byNumber: Map<string, { id: string }>, notices: { id: string; title: string | null; date: string | null }[]): string[] {
+  const ids = e.topics.map(t => t.number ? byNumber.get(t.number)?.id ?? null : hearingNoticeFor(t.topic, e.date, notices))
+  return [...new Set(ids.filter((id): id is string => !!id))]
+}
+
+/** Point an event's bill links at `billIds`, writing only when they differ. */
+async function relinkEvent(db: AppDb, eventId: string, billIds: string[]): Promise<void> {
+  const current = (await db.select({ billId: calendarEventBills.billId }).from(calendarEventBills)
+    .where(eq(calendarEventBills.eventId, eventId)).all()).map(r => r.billId).sort()
+  const want = [...billIds].sort()
+  if (current.length === want.length && current.every((id, i) => id === want[i])) return
+  await db.delete(calendarEventBills).where(eq(calendarEventBills.eventId, eventId))
+  for (const billId of want) await db.insert(calendarEventBills).values({ eventId, billId }).onConflictDoNothing()
 }
 
 /**
@@ -168,7 +207,7 @@ export async function syncCouncilCalendarEvents(env: Env, db: AppDb): Promise<{ 
   let rules: CouncilCalendarRules
   try { rules = JSON.parse(rulesRow.value) as CouncilCalendarRules } catch { return null }
 
-  const { from, to, events, byNumber, tracked } = await loadCouncilWindow(env, db)
+  const { from, to, events, byNumber, tracked, notices } = await loadCouncilWindow(env, db)
 
   const existing = new Map((await db.select({ id: calendarEvents.id, uid: calendarEvents.uid, eventHash: calendarEvents.eventHash, sequence: calendarEvents.sequence, status: calendarEvents.status })
     .from(calendarEvents)
@@ -183,7 +222,11 @@ export async function syncCouncilCalendarEvents(env: Env, db: AppDb): Promise<{ 
     keep.add(uid)
     const prior = existing.get(uid)
     const status = e.removedAt ? 'cancelled' as const : 'confirmed' as const
-    if (prior && prior.eventHash === e.eventHash && prior.status === status) continue
+    if (prior && prior.eventHash === e.eventHash && prior.status === status) {
+      // A notice can arrive after its event, so links are checked every run.
+      await relinkEvent(db, prior.id, eventBillIds(e, byNumber, notices))
+      continue
+    }
     const values = {
       date: e.date,
       time: e.time,
@@ -206,11 +249,7 @@ export async function syncCouncilCalendarEvents(env: Env, db: AppDb): Promise<{ 
     }
     if (status === 'cancelled') cancelled++
     else upserted++
-    await db.delete(calendarEventBills).where(eq(calendarEventBills.eventId, eventId))
-    for (const t of e.topics) {
-      const bill = t.number ? byNumber.get(t.number) : undefined
-      if (bill) await db.insert(calendarEventBills).values({ eventId, billId: bill.id }).onConflictDoNothing()
-    }
+    await relinkEvent(db, eventId, eventBillIds(e, byNumber, notices))
   }
   // Rules no longer select these (or the Council window moved past them without a removal).
   for (const [uid, row] of existing) {
