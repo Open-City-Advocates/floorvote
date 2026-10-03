@@ -3,6 +3,7 @@ import { color, radius, fontSize, fontWeight, shadow } from '../../styles/tokens
 import { useDismissOnOutsideClick } from '../../hooks/useDismissOnOutsideClick'
 import { normalizeViewQuery } from '../../lib/savedViews'
 import { VIEW_STYLE } from '../../../../shared/viewStyle'
+import { BlankValueMessage, useBlankValueGuard } from '../../components/RequiredField'
 
 export function SaveViewButton({
   currentSearch, onSave,
@@ -15,12 +16,18 @@ export function SaveViewButton({
   const [saving, setSaving] = useState(false)
   const ref = useDismissOnOutsideClick(open, () => setOpen(false))
   const inputRef = useRef<HTMLInputElement>(null)
+  const guard = useBlankValueGuard()
+  const resetBlank = guard.reset
 
   useEffect(() => {
     if (open) {
       inputRef.current?.focus()
+    } else {
+      // However the popover closed (Cancel, its trigger, an outside click),
+      // reopening starts without a stale "required" message.
+      resetBlank()
     }
-  }, [open])
+  }, [open, resetBlank])
 
   // Count what is actually being captured, so the summary can say it. Uses the
   // same normalization the divergence check uses (view and page params are
@@ -31,8 +38,8 @@ export function SaveViewButton({
     .filter(([key]) => key !== 'sort' && key !== 'dir').length
 
   async function commit() {
+    if (saving || guard.refuse(name)) return
     const trimmed = name.trim()
-    if (!trimmed || saving) return
     setSaving(true)
     try {
       await onSave(trimmed)
@@ -77,8 +84,9 @@ export function SaveViewButton({
           <input
             ref={inputRef}
             aria-label="View name"
+            {...guard.fieldProps}
             value={name}
-            onChange={e => setName(e.target.value)}
+            onChange={e => { setName(e.target.value); guard.onValue(e.target.value) }}
             onKeyDown={e => { if (e.key === 'Enter') commit() }}
             style={{
               width: '100%', boxSizing: 'border-box', fontFamily: 'inherit', fontSize: fontSize.sm,
@@ -86,6 +94,7 @@ export function SaveViewButton({
               borderRadius: radius.sm, color: color.textPrimary,
             }}
           />
+          <BlankValueMessage {...guard.messageProps} name="View name" style={{ display: 'block', marginTop: 6 }} />
           <p style={{
             margin: '9px 0 0', paddingTop: 9, borderTop: `1px solid ${color.borderDefault}`,
             fontSize: fontSize.sm, color: color.textSecondary, lineHeight: 1.5,

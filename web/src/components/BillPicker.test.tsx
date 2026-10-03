@@ -111,3 +111,40 @@ describe('BillPicker draft marker', () => {
     expect(filedRow.textContent).not.toMatch(/Draft/)
   })
 })
+
+describe('BillPicker untitled drafts', () => {
+  const withDrafts: BillOption[] = [
+    ...options,
+    { id: 'd1', billNumber: 'D1', title: '', state: 'RI', isDraft: true },
+    { id: 'd2', billNumber: 'D2', title: 'Draft bill title', state: 'RI', isDraft: true },
+    { id: 'f9', billNumber: 'F 9', title: '', state: 'RI', isDraft: false },
+  ]
+
+  it('labels an untitled draft "Untitled draft" in the results, found by its number', () => {
+    render(<BillPicker options={withDrafts} value={[]} onChange={vi.fn()} multiState={false} />)
+    fireEvent.change(screen.getByPlaceholderText(/search bills/i), { target: { value: 'D1' } })
+    expect(screen.getByText(/Untitled draft/)).toBeInTheDocument()
+  })
+
+  it('finds an untitled draft by its "Untitled draft" label', () => {
+    const onChange = vi.fn()
+    render(<BillPicker options={withDrafts} value={[]} onChange={onChange} multiState={false} />)
+    fireEvent.change(screen.getByPlaceholderText(/search bills/i), { target: { value: 'untitled' } })
+    fireEvent.click(screen.getByText(/Untitled draft/))
+    expect(onChange).toHaveBeenCalledWith(['d1'])
+  })
+
+  it("shows a titled draft's own title", () => {
+    render(<BillPicker options={withDrafts} value={[]} onChange={vi.fn()} multiState={false} />)
+    fireEvent.change(screen.getByPlaceholderText(/search bills/i), { target: { value: 'D2' } })
+    expect(screen.getByText(/Draft bill title/)).toBeInTheDocument()
+    expect(screen.queryByText(/Untitled draft/)).toBeNull()
+  })
+
+  it('never labels a filed bill "Untitled draft", even with a blank title', () => {
+    render(<BillPicker options={withDrafts} value={[]} onChange={vi.fn()} multiState={false} />)
+    fireEvent.change(screen.getByPlaceholderText(/search bills/i), { target: { value: 'F 9' } })
+    expect(screen.getByText('F 9')).toBeInTheDocument()
+    expect(screen.queryByText(/Untitled draft/)).toBeNull()
+  })
+})

@@ -10,14 +10,16 @@ vi.mock('../../src/lib/digest', () => ({ runDigest: vi.fn(async () => undefined)
 vi.mock('../../src/lib/weekAhead', () => ({ runWeekAhead: vi.fn(async () => undefined) }))
 const sendEmail = vi.fn(async () => ({ ok: true, provider: 'resend' as const }))
 vi.mock('../../src/lib/email', () => ({ sendEmail: (env: any, msg: any) => sendEmail(env, msg) }))
+vi.mock('../../src/lib/emailHealthJob', () => ({ runEmailHealth: vi.fn(async () => 'none') }))
 
 import worker from '../../src/index'
 import { healStalledAiBills } from '../../src/lib/healStalledAi'
 import { registerWithCentral } from '../../src/cron/sync'
+import { runEmailHealth } from '../../src/lib/emailHealthJob'
 
-async function runScheduled(cron: string) {
+async function runScheduled(cron: string, scheduledTime?: number) {
   const ctx = createExecutionContext()
-  const controller = createScheduledController({ cron })
+  const controller = createScheduledController({ cron, scheduledTime })
   await worker.scheduled(controller as unknown as ScheduledEvent, env as any, ctx)
   await waitOnExecutionContext(ctx)
 }
@@ -25,6 +27,35 @@ async function runScheduled(cron: string) {
 describe('scheduled() heal branch', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it('runs the email-health check on the hourly cron only', async () => {
+    await runScheduled('0 * * * *')
+    expect(runEmailHealth).toHaveBeenCalledOnce()
+    vi.clearAllMocks()
+    await runScheduled('0 11 * * *')
+    expect(runEmailHealth).not.toHaveBeenCalled()
+  })
+
+  it('passes the scheduled time, not the wall clock, to the email-health check', async () => {
+    const scheduledTime = Date.parse('2026-09-30T12:00:00Z')
+    await runScheduled('0 * * * *', scheduledTime)
+    expect(vi.mocked(runEmailHealth).mock.calls[0][2]).toEqual(new Date(scheduledTime))
+  })
+
+  it('does not alert when email-health rejects, and the heal still runs', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const inner = new Error('D1_ERROR: no such table: email_send_stats')
+    vi.mocked(runEmailHealth).mockRejectedValueOnce(new Error('Failed query: select ...', { cause: inner }))
+
+    await runScheduled('0 * * * *')
+
+    expect(sendEmail).not.toHaveBeenCalled()
+    expect(healStalledAiBills).toHaveBeenCalledOnce()
+    const logged = error.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(logged).toContain('[email-health] check failed, skipping this run')
+    expect(logged).toContain('no such table')
+    error.mockRestore()
   })
 
   it('runs the heal on the hourly cron and does not re-register', async () => {

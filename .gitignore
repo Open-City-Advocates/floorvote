@@ -13,6 +13,7 @@ tsconfig.tsbuildinfo
 # Ship *.example.toml only; copy to wrangler.toml and fill in your values.
 api/wrangler.toml
 central/wrangler.toml
+root/wrangler.toml
 
 # VitePress build output
 docs/.vitepress/dist/

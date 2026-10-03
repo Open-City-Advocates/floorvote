@@ -52,7 +52,7 @@ export async function runDigest(
       type: feedEvents.type, metadata: feedEvents.metadata, createdAt: feedEvents.createdAt,
       billId: bills.id, billNumber: bills.billNumber, billTitle: bills.title,
       billState: bills.state, billSession: bills.session, priority: bills.priority,
-      summary: bills.tenantSummary,
+      summary: bills.tenantSummary, billIsDraft: bills.isDraft,
       userName: users.name,
     })
     .from(feedEvents)

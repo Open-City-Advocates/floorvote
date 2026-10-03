@@ -22,6 +22,7 @@ import { customFieldsApiRouter } from './customFieldsApi'
 import { councilCalendarAdminRouter } from './councilCalendarAdmin'
 import { adminSavedViewsRouter } from './savedViewsApi'
 import type { AppEnv } from '../types'
+import { isValidEmail } from '../../../shared/email'
 
 export const adminApiRouter = new Hono<AppEnv>()
 
@@ -156,7 +157,6 @@ adminApiRouter.post('/members/bulk-invite', async (c) => {
   }
 
   const role: 'admin' | 'member' = body.role === 'admin' ? 'admin' : 'member'
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
   const db = getDb(c.env.DB)
   const inviterId = c.get('user').id
 
@@ -167,7 +167,7 @@ adminApiRouter.post('/members/bulk-invite', async (c) => {
   }))
 
   // One lookup for all existing emails in the batch.
-  const candidateEmails = [...new Set(normalized.filter(n => emailRegex.test(n.email)).map(n => n.email))]
+  const candidateEmails = [...new Set(normalized.filter(n => isValidEmail(n.email)).map(n => n.email))]
   const existingRows = candidateEmails.length > 0
     ? await db.select({ email: users.email }).from(users).where(inArray(users.email, candidateEmails)).all()
     : []
@@ -180,7 +180,7 @@ adminApiRouter.post('/members/bulk-invite', async (c) => {
   const seen = new Set<string>()
 
   for (const n of normalized) {
-    if (!n.email || !emailRegex.test(n.email)) { results.push({ email: n.email, status: 'invalid' }); continue }
+    if (!n.email || !isValidEmail(n.email)) { results.push({ email: n.email, status: 'invalid' }); continue }
     if (seen.has(n.email)) { results.push({ email: n.email, status: 'duplicate' }); continue }
     seen.add(n.email)
     if (existingSet.has(n.email)) { results.push({ email: n.email, status: 'exists' }); continue }
