@@ -69,3 +69,25 @@ describe('HearingRow draft marker', () => {
     expect(container.textContent).not.toMatch(/draft/i)
   })
 })
+
+describe('HearingRow untitled draft title', () => {
+  function renderBare(b: HearingBill) {
+    const hearing: HearingGroup = {
+      hearingKey: 'h1', eventHash: 'abc', type: null as unknown as string,
+      date: '2027-03-09', time: '10:00', location: 'Room 412',
+      description: null as unknown as string,
+      bills: [b],
+    }
+    return render(<MemoryRouter><HearingRow hearing={hearing} isFirst onClose={() => {}} /></MemoryRouter>)
+  }
+
+  it('names a single-bill hearing with no description after an untitled draft as "Untitled draft"', () => {
+    renderBare(bill({ title: '', isDraft: true }))
+    expect(screen.getByText('Untitled draft')).toBeInTheDocument()
+  })
+
+  it('never labels a filed bill "Untitled draft"', () => {
+    renderBare(bill({ title: '', isDraft: false }))
+    expect(screen.queryByText('Untitled draft')).toBeNull()
+  })
+})

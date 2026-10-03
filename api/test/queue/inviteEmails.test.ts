@@ -6,6 +6,7 @@ import { magicLinks, authEvents } from '../../src/db/schema'
 import { eq } from 'drizzle-orm'
 import { processInviteEmails } from '../../src/queue/inviteEmails'
 import type { InviteEmailMessage } from '../../src/types'
+import { PermanentSendError } from '../../src/lib/emailErrors'
 
 const sendMagicLink = vi.fn()
 vi.mock('../../src/lib/email', () => ({
@@ -69,6 +70,15 @@ describe('processInviteEmails', () => {
     expect(m.retry).toHaveBeenCalledOnce()
     expect(m.retry.mock.calls[0][0]).toMatchObject({ delaySeconds: expect.any(Number) })
     expect(m.ack).not.toHaveBeenCalled()
+  })
+
+  it('acks instead of retrying when the failure is permanent (bad or suppressed address)', async () => {
+    sendMagicLink.mockRejectedValue(new PermanentSendError('Invalid recipient address: jane@example.gov;'))
+    const m = msg({ type: 'invite-email', tenantId: env.TENANT_ID, userId, email: 'jane@example.gov;' })
+    await processInviteEmails([m as any], env, getDb(env.DB))
+
+    expect(m.ack).toHaveBeenCalledOnce()
+    expect(m.retry).not.toHaveBeenCalled()
   })
 
   it('acks and skips a message addressed to a different tenant', async () => {

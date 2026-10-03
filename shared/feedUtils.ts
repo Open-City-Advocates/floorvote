@@ -12,8 +12,8 @@ export type FeedEvent = {
   billPriority: string | null
   billMatchType: 'keyword' | 'manual' | null
   // Optional because several non-feed producers build FeedEvent-shaped objects
-  // (api/src/lib/digestEmail.ts, api/src/lib/mentions.ts) that have no draft
-  // concept; absent is read as "not a draft".
+  // (api/src/lib/digestEmail.ts, api/src/lib/mentions.ts); absent is read as
+  // "not a draft". The card model reads it to label an untitled draft.
   billIsDraft?: boolean
   userId: string
   userName: string

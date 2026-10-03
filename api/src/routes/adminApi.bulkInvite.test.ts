@@ -140,4 +140,20 @@ describe('POST /admin/members/bulk-invite', () => {
     const row = await db.select().from(users).where(inArray(users.email, ['pending@example.com'])).get()
     expect(row).toBeTruthy()
   })
+  it('rejects addresses with trailing punctuation instead of storing them', async () => {
+    const q = mockQueue()
+    const res = await app.request('/api/admin/members/bulk-invite', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'member', invitees: [{ name: 'Jane', email: 'jane@example.gov;' }, { email: 'bob@example.gov.' }] }),
+    }, { ...env, BILL_QUEUE: q })
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    expect(body.summary).toEqual({ invited: 0, exists: 0, duplicate: 0, invalid: 2 })
+    const db = getDb(env.DB)
+    const rows = await db.select().from(users).where(inArray(users.email, ['jane@example.gov;', 'bob@example.gov.'])).all()
+    expect(rows).toHaveLength(0)
+    expect(q._batches.flat()).toHaveLength(0)
+  })
 })
