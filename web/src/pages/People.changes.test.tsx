@@ -17,15 +17,18 @@ vi.mock('../lib/api', () => ({
 }))
 vi.mock('../hooks/usePageTitle', () => ({ usePageTitle: () => {} }))
 
+import { MemoryRouter } from 'react-router-dom'
 import { People, describeChange } from './People'
 
 describe('People: Council changes and members', () => {
   it('lists recent changes as sentences and separates former members', async () => {
-    render(<People />)
+    render(<MemoryRouter><People /></MemoryRouter>)
     expect(await screen.findByText(/Ward 2 Councilmember Brooke Pinto now chairs the Committee on Youth Affairs\. Previously chaired by Ward 5 Councilmember Zachary Parker\./)).toBeInTheDocument()
     expect(screen.getByText(/Kenyan R\. McDuffie left the Council\. Term ended 2026-01-05\./)).toBeInTheDocument()
     expect(screen.getByText('Zachary Parker')).toBeInTheDocument()
-    expect(screen.getByText(/Kenyan R\. McDuffie \(2023-01-02 to 2026-01-05\)/)).toBeInTheDocument()
+    // A former member's name opens the team's record; their term follows it.
+    expect(screen.getByRole('link', { name: 'Kenyan R. McDuffie' })).toHaveAttribute('href', '/people/record/cm%3Akenyan%20r%20mcduffie')
+    expect(screen.getByText(/\(2023-01-02 to 2026-01-05\)/)).toBeInTheDocument()
   })
 
   it('describes staff and committee changes', () => {

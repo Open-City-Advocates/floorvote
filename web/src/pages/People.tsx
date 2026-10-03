@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { color, fontSize, fontWeight, radius } from '../styles/tokens'
 import { usePageTitle } from '../hooks/usePageTitle'
 import { apiFetch } from '../lib/api'
 import { CARD } from '../lib/cardStyle'
 import { SECTION_LABEL } from '../lib/textStyles'
+import { councilmemberKey, staffKey } from '../../../shared/crmKeys'
 
 interface PersonRef { name: string; url: string | null }
 interface Staff { name: string; title: string | null; email: string | null; phone: string | null; url: string | null }
@@ -12,6 +14,10 @@ interface DirectoryEntry { kind: string; name: string; title: string | null; off
 interface Councilmember { name: string; role: string | null; termStart: string | null; termEnd: string | null; current: boolean; note?: string | null }
 interface CouncilChange { kind: string; committee: string | null; person: string | null; detail: string | null; detectedAt: string }
 interface Directory { committees: Committee[]; people: DirectoryEntry[]; updatedAt: string | null; councilmembers?: Councilmember[]; changes?: CouncilChange[] }
+interface CrmSummary { personKey: string; name: string; office: string | null; owner: { id: string; name: string } | null; lastContact: string | null; openFollowups: number }
+interface OpenFollowup { id: string; personKey: string; personName: string; dueDate: string | null; text: string; owner: { id: string; name: string } | null }
+
+export const recordPath = (key: string) => `/people/record/${encodeURIComponent(key)}`
 
 /** One Council change as a sentence. */
 export function describeChange(c: CouncilChange): string {
@@ -49,25 +55,39 @@ function Contact({ email, phone }: { email: string | null; phone: string | null 
   )
 }
 
-function Person({ p }: { p: PersonRef }) {
-  const url = councilUrl(p.url)
-  return url ? <a href={url} target="_blank" rel="noopener noreferrer" className="blue-link">{p.name}</a> : <>{p.name}</>
+/** A name linked to the team's record of that person, with when we last spoke. */
+function Named({ name, personKey, crm }: { name: string; personKey: string; crm: Map<string, CrmSummary> }) {
+  const s = crm.get(personKey)
+  return (
+    <>
+      <Link to={recordPath(personKey)} className="blue-link">{name}</Link>
+      {s?.lastContact && <span style={{ color: color.textMuted, fontSize: fontSize.xs }}> (last contact {s.lastContact})</span>}
+    </>
+  )
 }
 
 /**
  * /people: the DC Council's committees and staff, from dccouncil.gov. Who chairs
  * and sits on each committee, its key staff, the agencies it oversees, and the
- * full staff directory, searchable.
+ * full staff directory, searchable. Each name opens the team's CRM record of
+ * that person, and open follow-ups are listed first.
  */
 export function People() {
   usePageTitle('People')
   const [data, setData] = useState<Directory | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [q, setQ] = useState('')
+  const [crm, setCrm] = useState<Map<string, CrmSummary>>(new Map())
+  const [followups, setFollowups] = useState<OpenFollowup[]>([])
 
   useEffect(() => {
     apiFetch<Directory>('/directory').then(setData).catch(() => setError('The Council directory is unavailable right now.'))
+    apiFetch<{ people: CrmSummary[] }>('/crm/people')
+      .then(d => setCrm(new Map((Array.isArray(d?.people) ? d.people : []).map(p => [p.personKey, p])))).catch(() => setCrm(new Map()))
+    apiFetch<{ followups: OpenFollowup[] }>('/crm/followups')
+      .then(d => setFollowups(Array.isArray(d?.followups) ? d.followups : [])).catch(() => setFollowups([]))
   }, [])
+  const todayIso = new Date().toLocaleDateString('en-CA')
 
   const needle = q.trim().toLowerCase()
   const committees = useMemo(() => (data?.committees ?? []).filter(c => !needle || [
@@ -81,6 +101,7 @@ export function People() {
       <h1 style={{ fontSize: fontSize.xl, fontWeight: fontWeight.semibold, margin: '0 0 4px' }}>People</h1>
       <div style={{ fontSize: fontSize.sm, color: color.textSecondary, marginBottom: 16 }}>
         DC Council committees and staff, from <a href="https://dccouncil.gov/committees/" target="_blank" rel="noopener noreferrer" className="blue-link">dccouncil.gov</a>, updated daily.
+        Open a name for the team's record: contacts, follow-ups, and who holds the relationship.
       </div>
       <input
         type="search" value={q} onChange={e => setQ(e.target.value)} aria-label="Search people, committees, and agencies"
@@ -91,6 +112,22 @@ export function People() {
       {!data && !error && <div style={{ color: color.textMuted, fontSize: fontSize.sm }}>Loading…</div>}
       {data && (
         <>
+          {followups.length > 0 && !needle && (
+            <section aria-label="Open follow-ups" style={{ ...CARD, padding: 14, marginBottom: 24, fontSize: fontSize.sm }}>
+              <h2 style={{ ...SECTION_LABEL, display: 'block', marginBottom: 8 }}>Open follow-ups ({followups.length})</h2>
+              <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.6 }}>
+                {followups.slice(0, 20).map(f => (
+                  <li key={f.id}>
+                    <Link to={recordPath(f.personKey)} className="blue-link">{f.personName}</Link>: {f.text}
+                    <span style={{ color: f.dueDate && f.dueDate < todayIso ? color.textErrorRed : color.textMuted }}>
+                      {f.dueDate ? ` · due ${f.dueDate}` : ''}{f.owner ? ` · ${f.owner.name}` : ''}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           {(data.changes ?? []).length > 0 && !needle && (
             <section aria-label="Recent Council changes" style={{ ...CARD, padding: 14, marginBottom: 24, fontSize: fontSize.sm }}>
               <h2 style={{ ...SECTION_LABEL, display: 'block', marginBottom: 8 }}>Recent Council changes</h2>
@@ -106,14 +143,18 @@ export function People() {
             <>
               <h2 style={{ ...SECTION_LABEL, display: 'block', marginBottom: 10 }}>Councilmembers</h2>
               <div style={{ ...CARD, padding: 14, marginBottom: 24, fontSize: fontSize.sm, lineHeight: 1.6 }}>
-                <div>{(data.councilmembers ?? []).filter(m => m.current).map(m => `${m.name}${m.role && /chair/i.test(m.role) ? ` (${m.role})` : ''}`).join(', ')}</div>
+                <div>{(data.councilmembers ?? []).filter(m => m.current).map((m, i) => (
+                  <span key={m.name}>{i > 0 && ', '}<Named name={m.name} personKey={councilmemberKey(m.name)} crm={crm} />{m.role && /chair/i.test(m.role) ? ` (${m.role})` : ''}</span>
+                ))}</div>
                 {(data.councilmembers ?? []).filter(m => m.note).map(m => (
                   <div key={m.name} style={{ marginTop: 6, color: color.textMuted }}>{m.name}: {m.note}</div>
                 ))}
                 {(data.councilmembers ?? []).some(m => !m.current) && (
                   <div style={{ marginTop: 6, color: color.textSecondary }}>
                     <span style={{ color: color.textMuted }}>Not currently serving this Council Period: </span>
-                    {(data.councilmembers ?? []).filter(m => !m.current).map(m => `${m.name} (${m.termStart ?? '?'} to ${m.termEnd ?? '?'})`).join('; ')}
+                    {(data.councilmembers ?? []).filter(m => !m.current).map((m, i) => (
+                      <span key={m.name}>{i > 0 && '; '}<Link to={recordPath(councilmemberKey(m.name))} className="blue-link">{m.name}</Link> ({m.termStart ?? '?'} to {m.termEnd ?? '?'})</span>
+                    ))}
                   </div>
                 )}
               </div>
@@ -127,10 +168,10 @@ export function People() {
                 {councilUrl(c.url)
                   ? <a href={councilUrl(c.url)!} target="_blank" rel="noopener noreferrer" className="blue-link" style={{ fontWeight: fontWeight.semibold, fontSize: fontSize.base }}>{c.name}</a>
                   : <span style={{ fontWeight: fontWeight.semibold, fontSize: fontSize.base }}>{c.name}</span>}
-                {c.chair && <div style={{ marginTop: 6 }}><span style={{ color: color.textMuted }}>Chair: </span><Person p={c.chair} /></div>}
+                {c.chair && <div style={{ marginTop: 6 }}><span style={{ color: color.textMuted }}>Chair: </span><Named name={c.chair.name} personKey={councilmemberKey(c.chair.name)} crm={crm} /></div>}
                 {c.members.length > 0 && (
                   <div><span style={{ color: color.textMuted }}>Members: </span>
-                    {c.members.map((m, i) => <span key={m.name}>{i > 0 && ', '}<Person p={m} /></span>)}
+                    {c.members.map((m, i) => <span key={m.name}>{i > 0 && ', '}<Named name={m.name} personKey={councilmemberKey(m.name)} crm={crm} /></span>)}
                   </div>
                 )}
                 {c.staff.length > 0 && (
@@ -138,7 +179,7 @@ export function People() {
                     <div style={{ color: color.textMuted }}>Key staff</div>
                     {c.staff.map(s => (
                       <div key={s.name}>
-                        {s.name}{s.title ? `, ${s.title}` : ''}<br />
+                        <Named name={s.name} personKey={staffKey({ email: s.email, name: s.name, office: c.name })} crm={crm} />{s.title ? `, ${s.title}` : ''}<br />
                         <span style={{ fontSize: fontSize.xs }}><Contact email={s.email} phone={s.phone} /></span>
                       </div>
                     ))}
@@ -166,7 +207,7 @@ export function People() {
               <tbody>
                 {people.slice(0, 300).map(p => (
                   <tr key={`${p.name}|${p.email ?? p.office ?? ''}`} style={{ borderTop: `1px solid ${color.borderDefault}` }}>
-                    <td style={{ padding: '6px 12px' }}>{p.name}</td>
+                    <td style={{ padding: '6px 12px' }}><Named name={p.name} personKey={staffKey(p)} crm={crm} /></td>
                     <td style={{ padding: '6px 12px' }}>{p.title ?? ''}</td>
                     <td style={{ padding: '6px 12px', textTransform: 'capitalize' }}>{p.office ?? ''}</td>
                     <td style={{ padding: '6px 12px' }}><Contact email={p.email} phone={p.phone} /></td>
