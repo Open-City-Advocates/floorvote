@@ -4,6 +4,7 @@ import { deepRouter } from './routes/deepApi'
 import { directoryRouter } from './routes/directoryApi'
 import { linksRouter } from './routes/linksApi'
 import { fireDeepWorker, reconcileDeepRequests } from './lib/deepAnalysis'
+import { crmRouter } from './routes/crmApi'
 import { cors } from 'hono/cors'
 import { getCookie } from 'hono/cookie'
 import { bodyLimit } from 'hono/body-limit'
@@ -145,6 +146,7 @@ app.route('/api/calendar', calendarRouter)
 app.route('/api/deep', deepRouter)
 app.route('/api/directory', directoryRouter)
 app.route('/api/links', linksRouter)
+app.route('/api/crm', crmRouter)
 
 app.get('/api/health', (c) => c.json({ ok: true, build: BUILD_SHA }))
 

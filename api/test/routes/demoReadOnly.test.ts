@@ -284,6 +284,14 @@ const DENIED = new Set([
   'POST /api/links/:kind/:subjectId',
   'POST /api/users/me/deactivate',
   'PUT /api/admin/council-calendar',
+  // Council CRM: a team's notes on real Council offices and staff, not demo material.
+  'PUT /api/crm/people/:key',
+  'POST /api/crm/people/:key/contacts',
+  'PATCH /api/crm/contacts/:id',
+  'DELETE /api/crm/contacts/:id',
+  'POST /api/crm/people/:key/followups',
+  'PATCH /api/crm/followups/:id',
+  'DELETE /api/crm/followups/:id',
   'PUT /api/admin/custom-fields/:id',
   'PUT /api/admin/custom-fields/reorder',
   'PUT /api/admin/deletion-policy',
@@ -333,8 +341,8 @@ describe('demo write categorisation', () => {
 
   it('pins the size of each category so a silent shift is visible', () => {
     expect(DEMO_WRITE_ALLOWLIST.size).toBe(18)
-    expect(DENIED.size).toBe(57)
-    expect(registered().length).toBe(81)
+    expect(DENIED.size).toBe(64)
+    expect(registered().length).toBe(88)
   })
 
   it('refuses every denied route with the read-only message', async () => {

@@ -17,11 +17,12 @@ vi.mock('../lib/api', () => ({
   })),
 }))
 
+import { MemoryRouter } from 'react-router-dom'
 import { People } from './People'
 
 describe('People: scraped links', () => {
   it('no scraped href is a script-capable scheme', async () => {
-    render(<People />)
+    render(<MemoryRouter><People /></MemoryRouter>)
     await waitFor(() => expect(screen.getByText('Evil Chair')).toBeInTheDocument())
     const hrefs = [...document.querySelectorAll('a')].map(a => a.getAttribute('href') ?? '')
     expect(hrefs.filter(h => /^javascript:(?!throw new Error\('React has blocked)/i.test(h))).toEqual([])
