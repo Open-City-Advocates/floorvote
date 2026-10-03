@@ -6,6 +6,7 @@ import { apiFetch } from '../lib/api'
 import { CARD } from '../lib/cardStyle'
 import { SECTION_LABEL } from '../lib/textStyles'
 import { councilmemberKey, staffKey } from '../../../shared/crmKeys'
+import { todayIso } from '../lib/calendarGrid'
 
 interface PersonRef { name: string; url: string | null }
 interface Staff { name: string; title: string | null; email: string | null; phone: string | null; url: string | null }
@@ -87,7 +88,7 @@ export function People() {
     apiFetch<{ followups: OpenFollowup[] }>('/crm/followups')
       .then(d => setFollowups(Array.isArray(d?.followups) ? d.followups : [])).catch(() => setFollowups([]))
   }, [])
-  const todayIso = new Date().toLocaleDateString('en-CA')
+  const today = todayIso()
 
   const needle = q.trim().toLowerCase()
   const committees = useMemo(() => (data?.committees ?? []).filter(c => !needle || [
@@ -119,7 +120,7 @@ export function People() {
                 {followups.slice(0, 20).map(f => (
                   <li key={f.id}>
                     <Link to={recordPath(f.personKey)} className="blue-link">{f.personName}</Link>: {f.text}
-                    <span style={{ color: f.dueDate && f.dueDate < todayIso ? color.textErrorRed : color.textMuted }}>
+                    <span style={{ color: f.dueDate && f.dueDate < today ? color.textErrorRed : color.textMuted }}>
                       {f.dueDate ? ` · due ${f.dueDate}` : ''}{f.owner ? ` · ${f.owner.name}` : ''}
                     </span>
                   </li>
