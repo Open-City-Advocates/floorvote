@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { color, radius, fontSize, fontWeight } from '../styles/tokens'
+import { billDisplayTitle } from '../../../shared/billTitle'
 import { stripMarkdown } from './MarkdownSummary'
 import { CHIP_MINI, BILL_BADGE_MINI, PRIORITY_COLORS, TOOLTIP_CHROME } from '../lib/chipStyles'
 import { apiFetch } from '../lib/api'
@@ -10,6 +11,8 @@ export interface TooltipBill {
   billId?: string
   state?: string | null
   title: string
+  /** Lets the tooltip label an untitled draft "Untitled draft". Absent = filed. */
+  isDraft?: boolean
   summary: string | null
   priority: 'high' | 'medium' | 'low' | null
 }
@@ -60,7 +63,7 @@ export function BillHoverTooltip({ bill, cursor }: { bill: TooltipBill; cursor: 
         )}
       </div>
       <div style={{ fontSize: fontSize.sm, fontWeight: fontWeight.bold, color: color.textPrimary, lineHeight: 1.35, marginBottom: lazySummary ? 6 : 0, fontFamily: "'Source Serif 4', serif" }}>
-        {bill.title}
+        {billDisplayTitle(bill)}
       </div>
       {lazySummary && (
         <div style={{ fontSize: fontSize.sm, color: color.textSecondary, lineHeight: 1.5, fontFamily: "'Source Serif 4', serif" }}>{stripMarkdown(lazySummary)}</div>

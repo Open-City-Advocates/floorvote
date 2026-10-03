@@ -3,6 +3,7 @@ import { PRIORITY_COLORS, POSITION_FEED_ICON } from './billChipColors'
 import { COMMENT_PREVIEW_MAX, formatBillUpdateDetail, stripHtml, type ChangeRecord, type FeedEvent, type GroupedBillEvents } from './feedUtils'
 import { formatHearingTime } from './hearingTime'
 import { stripMarkdown } from './markdown'
+import { billDisplayTitle } from './billTitle'
 
 const SUMMARY_BG = color.surfaceSubtle
 
@@ -146,7 +147,7 @@ export function buildBillCardModel(group: GroupedBillEvents): BillCardModel {
   }
   return {
     billNumber: group.billNumber, state: group.billState, sessionSlug: group.billSessionSlug,
-    title: group.billTitle, summary: group.billSummary != null ? stripMarkdown(group.billSummary) : null,
+    title: billDisplayTitle({ title: group.billTitle, isDraft: group.billIsDraft }), summary: group.billSummary != null ? stripMarkdown(group.billSummary) : null,
     priority: group.billPriority as 'high' | 'medium' | 'low' | null, rows,
   }
 }

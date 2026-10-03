@@ -5,7 +5,7 @@ import { useConfig } from '../context/ConfigContext'
 import { isMac } from '../lib/tiptap-utils'
 import { useIsBreakpoint } from '../hooks/use-is-breakpoint'
 import { Dialog } from './ui/Dialog'
-import { SR_ONLY } from '../lib/textStyles'
+import { RequiredLabel, RequiredLegend, MissingRequiredReason, useRequiredSubmit } from './RequiredField'
 
 interface FeedbackModalProps {
   onClose: () => void
@@ -19,8 +19,10 @@ export function FeedbackModal({ onClose }: FeedbackModalProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isMobile = useIsBreakpoint('max', 768)
 
+  const gate = useRequiredSubmit({ missingRequired: !message.trim(), blocked: status === 'sending' })
+
   async function handleSubmit() {
-    if (!message.trim() || status === 'sending') return
+    if (gate.disabled) return
     setStatus('sending')
     try {
       await apiFetch('/feedback', {
@@ -55,21 +57,21 @@ export function FeedbackModal({ onClose }: FeedbackModalProps) {
         <p role="alert" style={{ fontSize: fontSize.base, color: color.textSuccessDark, margin: 0 }}>Feedback sent — thanks!</p>
       ) : (
         <>
-          <label htmlFor="feedback-message" style={SR_ONLY}>
-            Your message
-          </label>
+          <RequiredLegend style={{ marginBottom: 8 }} />
+          <RequiredLabel htmlFor="feedback-message">Your message</RequiredLabel>
           <textarea
             id="feedback-message"
             ref={textareaRef}
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && message.trim() && status !== 'sending') {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !gate.disabled) {
                 e.preventDefault()
                 handleSubmit()
               }
             }}
             placeholder="What's on your mind?"
+            aria-required="true"
             disabled={status === 'sending'}
             style={{
               width: '100%', minHeight: 100, fontSize: fontSize.base, border: `1px solid ${color.borderDefault}`,
@@ -94,19 +96,20 @@ export function FeedbackModal({ onClose }: FeedbackModalProps) {
             </p>
           )}
 
-          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
             <button
               onClick={handleSubmit}
-              disabled={!message.trim() || status === 'sending'}
+              {...gate.buttonProps}
               style={{
                 padding: '8px 20px', background: color.billBadgeNavy, color: color.white,
                 border: 'none', borderRadius: radius.md, fontSize: fontSize.sm, fontWeight: fontWeight.semibold,
-                cursor: !message.trim() || status === 'sending' ? 'not-allowed' : 'pointer',
-                opacity: !message.trim() || status === 'sending' ? 0.5 : 1,
+                cursor: gate.disabled ? 'not-allowed' : 'pointer',
+                opacity: gate.disabled ? 0.5 : 1,
               }}
             >
               {status === 'sending' ? 'Sending…' : 'Send feedback'}
             </button>
+            <MissingRequiredReason {...gate.reasonProps} />
             {status !== 'sending' && !isMobile && (
               <span style={{ fontSize: fontSize.sm, color: color.textMuted }}>
                 {isMac() ? '⌘↵' : 'Ctrl+Enter'} to send
