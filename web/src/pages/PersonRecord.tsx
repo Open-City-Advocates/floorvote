@@ -9,6 +9,7 @@ import { CARD } from '../lib/cardStyle'
 import { SECTION_LABEL } from '../lib/textStyles'
 import { CONTACT_KINDS, CONTACT_KIND_LABEL, councilmemberKey, staffKey, type ContactKind } from '../../../shared/crmKeys'
 import { councilUrl, plainEmail } from './People'
+import { todayIso } from '../lib/calendarGrid'
 
 interface Ref { id: string; name: string }
 interface Contact { id: string; date: string; kind: ContactKind; summary: string; bill: { id: string; number: string } | null; author: Ref | null; createdAt: string; updatedAt: string | null }
@@ -55,7 +56,7 @@ export function identify(d: Directory, key: string): Identity | null {
   return p ? { name: p.name, title: p.title, office: p.office, email: p.email, phone: p.phone, url: null, committees: [], former: false } : null
 }
 
-const today = () => new Date().toLocaleDateString('en-CA')
+const today = todayIso
 const input: React.CSSProperties = { fontSize: fontSize.sm, padding: '5px 8px', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, background: color.white }
 const primary: React.CSSProperties = { ...input, background: color.linkBlue, color: color.white, border: 'none', cursor: 'pointer', fontWeight: fontWeight.medium }
 const quiet: React.CSSProperties = { background: 'none', border: 'none', padding: 0, color: color.textMuted, cursor: 'pointer', fontSize: fontSize.xs }
