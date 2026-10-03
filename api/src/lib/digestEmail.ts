@@ -14,6 +14,8 @@ export type DigestEvent = {
   billId: string; billNumber: string; billTitle: string
   billState: string | null; billSession: string; priority: string | null
   summary: string | null; userName: string | null
+  /** Lets the card label an untitled draft "Untitled draft". Absent = filed. */
+  billIsDraft?: boolean
 }
 
 export type NewMatchDigestItem = {
@@ -45,6 +47,7 @@ function toGroup(events: DigestEvent[]): GroupedBillEvents {
     key: f.billId, billId: f.billId, billNumber: f.billNumber, billTitle: f.billTitle,
     billSessionSlug: null, billState: f.billState, billSummary: f.summary ?? null,
     billPriority: (f.priority as GroupedBillEvents['billPriority']) ?? null, billMatchType: null, date: '',
+    billIsDraft: f.billIsDraft ?? false,
     events: events.map((e, i) => ({
       id: `${f.billId}-${i}`, type: e.type as FeedEvent['type'], billId: f.billId, billNumber: f.billNumber,
       billSessionSlug: null, billState: f.billState, billTitle: f.billTitle, billSummary: null,

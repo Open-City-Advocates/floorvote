@@ -110,6 +110,50 @@ describe('PATCH /users/me', () => {
     const body = await res.json() as Record<string, unknown>
     expect(body.subtitle).toBe('b'.repeat(200))
   })
+
+  // The Profile page blocks a blank name client-side; the server's own
+  // behavior, ignoring a blank name and keeping the stored one, is the
+  // backstop and must not change.
+  describe('blank name backstop', () => {
+    async function patchMe(token: string, body: Record<string, unknown>) {
+      return SELF.fetch('http://localhost/api/users/me', {
+        method: 'PATCH',
+        headers: { Cookie: `session=${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    }
+    async function storedName(id: string) {
+      const db = getDb(env.DB)
+      const [row] = await db.select({ name: users.name }).from(users).where(eq(users.id, id)).all()
+      return row.name
+    }
+
+    it('leaves the stored name unchanged for a whitespace-only name', async () => {
+      const id = await seedUser({ name: 'Kept Name' })
+      const res = await patchMe(await seedSession(id), { name: '   ' })
+      expect(res.status).toBe(200)
+      expect(await storedName(id)).toBe('Kept Name')
+    })
+
+    it('does not echo a blank name back in the response', async () => {
+      const id = await seedUser({ name: 'Kept Name' })
+      const res = await patchMe(await seedSession(id), { name: '' })
+      expect(res.status).toBe(200)
+      const body = await res.json() as Record<string, unknown>
+      expect(body).not.toHaveProperty('name')
+    })
+
+    it('still saves the subtitle sent alongside a blank name, keeping the name', async () => {
+      const id = await seedUser({ name: 'Kept Name' })
+      const res = await patchMe(await seedSession(id), { name: '', subtitle: 'New subtitle' })
+      expect(res.status).toBe(200)
+      expect((await res.json() as Record<string, unknown>).subtitle).toBe('New subtitle')
+      expect(await storedName(id)).toBe('Kept Name')
+      const db = getDb(env.DB)
+      const [row] = await db.select({ subtitle: users.subtitle }).from(users).where(eq(users.id, id)).all()
+      expect(row.subtitle).toBe('New subtitle')
+    })
+  })
 })
 
 describe('GET /users/me/bills', () => {
