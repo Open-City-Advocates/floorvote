@@ -1,0 +1,18 @@
+# root/wrangler.example.toml — the Worker for your host's bare apex domain.
+# Copy to root/wrangler.toml (gitignored), set the domain, and deploy:
+#   npx wrangler deploy -c root/wrangler.toml
+# Tenants must set APP_DOMAINS to this same apex, or they never write the
+# fv_instances cookie this Worker reads.
+name = "floorvote-root"
+main = "src/index.ts"
+compatibility_date = "2026-06-18"
+
+# The apex is served on its custom domain only; no *.workers.dev URL.
+workers_dev = false
+
+routes = [{ pattern = "example.com", custom_domain = true }]
+
+[vars]
+MARKETING_URL = "https://floorvote.org"
+# Only for a host with exactly one tenant: send every apex visit there.
+# SINGLE_TENANT_URL = "https://app.example.com"

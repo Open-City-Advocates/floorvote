@@ -3,6 +3,7 @@ import { color, radius, fontSize, fontWeight } from '../../styles/tokens'
 import { BillPicker, type BillOption } from '../BillPicker'
 import { todayIso } from '../../lib/calendarGrid'
 import { useDemo } from '../../context/DemoContext'
+import { RequiredLegend, RequiredMarker, MissingRequiredReason, useRequiredSubmit } from '../RequiredField'
 
 export interface EventFormValues {
   id?: string
@@ -36,7 +37,10 @@ export function EventFormFields({ initial, billOptions, multiState, onSave, onCl
 
   const dateValid = DATE_RE.test(date)
   const urlValid = url.trim() === '' || /^https?:\/\//i.test(url.trim())
-  const canSave = description.trim().length > 0 && dateValid && urlValid
+  // Title and Date are required. An invalid link also blocks Save, but it has
+  // its own message below the field, so it counts as "blocked", not "missing".
+  const missingRequired = description.trim().length === 0 || !dateValid
+  const gate = useRequiredSubmit({ missingRequired, blocked: !urlValid || demoLocked })
   const year = dateValid ? Number(date.slice(0, 4)) : null
   const warning = !dateValid ? null
     : date < todayIso() ? 'This date is in the past.'
@@ -63,7 +67,7 @@ export function EventFormFields({ initial, billOptions, multiState, onSave, onCl
   }
 
   function submit() {
-    if (!canSave) return
+    if (gate.disabled) return
     onSave({
       id: initial?.id,
       description: description.trim(),
@@ -78,14 +82,15 @@ export function EventFormFields({ initial, billOptions, multiState, onSave, onCl
 
   return (
     <div style={{ padding: 14 }} onKeyDown={handleKeyDown}>
+      <RequiredLegend style={{ fontSize: fontSize.xs, marginBottom: 8 }} />
       <label style={{ ...labelStyle, display: 'block' }}>
-        Title
-        <input autoFocus={autoFocus} aria-label="Title" placeholder="New event" style={{ ...field, fontWeight: fontWeight.semibold }} value={description} onChange={e => setDescription(e.target.value)} />
+        Title <RequiredMarker />
+        <input autoFocus={autoFocus} aria-label="Title" aria-required="true" placeholder="New event" style={{ ...field, fontWeight: fontWeight.semibold }} value={description} onChange={e => setDescription(e.target.value)} />
       </label>
 
       <label style={{ ...labelStyle, display: 'block', marginTop: 10 }}>
-        Date
-        <input type="date" aria-label="Date" max="9999-12-31" style={field} value={date} onChange={e => setDate(e.target.value)} />
+        Date <RequiredMarker />
+        <input type="date" aria-label="Date" aria-required="true" max="9999-12-31" style={field} value={date} onChange={e => setDate(e.target.value)} />
       </label>
       {warning && <div style={{ fontSize: fontSize.xs, color: color.textAmberDark, marginTop: 4 }}>{warning}</div>}
 
@@ -116,11 +121,12 @@ export function EventFormFields({ initial, billOptions, multiState, onSave, onCl
       <div style={{ ...labelStyle, marginTop: 10 }}>Linked bills</div>
       <BillPicker options={billOptions} value={billIds} onChange={setBillIds} multiState={multiState} />
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: 8, marginTop: 16 }}>
+        <MissingRequiredReason {...gate.reasonProps} style={{ marginRight: 'auto' }} />
         <button type="button" onClick={onClose} style={{ background: color.white, border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, padding: '7px 14px', cursor: 'pointer', fontSize: fontSize.sm }}>Cancel</button>
-        <button type="button" disabled={!canSave || demoLocked} onClick={submit} style={{
-          background: (canSave && !demoLocked) ? color.accentBlue : color.accentBlueMuted, color: color.white, border: 'none',
-          borderRadius: radius.md, padding: '7px 14px', cursor: (canSave && !demoLocked) ? 'pointer' : 'not-allowed',
+        <button type="button" {...gate.buttonProps} onClick={submit} style={{
+          background: !gate.disabled ? color.accentBlue : color.accentBlueMuted, color: color.white, border: 'none',
+          borderRadius: radius.md, padding: '7px 14px', cursor: !gate.disabled ? 'pointer' : 'not-allowed',
           fontSize: fontSize.sm, fontWeight: fontWeight.medium,
         }}>Save</button>
       </div>

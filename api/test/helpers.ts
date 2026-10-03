@@ -69,6 +69,7 @@ import migrationSql69 from '../migrations/0069_terms_acceptances.sql?raw'
 import migrationSql70 from '../migrations/0070_draft_numbers_and_years.sql?raw'
 import migrationSql71 from '../migrations/0071_deep_analyses.sql?raw'
 import migrationSql72 from '../migrations/0072_team_links.sql?raw'
+import migrationSql73 from '../migrations/0073_email_health.sql?raw'
 
 export function parseMigration(sql: string, name: string) {
   const queries = sql
@@ -184,6 +185,7 @@ export async function applyMigrations(): Promise<void> {
     parseMigration(migrationSql70, '0070_draft_numbers_and_years'),
     parseMigration(migrationSql71, '0071_deep_analyses'),
     parseMigration(migrationSql72, '0072_team_links'),
+    parseMigration(migrationSql73, '0073_email_health'),
   ])
 }
 
