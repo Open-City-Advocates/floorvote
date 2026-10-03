@@ -1,17 +1,23 @@
 import { useEffect, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { color, radius, fontSize, fontWeight } from '../../styles/tokens'
+import { color, radius, fontSize } from '../../styles/tokens'
 import { actionBtnBlue } from '../../styles/actionRow'
 import { apiFetch, ApiError } from '../../lib/api'
 import { SettingsNav } from '../../components/SettingsNav'
 import { CARD } from '../../lib/cardStyle'
-import { CARD_TITLE } from '../../lib/textStyles'
+import { CARD_TITLE, FORM_LABEL } from '../../lib/textStyles'
 import { useDemo } from '../../context/DemoContext'
 import { RichTextEditor } from '../../components/RichTextEditor'
 import { BillBadge } from '../../components/BillBadge'
 import { Picker, type PickerOption } from '../../components/Picker'
 import { pickerFieldTriggerStyle, PickerFieldCaret } from '../../lib/pickerFieldStyle'
+import { billDisplayTitle } from '../../../../shared/billTitle'
+import { parseStoredMulti } from '../../../../shared/customFieldValues'
+import { CustomFieldsSection, type CustomFieldDef } from '../../components/CustomFieldsSection'
+import { RequiredLabel, RequiredLegend, MissingRequiredReason, requiredName, useRequiredSubmit } from '../../components/RequiredField'
+
+type CollectedValues = Record<string, { value: string; setBy: string | null; updatedAt: string }>
 
 
 export function DraftBills() {
@@ -31,6 +37,12 @@ export function DraftBills() {
   const [draftState, setDraftState] = useState('')
   const [creatingDraft, setCreatingDraft] = useState(false)
   const [createDraftError, setCreateDraftError] = useState<string | null>(null)
+  // Custom fields shown on the create form, and the values collected for them.
+  // The values are held in the bill page's serialized form (multi-select as a
+  // JSON array string) because the same CustomFieldsSection renders them; they
+  // are converted back to the request format on submit.
+  const [customFieldDefs, setCustomFieldDefs] = useState<CustomFieldDef[]>([])
+  const [customFieldValues, setCustomFieldValues] = useState<CollectedValues>({})
   const [draftList, setDraftList] = useState<{ id: string; billNumber: string; title: string; state: string | null }[] | null>(null)
   // Source for the State field's option list. This admin page isn't wired
   // into useBillFilters' searchParams/facetCounts plumbing, so it calls
@@ -61,6 +73,13 @@ export function DraftBills() {
   }, [])
 
   useEffect(() => {
+    // A failure only hides the custom fields; the draft can still be created.
+    apiFetch<CustomFieldDef[]>('/config/custom-fields')
+      .then(defs => setCustomFieldDefs(Array.isArray(defs) ? defs : []))
+      .catch(() => setCustomFieldDefs([]))
+  }, [])
+
+  useEffect(() => {
     apiFetch<{ state: Record<string, number> }>('/bills/facets')
       .then(f => setKnownStates(Object.keys(f.state).sort()))
       .catch(() => setKnownStates(null))
@@ -72,6 +91,11 @@ export function DraftBills() {
   // Offer a select when facets gave us something to offer; otherwise (a tenant
   // with no bills yet, or a facets outage) let the admin type the state.
   const useStateSelect = !statesResolved || stateOptions.length > 0
+  // State is the form's only required field, and only on a multi-state tenant.
+  const createGate = useRequiredSubmit({
+    missingRequired: needsState && !draftState.trim(),
+    blocked: creatingDraft || demoLocked,
+  })
 
   // Fetched when the form opens rather than on mount: the number depends on how
   // many drafts exist, so a stale value from page load could collide.
@@ -97,20 +121,29 @@ export function DraftBills() {
   }, [showDraftForm, draftState])
 
   async function handleCreateDraft() {
+    // Title is optional: a draft may be tracked by its number alone and shows
+    // as "Untitled draft" until it gets one.
     const title = draftTitle.trim()
-    if (!title || demoLocked) return
+    if (demoLocked) return
     if (needsState && !draftState.trim()) return
     setCreatingDraft(true)
     setCreateDraftError(null)
     try {
       const hasContent = (html: string) => html.replace(/<[^>]*>/g, '').trim().length > 0
-      const body: Record<string, unknown> = { title }
+      const body: Record<string, unknown> = {}
+      if (title) body.title = title
       if (draftSponsor.trim()) body.sponsor = draftSponsor.trim()
       if (hasContent(draftSummary)) body.summary = draftSummary
       if (hasContent(draftText)) body.text = draftText
       if (draftNumber.trim()) body.billNumber = draftNumber.trim()
       if (draftYear.trim()) body.year = Number(draftYear)
       if (draftState.trim()) body.state = draftState.trim()
+      const multipleById = new Map(customFieldDefs.map(f => [f.id, !!f.multiple]))
+      const customFields = Object.fromEntries(
+        Object.entries(customFieldValues).map(([fieldId, { value }]) =>
+          [fieldId, multipleById.get(fieldId) ? parseStoredMulti(value) : value]),
+      )
+      if (Object.keys(customFields).length > 0) body.customFields = customFields
       const created = await apiFetch<{ id: string }>('/bills/draft', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -133,6 +166,7 @@ export function DraftBills() {
         setDraftNumber('')
         setDraftYear(String(new Date().getFullYear()))
         setDraftState('')
+        setCustomFieldValues({})
         setCreateDraftError(null)
       })
       navigate('/bills/' + created.id)
@@ -143,7 +177,6 @@ export function DraftBills() {
     }
   }
 
-  const labelStyle: React.CSSProperties = { fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: color.textSlate, display: 'block', marginBottom: 4 }
   const inputStyle: React.CSSProperties = { width: '100%', fontSize: fontSize.sm, padding: '8px 10px', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, boxSizing: 'border-box', fontFamily: 'inherit' }
   const sectionCard: React.CSSProperties = { ...CARD, padding: 24, marginBottom: 20 }
   const sectionTitle: React.CSSProperties = CARD_TITLE
@@ -163,7 +196,7 @@ export function DraftBills() {
       <div style={sectionCard}>
         <h1 style={sectionTitle}>Draft bills</h1>
         <div style={sectionIntro}>
-          Create draft bills to track legislation before it is officially filed. Once a bill is filed, you can link it to the draft to merge all engagement (votes, positions, comments, notes) onto the filed bill.
+          Create draft bills to track legislation before it is officially filed. Once a bill is filed, you can link the draft to it, which moves all engagement (votes, positions, comments, notes, custom fields, and calendar events) onto the filed bill.
         </div>
         {!showDraftForm && (
           <button
@@ -176,9 +209,10 @@ export function DraftBills() {
         )}
         {showDraftForm && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {needsState && <RequiredLegend />}
             <div style={{ display: 'flex', gap: 14 }}>
               <div style={{ flex: 1 }}>
-                <label htmlFor="draft-number" style={labelStyle}>Bill number</label>
+                <label htmlFor="draft-number" style={FORM_LABEL}>Bill number</label>
                 <input
                   id="draft-number"
                   value={draftNumber}
@@ -189,7 +223,7 @@ export function DraftBills() {
               </div>
               <div style={{ flex: 1 }}>
                 {/* eslint-disable-next-line jsx-a11y/label-has-associated-control -- the Picker's trigger is a <button>, not a labelable control; it carries its own aria-label="Year" for the accessible name. */}
-                <label style={labelStyle}>Year</label>
+                <label style={FORM_LABEL}>Year</label>
                 {(() => {
                   // The held value must always be one of the options, and the
                   // current year must always be offerable — the fetched base
@@ -220,10 +254,8 @@ export function DraftBills() {
             </div>
             {needsState && (
               <div>
-                {/* eslint-disable-next-line jsx-a11y/label-has-associated-control -- htmlFor only applies in the free-text fallback branch below; the Picker branch's trigger is a <button> carrying its own aria-label="State". */}
-                <label htmlFor={useStateSelect ? undefined : 'draft-state'} style={labelStyle}>
-                  State <span style={{ fontWeight: fontWeight.semibold, color: color.textDanger }}>*</span>
-                </label>
+                {/* htmlFor only applies in the free-text fallback branch below; the Picker branch's trigger is a <button> carrying its own aria-label. */}
+                <RequiredLabel htmlFor={useStateSelect ? undefined : 'draft-state'}>State</RequiredLabel>
                 {useStateSelect ? (
                   <Picker
                     mode="single"
@@ -233,7 +265,7 @@ export function DraftBills() {
                     onChange={v => setDraftState(v ?? '')}
                     ariaLabel="State"
                     trigger={({ toggle, open }) => (
-                      <button type="button" aria-label="State" onClick={toggle} style={pickerFieldTriggerStyle()}>
+                      <button type="button" aria-label={requiredName('State')} onClick={toggle} style={pickerFieldTriggerStyle()}>
                         <span>{draftState || 'Select a state…'}</span>
                         <PickerFieldCaret open={open} />
                       </button>
@@ -246,13 +278,14 @@ export function DraftBills() {
                     onChange={e => setDraftState(e.target.value.toUpperCase())}
                     placeholder="UT"
                     maxLength={2}
+                    aria-required="true"
                     style={inputStyle}
                   />
                 )}
               </div>
             )}
             <div>
-              <label htmlFor="draft-title" style={labelStyle}>Title <span style={{ fontWeight: fontWeight.semibold, color: color.textDanger }}>*</span></label>
+              <label htmlFor="draft-title" style={FORM_LABEL}>Title</label>
               <input
                 id="draft-title"
                 value={draftTitle}
@@ -264,7 +297,7 @@ export function DraftBills() {
               />
             </div>
             <div>
-              <label htmlFor="draft-sponsor" style={labelStyle}>Sponsor(s)</label>
+              <label htmlFor="draft-sponsor" style={FORM_LABEL}>Sponsor(s)</label>
               <input
                 id="draft-sponsor"
                 value={draftSponsor}
@@ -275,7 +308,7 @@ export function DraftBills() {
             </div>
             <div>
               {/* eslint-disable-next-line jsx-a11y/label-has-associated-control -- RichTextEditor is a Tiptap wrapper with no id/aria-labelledby prop to associate with; giving it one is a component-API change out of scope here. */}
-              <label style={labelStyle}>Summary</label>
+              <label style={FORM_LABEL}>Summary</label>
               <RichTextEditor
                 onChange={html => setDraftSummary(html)}
                 initialContent={draftSummary}
@@ -286,7 +319,7 @@ export function DraftBills() {
             </div>
             <div>
               {/* eslint-disable-next-line jsx-a11y/label-has-associated-control -- RichTextEditor is a Tiptap wrapper with no id/aria-labelledby prop to associate with; giving it one is a component-API change out of scope here. */}
-              <label style={labelStyle}>Bill text</label>
+              <label style={FORM_LABEL}>Bill text</label>
               <RichTextEditor
                 onChange={html => setDraftText(html)}
                 initialContent={draftText}
@@ -295,23 +328,36 @@ export function DraftBills() {
                 allowEmpty
               />
             </div>
+            <CustomFieldsSection
+              collect
+              fields={customFieldDefs}
+              values={customFieldValues}
+              isAdmin
+              onUpdate={(fieldId, value) => setCustomFieldValues(prev => {
+                const next = { ...prev }
+                if (value === null) delete next[fieldId]
+                else next[fieldId] = { value, setBy: null, updatedAt: '' }
+                return next
+              })}
+            />
             {createDraftError && (
               <div style={{ fontSize: fontSize.sm, color: color.textErrorRed }}>{createDraftError}</div>
             )}
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
               <button
                 onClick={handleCreateDraft}
-                disabled={!draftTitle.trim() || (needsState && !draftState.trim()) || creatingDraft || demoLocked}
-                style={actionBtnBlue(!draftTitle.trim() || (needsState && !draftState.trim()) || creatingDraft || demoLocked)}
+                {...createGate.buttonProps}
+                style={actionBtnBlue(createGate.disabled)}
               >
                 {creatingDraft ? 'Creating…' : 'Create draft'}
               </button>
               <button
-                onClick={() => { setShowDraftForm(false); setDraftTitle(''); setDraftSummary(''); setDraftSponsor(''); setDraftText(''); setDraftNumber(''); setDraftYear(String(new Date().getFullYear())); setDraftState(''); setCreateDraftError(null) }}
+                onClick={() => { setShowDraftForm(false); setDraftTitle(''); setDraftSummary(''); setDraftSponsor(''); setDraftText(''); setDraftNumber(''); setDraftYear(String(new Date().getFullYear())); setDraftState(''); setCustomFieldValues({}); setCreateDraftError(null) }}
                 style={{ fontSize: fontSize.sm, color: color.textSecondary, background: 'none', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, padding: '8px 14px', cursor: 'pointer' }}
               >
                 Cancel
               </button>
+              <MissingRequiredReason {...createGate.reasonProps} />
             </div>
           </div>
         )}
@@ -326,7 +372,7 @@ export function DraftBills() {
                       {/* Every row here is a draft by construction (this list comes from
                           /bills/drafts) — isDraft is a literal true, not a field read off d. */}
                       <BillBadge billNumber={d.billNumber} state={d.state} to={'/bills/' + d.id} isDraft />
-                      <span style={{ fontSize: fontSize.sm, color: color.textSecondary, flex: 1 }}>{d.title}</span>
+                      <span style={{ fontSize: fontSize.sm, color: color.textSecondary, flex: 1 }}>{billDisplayTitle({ title: d.title, isDraft: true })}</span>
                       <button
                         onClick={async (e) => {
                           e.stopPropagation()

@@ -88,7 +88,7 @@ describe('Members admin write controls when demoLocked', () => {
   it('disables the "Add role" button even with a non-empty role name', async () => {
     renderMembers({ demoLocked: true })
     const user = userEvent.setup()
-    await user.type(await screen.findByPlaceholderText(/new role name/i), 'Legal')
+    await user.type(await screen.findByRole('textbox', { name: /new role name/i }), 'Legal')
     expect(screen.getByRole('button', { name: /^add$/i })).toBeDisabled()
   })
 
@@ -115,7 +115,7 @@ describe('Members admin write controls when not demoLocked', () => {
   it('leaves the "Add role" button enabled once a role name is entered', async () => {
     renderMembers({ demoLocked: false })
     const user = userEvent.setup()
-    await user.type(await screen.findByPlaceholderText(/new role name/i), 'Legal')
+    await user.type(await screen.findByRole('textbox', { name: /new role name/i }), 'Legal')
     expect(screen.getByRole('button', { name: /^add$/i })).toBeEnabled()
   })
 

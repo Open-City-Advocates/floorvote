@@ -18,7 +18,7 @@ import { NotificationsSlideOver } from './NotificationsSlideOver'
 import { NotificationsProvider } from '../context/NotificationsContext'
 import type { Mention } from '../context/NotificationsContext'
 
-const state = vi.hoisted(() => ({ billIsDraft: false }))
+const state = vi.hoisted(() => ({ billIsDraft: false, billTitle: 'A test bill' }))
 
 vi.mock('../context/DemoContext', () => ({
   useDemo: () => ({ demoMode: false, demoLocked: false, settled: true, demoResetAt: 'epoch-1' }),
@@ -29,7 +29,7 @@ vi.mock('../lib/api', () => ({
     if (path === '/notifications') {
       const mention: Mention = {
         id: 'm1', commentId: 'c1', billId: 'b1',
-        billNumber: 'SB123', billTitle: 'A test bill', billState: 'NJ',
+        billNumber: 'SB123', billTitle: state.billTitle, billState: 'NJ',
         billIsDraft: state.billIsDraft,
         sessionSlug: 'session-1',
         authorName: 'Alice Author', authorSubtitle: null,
@@ -58,7 +58,7 @@ async function renderPanel(billIsDraft: boolean) {
 }
 
 describe('NotificationsSlideOver draft marker', () => {
-  beforeEach(() => { state.billIsDraft = false })
+  beforeEach(() => { state.billIsDraft = false; state.billTitle = 'A test bill' })
 
   it('renders the dashed badge and a visible Draft chip for a draft bill', async () => {
     await renderPanel(true)
@@ -78,5 +78,28 @@ describe('NotificationsSlideOver draft marker', () => {
   it('uses the mini chip scale', async () => {
     await renderPanel(true)
     expect(screen.getByText('Draft').style.padding).toBe('2px 6px')
+  })
+})
+
+describe('NotificationsSlideOver untitled draft title', () => {
+  beforeEach(() => { state.billIsDraft = false; state.billTitle = 'A test bill' })
+
+  it('labels a mention on an untitled draft "Untitled draft"', async () => {
+    state.billTitle = ''
+    await renderPanel(true)
+    expect(screen.getByText('Untitled draft')).toBeInTheDocument()
+  })
+
+  it("keeps a titled draft's own title", async () => {
+    state.billTitle = 'Draft bill title'
+    await renderPanel(true)
+    expect(screen.getByText('Draft bill title')).toBeInTheDocument()
+    expect(screen.queryByText('Untitled draft')).toBeNull()
+  })
+
+  it('never labels a filed bill "Untitled draft"', async () => {
+    state.billTitle = ''
+    await renderPanel(false)
+    expect(screen.queryByText('Untitled draft')).toBeNull()
   })
 })
