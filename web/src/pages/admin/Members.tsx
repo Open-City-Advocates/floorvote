@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, Fragment } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { apiFetch, ApiError } from '../../lib/api'
 import { parseInvitees } from '../../lib/parseInvitees'
 import { useAuth } from '../../hooks/useAuth'
@@ -17,6 +18,8 @@ import { color, radius, fontSize, fontWeight, shadow } from '../../styles/tokens
 import { orgRolesLabel } from '../../lib/orgNoun'
 import { MissingRequiredReason, useRequiredSubmit } from '../../components/RequiredField'
 import { inlineEditCancelStyle, inlineEditSaveStyle } from '../../lib/inlineEditStyles'
+import { ChangeEmailDialog } from '../../components/ChangeEmailDialog'
+import { emailChangedLabel, type EmailChangedFields } from '../../lib/emailChangedLabel'
 
 type Role = { id: string; name: string }
 
@@ -35,12 +38,21 @@ type Member = {
   canVote: boolean
   voteCount: number
   loginTrouble?: boolean
+  /** Set when this pending invite's latest invite or sign-in email bounced. */
+  emailBounce?: { reason: string | null } | null
 }
 
-interface AuthEvent {
+// A pending invite, as the server defines it: someone invited them, and they
+// have never signed in and aren't deactivated. A member with no inviter
+// joined another way. Gates the "Invite pending" and "Email bounced" labels
+// and the invite actions alike.
+function isPendingInvite(m: Pick<Member, 'invitedBy' | 'hasLoggedIn' | 'deactivatedAt'>): boolean {
+  return m.invitedBy !== null && !m.hasLoggedIn && !m.deactivatedAt
+}
+
+interface AuthEvent extends EmailChangedFields {
   id: string
   event: string
-  reason: string | null
   linkType: string | null
   provider: string | null
   ipCountry: string | null
@@ -85,6 +97,8 @@ function authEventLabel(event: AuthEvent): string {
       return 'Email delivered'
     case 'email_complained':
       return 'Spam complaint'
+    case 'email_changed':
+      return emailChangedLabel(event)
     default:
       return event.event
   }
@@ -183,15 +197,19 @@ export function Members() {
   const [inviteRole, setInviteRole] = useState<'member' | 'admin'>('member')
   const [inviteLoading, setInviteLoading] = useState(false)
   const [inviteError, setInviteError] = useState<string | null>(null)
-  type BulkResult = { email: string; status: 'invited' | 'exists' | 'duplicate' | 'invalid'; userId?: string }
-  type BulkSummary = { invited: number; exists: number; duplicate: number; invalid: number }
+  type BulkResult = { email: string; status: 'invited' | 'exists' | 'duplicate' | 'invalid' | 'bounced'; userId?: string }
+  // `bounced` is optional: an older API leaves it out.
+  type BulkSummary = { invited: number; exists: number; duplicate: number; invalid: number; bounced?: number }
   const [inviteResult, setInviteResult] = useState<{ summary: BulkSummary; results: BulkResult[] } | null>(null)
 
   // Members list state
   const [members, setMembers] = useState<Member[]>([])
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
-  const [memberSearch, setMemberSearch] = useState('')
+  // ?search= pre-fills the box: the bounced-invite email links here with the
+  // address when exactly one bounced, so the admin lands on that row.
+  const [searchParams] = useSearchParams()
+  const [memberSearch, setMemberSearch] = useState(() => searchParams.get('search') ?? '')
   const [troubleFilter, setTroubleFilter] = useState(false)
   // Feedback for the count line's "Copy N emails" button.
   const [copyEmailsStatus, setCopyEmailsStatus] = useState<'copied' | 'error' | null>(null)
@@ -237,6 +255,9 @@ export function Members() {
 
   // Toast state
   const [toast, setToast] = useState<string | null>(null)
+
+  // "Change email…" dialog: the pending invite being edited, if any.
+  const [changeEmailMember, setChangeEmailMember] = useState<Member | null>(null)
 
   // Owner-only account-deletion policy toggle
   const [accountDeletionEnabled, setAccountDeletionEnabled] = useState(false)
@@ -521,6 +542,16 @@ export function Members() {
     }
   }
 
+  function handleEmailChanged(member: Member, email: string) {
+    setChangeEmailMember(null)
+    // The new invite is now the latest email, with no outcome yet, so the
+    // row is a plain pending invite again (as the next members fetch says).
+    setMembers(prev => prev.map(m => (m.id === member.id ? { ...m, email, emailBounce: null } : m)))
+    setToast(`New invite sent to ${email}.`)
+    setTimeout(() => setToast(null), 4000)
+    actionsTriggerRefs.current[member.id]?.focus()
+  }
+
   async function handleSetMemberRoles(memberId: string, roleIds: string[]) {
     try {
       await apiFetch(`/admin/members/${memberId}/roles`, {
@@ -572,8 +603,12 @@ export function Members() {
       onClick: () => { close(); openActivity(member) },
     })
 
-    if (!isSelf && !member.hasLoggedIn && !isDeactivated && member.invitedBy !== null) {
+    if (!isSelf && isPendingInvite(member)) {
       items.push({ kind: 'action', label: 'Resend invite', disabled: demoLocked, onClick: () => { close(); handleResendInvite(member) } })
+      // Only an Owner may change a pending Owner's address (the server refuses it too).
+      if (canManageThisMember) {
+        items.push({ kind: 'action', label: 'Change email…', disabled: demoLocked, onClick: () => { close(); setChangeEmailMember(member) } })
+      }
     }
 
     if (!isSelf && member.hasLoggedIn && !isDeactivated) {
@@ -747,12 +782,13 @@ export function Members() {
                   inviteResult.summary.exists ? `${inviteResult.summary.exists} ${inviteResult.summary.exists === 1 ? 'already a member' : 'already members'}` : null,
                   inviteResult.summary.duplicate ? `${inviteResult.summary.duplicate} ${inviteResult.summary.duplicate === 1 ? 'duplicate' : 'duplicates'}` : null,
                   inviteResult.summary.invalid ? `${inviteResult.summary.invalid} invalid` : null,
+                  inviteResult.summary.bounced ? `${inviteResult.summary.bounced} previously bounced` : null,
                 ].filter(Boolean).join(' · ')}
               </div>
               {inviteResult.results.some(r => r.status !== 'invited') && (
                 <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: color.textMuted }}>
                   {inviteResult.results.filter(r => r.status !== 'invited').map((r, i) => (
-                    <li key={i}>{r.email || '(no email)'} — {r.status}</li>
+                    <li key={i}>{r.email || '(no email)'} — {r.status === 'bounced' ? 'previously bounced, not invited' : r.status}</li>
                   ))}
                 </ul>
               )}
@@ -1090,7 +1126,26 @@ export function Members() {
                           }}>
                             Deactivated
                           </span>
-                        ) : !member.hasLoggedIn && member.invitedBy !== null ? (
+                        ) : isPendingInvite(member) && member.emailBounce ? (
+                          // A toggletip, not a `title`, so the reason opens on tap
+                          // (touch screens) and keyboard focus as well as hover.
+                          <HoverTooltip
+                            toggletip
+                            maxWidth={280}
+                            text={member.emailBounce.reason ?? "The email couldn't be delivered"}
+                          >
+                            <span style={{
+                              fontSize: fontSize.sm,
+                              padding: '2px 8px',
+                              borderRadius: radius.sm,
+                              fontWeight: fontWeight.semibold,
+                              background: color.bgDangerSoft,
+                              color: color.textDanger,
+                            }}>
+                              Email bounced
+                            </span>
+                          </HoverTooltip>
+                        ) : isPendingInvite(member) ? (
                           <span style={{
                             fontSize: fontSize.sm,
                             padding: '2px 8px',
@@ -1499,6 +1554,13 @@ export function Members() {
             )}
           </div>
         </div>
+      )}
+      {changeEmailMember && (
+        <ChangeEmailDialog
+          member={changeEmailMember}
+          onClose={() => { const id = changeEmailMember.id; setChangeEmailMember(null); actionsTriggerRefs.current[id]?.focus() }}
+          onChanged={(email) => handleEmailChanged(changeEmailMember, email)}
+        />
       )}
       {/* Toast notification */}
       {toast && (

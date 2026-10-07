@@ -14,13 +14,13 @@ import { actionRowStyle, actionRowStyleFirst, actionBtnBlue, actionBtnRed } from
 import { digestCadenceDescription, weekAheadCadenceDescription, isModuleEnabled } from '../lib/modules'
 import type { ModulesConfig } from '../lib/modules'
 import { DEFAULT_ORG_NOUN } from '../lib/orgNoun'
+import { emailChangedLabel, type EmailChangedFields } from '../lib/emailChangedLabel'
 
 const SECTION_CARD: React.CSSProperties = { ...CARD, padding: 24, marginBottom: 20 }
 
-type AccountAuthEvent = {
+type AccountAuthEvent = EmailChangedFields & {
   id: string
   event: string
-  reason: string | null
   linkType: string | null
   provider: string | null
   ipCountry: string | null
@@ -49,6 +49,8 @@ function accountEventLabel(e: AccountAuthEvent): string {
       return 'Email delivered'
     case 'email_complained':
       return 'Spam complaint'
+    case 'email_changed':
+      return emailChangedLabel(e)
     default:
       return e.event
   }

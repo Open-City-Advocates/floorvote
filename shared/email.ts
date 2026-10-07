@@ -1,6 +1,6 @@
 // Single source of truth for "does this look like a deliverable email
-// address?" — used by the invite paste parser (web), bulk invite, and the
-// magic-link request (api).
+// address?" — used by the invite paste parser (web), the member-address check
+// used by bulk invite and change-email (api), and the magic-link request (api).
 //
 // Deliberately stricter than RFC 5322: the domain must be dot-separated
 // labels ending in an alphabetic TLD. The point is to reject spreadsheet

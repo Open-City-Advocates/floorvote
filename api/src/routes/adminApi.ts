@@ -1,8 +1,9 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { eq, desc, sql, and, or, isNull, isNotNull, inArray, ne, gt, like } from 'drizzle-orm'
 import { requireAuth, requireAdmin, requireOwner } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { hasLoggedInSelect } from '../lib/loginHistory'
+import { pendingInviteBounces } from '../lib/inviteBounces'
 import { users, sessions, magicLinks, associationConfig, bills, comments, commentReactions, memberVotes, notes, feedEvents, officialPositions, roles, userRoles, authEvents } from '../db/schema'
 import { generateToken, hashToken } from '../lib/crypto'
 import { sendMagicLink } from '../lib/email'
@@ -13,15 +14,18 @@ import { ensureAssociationName } from '../lib/associationName'
 import { parseTaxonomyItems } from '../lib/taxonomy'
 import { resolveOrgNoun } from '../../../shared/orgNoun'
 import { nowDb } from '../lib/dbTime'
-import { recordAuthEvent, authReqContext } from '../lib/authEvents'
+import { recordAuthEvent, authReqContext, authEventActor, authEventActorName } from '../lib/authEvents'
 import { getAccountDeletionEnabled, ACCOUNT_DELETION_KEY } from '../lib/accountDeletion'
 import { countActiveOwners } from '../lib/owners'
 import { healStalledAiBills } from '../lib/healStalledAi'
 import { exportApiRouter } from './exportApi'
 import { customFieldsApiRouter } from './customFieldsApi'
 import { adminSavedViewsRouter } from './savedViewsApi'
-import type { AppEnv } from '../types'
-import { isValidEmail } from '../../../shared/email'
+import type { AppDb, AppEnv } from '../types'
+import { checkMemberAddresses, normalizeMemberAddress } from '../lib/memberAddress'
+import { isPendingInvite, pendingInviteWhere } from '../lib/pendingInvite'
+import { isPreviouslyBounced, previouslyBouncedAddresses } from '../lib/bouncedAddresses'
+import { centralEmail, type DeliveryStatus, type SuppressionStatus } from '../lib/centralEmail'
 
 export const adminApiRouter = new Hono<AppEnv>()
 
@@ -109,6 +113,9 @@ adminApiRouter.get('/members', async (c) => {
     (r.loginRequests ?? 0) >= 2 && (!r.lastSuccess || (r.lastLoginRequest ?? '') > r.lastSuccess),
   ]))
 
+  // Pending invites whose latest invite or sign-in email bounced.
+  const bounceByUser = await pendingInviteBounces(db)
+
   return c.json(
     rows.map((u) => ({
       id: u.id,
@@ -125,6 +132,7 @@ adminApiRouter.get('/members', async (c) => {
       invitedBy: u.invitedBy ? (inviterMap[u.invitedBy] ?? null) : null,
       roles: rolesByUser.get(u.id) ?? [],
       loginTrouble: troubleByUser.get(u.id) ?? false,
+      emailBounce: bounceByUser.get(u.id) ?? null,
     })),
   )
 })
@@ -158,35 +166,34 @@ adminApiRouter.post('/members/bulk-invite', async (c) => {
   const db = getDb(c.env.DB)
   const inviterId = c.get('user').id
 
-  // Normalize once.
-  const normalized = invitees.map((inv) => ({
-    email: (inv.email ?? '').toLowerCase().trim(),
-    name: (inv.name ?? '').trim().slice(0, 100),
-  }))
+  // Address checks are shared with every other caller that sets a member's
+  // address; repeats within this batch are bulk invite's own concern.
+  const checks = await checkMemberAddresses(db, invitees.map(inv => inv.email))
 
-  // One lookup for all existing emails in the batch.
-  const candidateEmails = [...new Set(normalized.filter(n => isValidEmail(n.email)).map(n => n.email))]
-  const existingRows = candidateEmails.length > 0
-    ? await db.select({ email: users.email }).from(users).where(inArray(users.email, candidateEmails)).all()
-    : []
-  const existingSet = new Set(existingRows.map(r => r.email))
+  // One lookup for every new address in the batch. A failed lookup of the
+  // provider's list falls back to recorded bounces and never blocks the batch.
+  const bounced = await previouslyBouncedAddresses(
+    c.env, db, checks.filter(ch => ch.status === 'available').map(ch => ch.email),
+  )
 
-  type RowStatus = 'invited' | 'exists' | 'duplicate' | 'invalid'
+  type RowStatus = 'invited' | 'exists' | 'duplicate' | 'invalid' | 'bounced'
   const results: { email: string; status: RowStatus; userId?: string }[] = []
   const toInsert: { id: string; email: string; name: string; role: 'admin' | 'member'; invitedBy: string }[] = []
   const created: { userId: string; email: string }[] = []
   const seen = new Set<string>()
 
-  for (const n of normalized) {
-    if (!n.email || !isValidEmail(n.email)) { results.push({ email: n.email, status: 'invalid' }); continue }
-    if (seen.has(n.email)) { results.push({ email: n.email, status: 'duplicate' }); continue }
-    seen.add(n.email)
-    if (existingSet.has(n.email)) { results.push({ email: n.email, status: 'exists' }); continue }
+  invitees.forEach((inv, i) => {
+    const { email, status } = checks[i]
+    if (status === 'invalid') { results.push({ email, status: 'invalid' }); return }
+    if (seen.has(email)) { results.push({ email, status: 'duplicate' }); return }
+    seen.add(email)
+    if (status === 'taken') { results.push({ email, status: 'exists' }); return }
+    if (bounced.has(email)) { results.push({ email, status: 'bounced' }); return }
     const id = crypto.randomUUID()
-    toInsert.push({ id, email: n.email, name: n.name, role, invitedBy: inviterId })
-    created.push({ userId: id, email: n.email })
-    results.push({ email: n.email, status: 'invited', userId: id })
-  }
+    toInsert.push({ id, email, name: (inv.name ?? '').trim().slice(0, 100), role, invitedBy: inviterId })
+    created.push({ userId: id, email })
+    results.push({ email, status: 'invited', userId: id })
+  })
 
   // Chunked inserts (D1 bound-param ceiling).
   for (let i = 0; i < toInsert.length; i += USER_INSERT_CHUNK) {
@@ -215,24 +222,15 @@ adminApiRouter.post('/members/bulk-invite', async (c) => {
     exists: results.filter(r => r.status === 'exists').length,
     duplicate: results.filter(r => r.status === 'duplicate').length,
     invalid: results.filter(r => r.status === 'invalid').length,
+    bounced: results.filter(r => r.status === 'bounced').length,
   }
   return c.json({ summary, results })
 })
 
-// POST /admin/members/:id/resend-invite
-adminApiRouter.post('/members/:id/resend-invite', async (c) => {
-  const targetId = c.req.param('id')
-  const db = getDb(c.env.DB)
-
-  const target = await db
-    .select({ id: users.id, email: users.email, deactivatedAt: users.deactivatedAt })
-    .from(users)
-    .where(eq(users.id, targetId))
-    .get()
-
-  if (!target) return c.json({ error: 'User not found' }, 404)
-  if (target.deactivatedAt) return c.json({ error: 'Cannot resend invite to a deactivated user' }, 400)
-
+// A new seven-day invite link for a pending invite, sent the way every
+// admin-initiated invite is: link_requested first, then the email in the
+// background so the response doesn't wait on the mail provider.
+async function sendInvite(c: Context<AppEnv>, db: AppDb, target: { id: string; email: string }): Promise<void> {
   const INVITE_DURATION_MS = 7 * 24 * 60 * 60 * 1000
   const rawToken = await generateToken()
   const tokenHash = await hashToken(rawToken)
@@ -252,8 +250,112 @@ adminApiRouter.post('/members/:id/resend-invite', async (c) => {
   } catch {
     sendMagicLink(target.email, url, c.env, 'invite', db, target.id).catch(console.error)
   }
+}
 
+// POST /admin/members/:id/resend-invite
+adminApiRouter.post('/members/:id/resend-invite', async (c) => {
+  const targetId = c.req.param('id')
+  const db = getDb(c.env.DB)
+
+  const target = await db
+    .select({ id: users.id, email: users.email, deactivatedAt: users.deactivatedAt })
+    .from(users)
+    .where(eq(users.id, targetId))
+    .get()
+
+  if (!target) return c.json({ error: 'User not found' }, 404)
+  if (target.deactivatedAt) return c.json({ error: 'Cannot resend invite to a deactivated user' }, 400)
+
+  await sendInvite(c, db, target)
   return c.json({ ok: true })
+})
+
+const CHANGE_EMAIL_ERRORS = {
+  unchanged: "That's already their address. Check it for a typo, or use Resend invite to send to it again.",
+  inUse: 'Another member already uses that address.',
+  bounced: 'This address has bounced before. Check it for a typo.',
+  invalid: 'Invalid email address',
+  pendingOnly: "Only a pending invite's address can be changed",
+} as const
+
+// POST /admin/members/:id/change-email  { email }
+// Fixes a pending invite's address and sends a new invite in one step. Only a
+// pending invite: once a member has signed in, moving their login to another
+// inbox needs account-takeover safeguards this route doesn't have.
+adminApiRouter.post('/members/:id/change-email', async (c) => {
+  const targetId = c.req.param('id')
+  const currentUser = c.get('user')
+  const db = getDb(c.env.DB)
+
+  if (targetId === currentUser.id) return c.json({ error: "You can't change your own address here" }, 400)
+
+  const target = await db
+    .select({
+      id: users.id, email: users.email, role: users.role, deactivatedAt: users.deactivatedAt,
+      invitedBy: users.invitedBy, hasLoggedIn: hasLoggedInSelect,
+    })
+    .from(users)
+    .where(eq(users.id, targetId))
+    .get()
+
+  if (!target) return c.json({ error: 'User not found' }, 404)
+  if (target.role === 'owner' && currentUser.role !== 'owner') {
+    return c.json({ error: "Only owners can change an owner's address" }, 403)
+  }
+  if (target.deactivatedAt) return c.json({ error: 'Cannot change the address of a deactivated member' }, 400)
+  if (!isPendingInvite(target)) return c.json({ error: CHANGE_EMAIL_ERRORS.pendingOnly }, 400)
+
+  const body = await c.req.json<{ email?: unknown }>().catch(() => ({} as { email?: unknown }))
+  const raw = typeof body.email === 'string' ? body.email : ''
+  const [check] = await checkMemberAddresses(db, [raw])
+  if (check.status === 'invalid') return c.json({ error: CHANGE_EMAIL_ERRORS.invalid }, 400)
+  // Compared to the stored address normalized: a stored address can have
+  // mixed case, and the check above matches it to this member either way.
+  if (check.email === normalizeMemberAddress(target.email)) return c.json({ error: CHANGE_EMAIL_ERRORS.unchanged }, 400)
+  if (check.status === 'taken') return c.json({ error: CHANGE_EMAIL_ERRORS.inUse }, 409)
+  const email = check.email
+
+  // Refuse an address that bounced before. If the provider's list can't
+  // answer, only recorded bounces count: the hourly bounce check catches the rest.
+  if (await isPreviouslyBounced(c.env, db, email)) {
+    return c.json({ error: CHANGE_EMAIL_ERRORS.bounced }, 400)
+  }
+
+  // One batch, so it lands whole or not at all. The update re-checks that the
+  // member is still a pending invite: a sign-in or deactivation can land
+  // while the lookup above is in flight. The link delete runs only if the
+  // update did, so links sent to the old address stop working at the same
+  // moment the address changes. Two changes racing to the same address both
+  // pass the checks above, and the unique index on users.email lets only one
+  // write land. That index is case-sensitive, so it holds here only because
+  // this route always writes the address lowercased.
+  let changed: boolean
+  try {
+    const [updated] = await db.batch([
+      db.update(users).set({ email }).where(and(
+        eq(users.id, target.id),
+        pendingInviteWhere(db),
+      )).returning({ id: users.id }),
+      db.delete(magicLinks).where(and(
+        eq(magicLinks.userId, target.id),
+        isNull(magicLinks.usedAt),
+        sql`(SELECT email FROM users WHERE id = ${target.id}) = ${email}`,
+      )),
+    ])
+    changed = updated.length > 0
+  } catch (e) {
+    if (/UNIQUE constraint failed/i.test(`${e} ${(e as { cause?: unknown })?.cause ?? ''}`)) {
+      return c.json({ error: CHANGE_EMAIL_ERRORS.inUse }, 409)
+    }
+    throw e
+  }
+  if (!changed) return c.json({ error: CHANGE_EMAIL_ERRORS.pendingOnly }, 409)
+
+  await recordAuthEvent(db, {
+    event: 'email_changed', email, reason: target.email, userId: target.id, actorId: currentUser.id, ...authReqContext(c),
+  })
+  await sendInvite(c, db, { id: target.id, email })
+  return c.json({ ok: true, email })
 })
 
 // POST /admin/members/:id/resend-login
@@ -553,23 +655,25 @@ adminApiRouter.get('/members/:id/auth-events', async (c) => {
       userAgent: authEvents.userAgent,
       createdAt: authEvents.createdAt,
       messageId: authEvents.messageId,
+      email: authEvents.email,
+      actorName: authEventActorName,
     })
     .from(authEvents)
+    .leftJoin(authEventActor, eq(authEventActor.id, authEvents.actorId))
     .where(eq(authEvents.userId, userId))
     .orderBy(desc(authEvents.createdAt))
     .limit(50)
     .all()
   const member = await db.select({ email: users.email }).from(users).where(eq(users.id, userId)).get()
-  let suppression: { suppressed: boolean | null; reason?: string; createdAt?: string } = { suppressed: null }
+  const central = centralEmail(c.env)
+  let suppression: SuppressionStatus = { suppressed: null }
   try {
-    const central = c.env.CENTRAL as { emailSuppression?: (email: string) => Promise<typeof suppression> } | undefined
-    if (member?.email && central?.emailSuppression) suppression = await central.emailSuppression(member.email)
+    if (member?.email && central.emailSuppression) suppression = await central.emailSuppression(member.email)
   } catch (e) { console.error('[auth-events] suppression lookup failed', e) }
   const sentMsgIds = events.filter(e => e.event === 'email_sent' && e.messageId).map(e => e.messageId as string)
-  let delivery: Record<string, { status: string; isSpam: boolean; errorCause?: string; datetime?: string }> = {}
+  let delivery: Record<string, DeliveryStatus> = {}
   try {
-    const central = c.env.CENTRAL as { emailDeliveryStatus?: (ids: string[], since: string) => Promise<typeof delivery> } | undefined
-    if (sentMsgIds.length && central?.emailDeliveryStatus) {
+    if (sentMsgIds.length && central.emailDeliveryStatus) {
       const since = new Date(Date.now() - 31 * 86400_000).toISOString()
       delivery = await central.emailDeliveryStatus(sentMsgIds, since)
     }
