@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env, SELF } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill } from '../helpers'
+import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedCalendarEvent } from '../helpers'
 import { getDb } from '../../src/db/client'
-import { bills, memberVotes, officialPositions, comments, notes } from '../../src/db/schema'
+import {
+  bills, memberVotes, officialPositions, comments, notes,
+  customFieldDefinitions, billCustomFieldValues, calendarEventBills,
+} from '../../src/db/schema'
 import { eq } from 'drizzle-orm'
 
 async function createDraft(token: string, title: string): Promise<string> {
@@ -23,11 +26,12 @@ describe('POST /api/bills/:id/link', () => {
   let adminToken: string
   let memberToken: string
   let memberId: string
+  let adminId: string
 
   beforeEach(async () => {
     await resetDb()
     await applyMigrations()
-    const adminId = await seedUser({ email: 'admin@x.com', role: 'admin' })
+    adminId = await seedUser({ email: 'admin@x.com', role: 'admin' })
     adminToken = await seedSession(adminId)
     memberId = await seedUser({ email: 'member@x.com', role: 'member' })
     memberToken = await seedSession(memberId)
@@ -218,5 +222,89 @@ describe('POST /api/bills/:id/link', () => {
     // draft untouched
     const db = getDb(env.DB)
     expect(await db.select().from(bills).where(eq(bills.id, draftId)).get()).toBeDefined()
+  })
+
+  async function link(draftId: string, filedId: string) {
+    const res = await SELF.fetch(`https://x/api/bills/${draftId}/link`, {
+      method: 'POST',
+      headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filedBillId: filedId }),
+    })
+    expect(res.status).toBe(200)
+  }
+
+  async function seedField(name: string): Promise<string> {
+    const id = crypto.randomUUID()
+    await getDb(env.DB).insert(customFieldDefinitions).values({ id, name, type: 'text' })
+    return id
+  }
+
+  it('moves the draft custom field values onto the filed bill, keeping set_by and updated_at', async () => {
+    const filedId = await seedBill({ billNumber: 'HB 7', externalId: 'legiscan:777' })
+    const draftId = await createDraft(adminToken, 'Draft for HB 7')
+    const fieldId = await seedField('Sponsor outreach')
+    const db = getDb(env.DB)
+    await db.insert(billCustomFieldValues).values({
+      billId: draftId, fieldId, value: 'called office', setBy: memberId, updatedAt: '2026-01-02 03:04:05',
+    })
+
+    await link(draftId, filedId)
+
+    const values = await db.select().from(billCustomFieldValues).where(eq(billCustomFieldValues.billId, filedId)).all()
+    expect(values).toHaveLength(1)
+    expect(values[0]).toMatchObject({
+      fieldId, value: 'called office', setBy: memberId, updatedAt: '2026-01-02 03:04:05',
+    })
+  })
+
+  it('keeps the filed custom field value when both bills have one for the same field', async () => {
+    const filedId = await seedBill({ billNumber: 'HB 8', externalId: 'legiscan:888' })
+    const draftId = await createDraft(adminToken, 'Draft for HB 8')
+    const sharedField = await seedField('Status note')
+    const draftOnlyField = await seedField('Draft-only note')
+    const db = getDb(env.DB)
+    await db.insert(billCustomFieldValues).values([
+      { billId: filedId, fieldId: sharedField, value: 'filed value', setBy: adminId },
+      { billId: draftId, fieldId: sharedField, value: 'draft value', setBy: memberId },
+      { billId: draftId, fieldId: draftOnlyField, value: 'draft only', setBy: memberId },
+    ])
+
+    await link(draftId, filedId)
+
+    const values = await db.select().from(billCustomFieldValues).where(eq(billCustomFieldValues.billId, filedId)).all()
+    expect(values).toHaveLength(2)
+    expect(values.find(v => v.fieldId === sharedField)?.value).toBe('filed value')
+    expect(values.find(v => v.fieldId === draftOnlyField)?.value).toBe('draft only')
+    expect((await db.select().from(billCustomFieldValues).where(eq(billCustomFieldValues.billId, draftId)).all())).toHaveLength(0)
+  })
+
+  it('moves the draft calendar links onto the filed bill', async () => {
+    const filedId = await seedBill({ billNumber: 'HB 9', externalId: 'legiscan:999' })
+    const draftId = await createDraft(adminToken, 'Draft for HB 9')
+    const eventId = await seedCalendarEvent(draftId)
+    const db = getDb(env.DB)
+    await db.insert(calendarEventBills).values({ eventId, billId: draftId })
+
+    await link(draftId, filedId)
+
+    expect(await db.select().from(calendarEventBills).where(eq(calendarEventBills.billId, filedId)).all())
+      .toEqual([{ eventId, billId: filedId }])
+    expect((await db.select().from(calendarEventBills).where(eq(calendarEventBills.billId, draftId)).all())).toHaveLength(0)
+  })
+
+  it('drops the draft calendar link when the filed bill is already linked to the same event', async () => {
+    const filedId = await seedBill({ billNumber: 'HB 10', externalId: 'legiscan:1010' })
+    const draftId = await createDraft(adminToken, 'Draft for HB 10')
+    const eventId = await seedCalendarEvent(filedId)
+    const db = getDb(env.DB)
+    await db.insert(calendarEventBills).values([
+      { eventId, billId: filedId },
+      { eventId, billId: draftId },
+    ])
+
+    await link(draftId, filedId)
+
+    expect(await db.select().from(calendarEventBills).where(eq(calendarEventBills.eventId, eventId)).all())
+      .toEqual([{ eventId, billId: filedId }])
   })
 })

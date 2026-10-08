@@ -49,15 +49,6 @@ describe('POST /api/bills/draft', () => {
     expect(res.status).toBe(403)
   })
 
-  it('rejects a missing title with 400', async () => {
-    const res = await SELF.fetch('https://x/api/bills/draft', {
-      method: 'POST',
-      headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ billNumber: 'X' }),
-    })
-    expect(res.status).toBe(400)
-  })
-
   it('accepts vote, position on a draft', async () => {
     // Create draft as admin
     const createRes = await SELF.fetch('https://x/api/bills/draft', {

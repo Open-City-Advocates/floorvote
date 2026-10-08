@@ -78,7 +78,7 @@ export function EventLines({ event, compact = false, linkChips = false, suppress
             draftSrLabel
             priority={b.priority ?? undefined}
             to={to}
-            hoverBill={suppressHover ? undefined : { billId: b.id, title: b.billTitle, summary: null, priority: b.priority }}
+            hoverBill={suppressHover ? undefined : { billId: b.id, title: b.billTitle, isDraft: b.isDraft, summary: null, priority: b.priority }}
           />
         )
       })}

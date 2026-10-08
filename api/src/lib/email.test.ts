@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { sendEmail, sendMagicLink, unsubscribeHeaders, sendFeedback } from './email'
+import { sendEmail, sendMagicLink, unsubscribeHeaders, sendFeedback, otherProvider } from './email'
+import { PermanentSendError } from './emailErrors'
 
 type Sent = Record<string, unknown>
 
@@ -118,6 +119,39 @@ describe('sendMagicLink', () => {
   })
 })
 
+describe('sendMagicLink — permanent failures', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('never contacts either provider for an address that fails validation', async () => {
+    const { env, sent } = fakeCfEnv(() => ({ messageId: 'm' }))
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(sendMagicLink('jane@example.gov;', 'https://x.test/v?t=1',
+      { ...env, RESEND_API_KEY: 'k', APP_URL: 'https://x.test' } as never, 'invite'))
+      .rejects.toBeInstanceOf(PermanentSendError)
+    expect(sent).toHaveLength(0)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('throws a permanent error for a suppressed recipient, without falling back', async () => {
+    const { env } = fakeCfEnv(() => { throw Object.assign(new Error('suppressed'), { code: 'E_RECIPIENT_SUPPRESSED' }) })
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(sendMagicLink('jane@example.gov', 'https://x.test/v?t=1',
+      { ...env, RESEND_API_KEY: 'k', APP_URL: 'https://x.test' } as never, 'invite'))
+      .rejects.toBeInstanceOf(PermanentSendError)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('throws a retryable (non-permanent) error when the provider itself fails', async () => {
+    const { env } = fakeCfEnv(() => { throw Object.assign(new Error('rate'), { code: 'E_RATE_LIMIT_EXCEEDED' }) })
+    const err = await sendMagicLink('jane@example.gov', 'https://x.test/v?t=1',
+      { ...env, APP_URL: 'https://x.test' } as never, 'invite').catch(e => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err).not.toBeInstanceOf(PermanentSendError)
+  })
+})
+
 describe('sendFeedback', () => {
   it('sends to the parsed OPERATOR_CONTACT_EMAILS recipients', async () => {
     const { env, sent } = fakeCfEnv(() => ({ messageId: 'm' }))
@@ -150,5 +184,101 @@ describe('sendEmail — Resend', () => {
     expect(r.ok).toBe(true)
     expect(body.text).toBe('Hello')
     expect(body.headers).toEqual(headers)
+  })
+})
+
+describe('otherProvider', () => {
+  it('is resend for a cloudflare primary only when RESEND_API_KEY is set', () => {
+    expect(otherProvider({ RESEND_API_KEY: 'k' } as never, 'cloudflare')).toBe('resend')
+    expect(otherProvider({} as never, 'cloudflare')).toBeNull()
+  })
+  it('is cloudflare for a resend primary only when the EMAIL binding exists', () => {
+    expect(otherProvider({ EMAIL: { send: async () => ({}) } } as never, 'resend')).toBe('cloudflare')
+    expect(otherProvider({} as never, 'resend')).toBeNull()
+  })
+})
+
+describe('sendEmail — fallback and provider override', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  const failingCf = (code: string) => ({
+    EMAIL_PROVIDER: 'cloudflare' as const,
+    EMAIL: { send: vi.fn(async () => { throw Object.assign(new Error('nope'), { code }) }) },
+  })
+  const resendOk = () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ id: 'rs-1' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetch)
+    return fetch
+  }
+  const msg = { to: ['a@b.com'], subject: 'Hi', html: '<p>x</p>' }
+
+  it('retries through resend when cloudflare fails and fallback is on', async () => {
+    const fetch = resendOk()
+    const env = { ...failingCf('E_RECIPIENT_NOT_ALLOWED'), RESEND_API_KEY: 'k' }
+    const r = await sendEmail(env as never, msg, undefined, { fallback: true })
+    expect(r.ok).toBe(true)
+    expect(r.provider).toBe('resend')
+    expect(r.messageId).toBe('rs-1')
+    expect(r.attempts!.map(a => [a.provider, a.ok])).toEqual([['cloudflare', false], ['resend', true]])
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it('does not retry without fallback', async () => {
+    const fetch = resendOk()
+    const env = { ...failingCf('E_RECIPIENT_NOT_ALLOWED'), RESEND_API_KEY: 'k' }
+    const r = await sendEmail(env as never, msg)
+    expect(r.ok).toBe(false)
+    expect(r.attempts).toHaveLength(1)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('does not retry a suppressed recipient', async () => {
+    const fetch = resendOk()
+    const env = { ...failingCf('E_RECIPIENT_SUPPRESSED'), RESEND_API_KEY: 'k' }
+    const r = await sendEmail(env as never, msg, undefined, { fallback: true })
+    expect(r.ok).toBe(false)
+    expect(r.attempts).toHaveLength(1)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('does not retry when no other provider is configured', async () => {
+    const fetch = resendOk()
+    const r = await sendEmail(failingCf('E_RECIPIENT_NOT_ALLOWED') as never, msg, undefined, { fallback: true })
+    expect(r.ok).toBe(false)
+    expect(r.attempts).toHaveLength(1)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('sends through a forced provider instead of the active one', async () => {
+    const fetch = resendOk()
+    const env = { ...failingCf('E_RECIPIENT_NOT_ALLOWED'), RESEND_API_KEY: 'k' }
+    const r = await sendEmail(env as never, msg, undefined, { provider: 'resend' })
+    expect(r.ok).toBe(true)
+    expect(r.provider).toBe('resend')
+    expect(env.EMAIL.send).not.toHaveBeenCalled()
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it('rescues a resend connection failure through cloudflare when fallback is on', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('network down') }))
+    const send = vi.fn(async () => ({ messageId: 'cf-1' }))
+    const env = { EMAIL_PROVIDER: 'resend' as const, RESEND_API_KEY: 'k', EMAIL: { send } }
+    const r = await sendEmail(env as never, msg, undefined, { fallback: true })
+    expect(r.ok).toBe(true)
+    expect(r.provider).toBe('cloudflare')
+    expect(r.attempts!.map(a => [a.provider, a.ok])).toEqual([['resend', false], ['cloudflare', true]])
+    expect(r.attempts![0].error).toContain('fetch failed')
+  })
+
+  it('returns ok:false instead of throwing when resend fetch rejects and there is no fallback', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('network down') }))
+    const r = await sendEmail({ RESEND_API_KEY: 'k' } as never, msg)
+    expect(r.ok).toBe(false)
+    expect(r.provider).toBe('resend')
+    expect(r.error).toContain('fetch failed')
+    expect(r.error).toContain('network down')
   })
 })
