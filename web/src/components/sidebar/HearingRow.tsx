@@ -3,6 +3,7 @@ import React, { useState } from 'react'
 import { BILL_BADGE_MINI } from '../../lib/chipStyles'
 import { billUrl } from '../../lib/sessionSlug'
 import { color, fontSize, fontWeight } from '../../styles/tokens'
+import { billDisplayTitle } from '../../../../shared/billTitle'
 import { formatHearingTimeShort } from '../../lib/hearingTime'
 import { eventDateLabel } from '../../lib/calendarDate'
 import { BillBadge } from '../BillBadge'
@@ -46,7 +47,7 @@ export function HearingRow({
   const { label: dateLabel, isToday } = hasValidDate ? eventDateLabel(hearing.date) : { label: '', isToday: false }
   const time = formatHearingTimeShort(hearing.time)
   const name = hearing.description?.trim() || hearing.type?.trim() ||
-    (hearing.bills.length === 1 ? hearing.bills[0].title : 'Hearing')
+    (hearing.bills.length === 1 ? billDisplayTitle(hearing.bills[0]) : 'Hearing')
 
   const shownBills = expanded ? hearing.bills : hearing.bills.slice(0, HEARING_CHIP_CAP)
   const hiddenCount = hearing.bills.length - shownBills.length
@@ -134,7 +135,7 @@ export function HearingRow({
                  screen-reader label instead. */
               draftSrLabel
               priority={b.priority ?? undefined}
-              hoverBill={{ title: b.title, summary: b.summary, priority: b.priority }}
+              hoverBill={{ title: b.title, isDraft: b.isDraft, summary: b.summary, priority: b.priority }}
             />
           </Link>
         )})}
