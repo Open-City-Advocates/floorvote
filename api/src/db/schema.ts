@@ -57,6 +57,34 @@ export const authEvents = sqliteTable('auth_events', {
   userAgent: text('user_agent'),
   ipCountry: text('ip_country'),
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
+  // Who caused the event when it isn't the member it's about (migration 0075).
+  actorId: text('actor_id'),
+})
+
+// Per-hour, per-provider send counters for the email-health job (migration 0073).
+// Covers every send, bulk included. `suppressed` holds recipient-specific
+// failures and is never counted in `failed`.
+export const emailSendStats = sqliteTable('email_send_stats', {
+  hour: text('hour').notNull(),               // 'YYYY-MM-DD HH:00:00', UTC
+  provider: text('provider').notNull(),       // 'cloudflare' | 'resend'
+  sent: integer('sent').notNull().default(0),
+  failed: integer('failed').notNull().default(0),
+  suppressed: integer('suppressed').notNull().default(0),
+  lastError: text('last_error'),
+  lastSentAt: text('last_sent_at'),
+  lastFailedAt: text('last_failed_at'),
+}, (t) => [
+  primaryKey({ columns: [t.hour, t.provider] }),
+])
+
+// One row per provider: the email-health job's memory between hourly runs.
+// A missing row means 'ok'.
+export const emailAlertState = sqliteTable('email_alert_state', {
+  provider: text('provider').primaryKey(),
+  status: text('status', { enum: ['ok', 'failing'] }).notNull().default('ok'),
+  failingSince: text('failing_since'),
+  lastAlertedAt: text('last_alerted_at'),
+  recoveredAt: text('recovered_at'),
 })
 
 export const bills = sqliteTable('bills', {

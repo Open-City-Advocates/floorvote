@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, Fragment } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { apiFetch, ApiError } from '../../lib/api'
 import { parseInvitees } from '../../lib/parseInvitees'
 import { useAuth } from '../../hooks/useAuth'
@@ -15,6 +16,10 @@ import { usePageTitle } from '../../hooks/usePageTitle'
 import { useDemo } from '../../context/DemoContext'
 import { color, radius, fontSize, fontWeight, shadow } from '../../styles/tokens'
 import { orgRolesLabel } from '../../lib/orgNoun'
+import { MissingRequiredReason, useRequiredSubmit } from '../../components/RequiredField'
+import { inlineEditCancelStyle, inlineEditSaveStyle } from '../../lib/inlineEditStyles'
+import { ChangeEmailDialog } from '../../components/ChangeEmailDialog'
+import { emailChangedLabel, type EmailChangedFields } from '../../lib/emailChangedLabel'
 
 type Role = { id: string; name: string }
 
@@ -33,12 +38,21 @@ type Member = {
   canVote: boolean
   voteCount: number
   loginTrouble?: boolean
+  /** Set when this pending invite's latest invite or sign-in email bounced. */
+  emailBounce?: { reason: string | null } | null
 }
 
-interface AuthEvent {
+// A pending invite, as the server defines it: someone invited them, and they
+// have never signed in and aren't deactivated. A member with no inviter
+// joined another way. Gates the "Invite pending" and "Email bounced" labels
+// and the invite actions alike.
+function isPendingInvite(m: Pick<Member, 'invitedBy' | 'hasLoggedIn' | 'deactivatedAt'>): boolean {
+  return m.invitedBy !== null && !m.hasLoggedIn && !m.deactivatedAt
+}
+
+interface AuthEvent extends EmailChangedFields {
   id: string
   event: string
-  reason: string | null
   linkType: string | null
   provider: string | null
   ipCountry: string | null
@@ -83,6 +97,8 @@ function authEventLabel(event: AuthEvent): string {
       return 'Email delivered'
     case 'email_complained':
       return 'Spam complaint'
+    case 'email_changed':
+      return emailChangedLabel(event)
     default:
       return event.event
   }
@@ -129,6 +145,36 @@ function relativeTimeFromEpoch(ts: string): string {
   return days === 1 ? 'Yesterday' : `${days}d ago`
 }
 
+// How long the count line's copy feedback stays up before clearing itself.
+const COPIED_FEEDBACK_MS = 2000
+const COPY_ERROR_FEEDBACK_MS = 4000
+
+// Emails the copy button writes: shown members who aren't deactivated
+// (invitees who never logged in are included), each address once, compared
+// case-insensitively, in the order given.
+// `"Name" <address>`, or the bare address when there's no name. The name is
+// always quoted so commas and periods in it can't split or break the
+// recipient when pasted into a mail client's To/CC/BCC field.
+function formatRecipient(m: Member, email: string): string {
+  const name = (m.name ?? '').replace(/[\r\n]+/g, ' ').trim()
+  if (!name) return email
+  return `"${name.replace(/[\\"]/g, '\\$&')}" <${email}>`
+}
+
+function uniqueActiveRecipients(shown: Member[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const m of shown) {
+    if (m.deactivatedAt) continue
+    const email = m.email.trim()
+    const key = email.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(formatRecipient(m, email))
+  }
+  return out
+}
+
 export function Members() {
   usePageTitle('Members')
   const { user } = useAuth()
@@ -151,16 +197,31 @@ export function Members() {
   const [inviteRole, setInviteRole] = useState<'member' | 'admin'>('member')
   const [inviteLoading, setInviteLoading] = useState(false)
   const [inviteError, setInviteError] = useState<string | null>(null)
-  type BulkResult = { email: string; status: 'invited' | 'exists' | 'duplicate' | 'invalid'; userId?: string }
-  type BulkSummary = { invited: number; exists: number; duplicate: number; invalid: number }
+  type BulkResult = { email: string; status: 'invited' | 'exists' | 'duplicate' | 'invalid' | 'bounced'; userId?: string }
+  // `bounced` is optional: an older API leaves it out.
+  type BulkSummary = { invited: number; exists: number; duplicate: number; invalid: number; bounced?: number }
   const [inviteResult, setInviteResult] = useState<{ summary: BulkSummary; results: BulkResult[] } | null>(null)
 
   // Members list state
   const [members, setMembers] = useState<Member[]>([])
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState<string | null>(null)
-  const [memberSearch, setMemberSearch] = useState('')
+  // ?search= pre-fills the box: the bounced-invite email links here with the
+  // address when exactly one bounced, so the admin lands on that row.
+  const [searchParams] = useSearchParams()
+  const [memberSearch, setMemberSearch] = useState(() => searchParams.get('search') ?? '')
   const [troubleFilter, setTroubleFilter] = useState(false)
+  // Feedback for the count line's "Copy N emails" button.
+  const [copyEmailsStatus, setCopyEmailsStatus] = useState<'copied' | 'error' | null>(null)
+  const copyEmailsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Bumped on every click and on unmount; a clipboard write that settles
+  // after a newer click, or after the page is gone, sees a different value
+  // and leaves the feedback alone.
+  const copyEmailsRequest = useRef(0)
+  useEffect(() => () => {
+    copyEmailsRequest.current++
+    if (copyEmailsTimer.current) clearTimeout(copyEmailsTimer.current)
+  }, [])
 
   // Role management state
   const [orgRoles, setOrgRoles] = useState<Role[]>([])
@@ -168,6 +229,11 @@ export function Members() {
   const [addingRole, setAddingRole] = useState(false)
   const [editingRoleId, setEditingRoleId] = useState<string | null>(null)
   const [editingRoleName, setEditingRoleName] = useState('')
+  // A blank rename is gated (RequiredField.tsx): Save looks disabled and
+  // explains itself on hover, focus, click, or Enter, and the editor stays open
+  // rather than closing and silently putting the old name back. Opening and
+  // cancelling reset the gate, since Save unmounts without a leave or blur.
+  const roleRenameGate = useRequiredSubmit({ missingRequired: !editingRoleName.trim() })
   const [openRoleDropdown, setOpenRoleDropdown] = useState<string | null>(null)
   const [dropdownAnchor, setDropdownAnchor] = useState<{ top: number; left: number; openUp: boolean } | null>(null)
   const [rolesLabel, setRolesLabel] = useState('Team roles')
@@ -189,6 +255,9 @@ export function Members() {
 
   // Toast state
   const [toast, setToast] = useState<string | null>(null)
+
+  // "Change email…" dialog: the pending invite being edited, if any.
+  const [changeEmailMember, setChangeEmailMember] = useState<Member | null>(null)
 
   // Owner-only account-deletion policy toggle
   const [accountDeletionEnabled, setAccountDeletionEnabled] = useState(false)
@@ -381,9 +450,11 @@ export function Members() {
     }
   }
 
+  const addRoleGate = useRequiredSubmit({ missingRequired: !newRoleName.trim(), blocked: addingRole || demoLocked })
+
   async function handleAddRole() {
     const name = newRoleName.trim()
-    if (!name) return
+    if (!name || addingRole || demoLocked) return
     setAddingRole(true)
     try {
       const created = await apiFetch<Role>('/admin/roles', {
@@ -399,11 +470,16 @@ export function Members() {
     }
   }
 
+  function cancelRoleRename() {
+    setEditingRoleId(null)
+    roleRenameGate.reset()
+  }
+
   async function handleRenameRole(roleId: string, newName: string) {
     const name = newName.trim()
     const original = orgRoles.find(r => r.id === roleId)?.name
     setEditingRoleId(null)
-    if (!name || name === original) return
+    if (name === original) return
     try {
       const updated = await apiFetch<Role>(`/admin/roles/${roleId}`, {
         method: 'PATCH',
@@ -466,6 +542,16 @@ export function Members() {
     }
   }
 
+  function handleEmailChanged(member: Member, email: string) {
+    setChangeEmailMember(null)
+    // The new invite is now the latest email, with no outcome yet, so the
+    // row is a plain pending invite again (as the next members fetch says).
+    setMembers(prev => prev.map(m => (m.id === member.id ? { ...m, email, emailBounce: null } : m)))
+    setToast(`New invite sent to ${email}.`)
+    setTimeout(() => setToast(null), 4000)
+    actionsTriggerRefs.current[member.id]?.focus()
+  }
+
   async function handleSetMemberRoles(memberId: string, roleIds: string[]) {
     try {
       await apiFetch(`/admin/members/${memberId}/roles`, {
@@ -487,7 +573,13 @@ export function Members() {
     if (troubleFilter && !m.loginTrouble) return false
     const q = memberSearch.trim().toLowerCase()
     if (!q) return true
-    return displayName(m).toLowerCase().includes(q) || m.email.toLowerCase().includes(q)
+    // Name, email, any Role name, or the permission label as displayed. An
+    // Owner is an Admin with extra powers, so Owners also match queries inside
+    // "admin"; "owner" still matches only Owners. Subtitle deliberately never
+    // matches, to keep Role searches from pulling in Members outside the Role.
+    const fields = [displayName(m), m.email, accountRoleLabel(m.role), ...m.roles.map(r => r.name)]
+    if (fields.some(f => f.toLowerCase().includes(q))) return true
+    return m.role === 'owner' && accountRoleLabel('admin').toLowerCase().includes(q)
   }
 
   type MenuItem = { kind: 'action'; label: string; danger?: boolean; disabled?: boolean; onClick: () => void; tooltip?: string; warn?: boolean }
@@ -511,8 +603,12 @@ export function Members() {
       onClick: () => { close(); openActivity(member) },
     })
 
-    if (!isSelf && !member.hasLoggedIn && !isDeactivated && member.invitedBy !== null) {
+    if (!isSelf && isPendingInvite(member)) {
       items.push({ kind: 'action', label: 'Resend invite', disabled: demoLocked, onClick: () => { close(); handleResendInvite(member) } })
+      // Only an Owner may change a pending Owner's address (the server refuses it too).
+      if (canManageThisMember) {
+        items.push({ kind: 'action', label: 'Change email…', disabled: demoLocked, onClick: () => { close(); setChangeEmailMember(member) } })
+      }
     }
 
     if (!isSelf && member.hasLoggedIn && !isDeactivated) {
@@ -597,6 +693,43 @@ export function Members() {
     display: 'inline-flex', alignItems: 'center',
     whiteSpace: 'nowrap', cursor: 'pointer',
   }
+  // The members currently shown in the table, in table order: filtered by
+  // search and the login-trouble toggle, then sorted.
+  const filtering = memberSearch.trim() !== '' || troubleFilter
+  const shownMembers = [...members]
+    .filter(memberMatchesFilters)
+    .sort((a, b) => {
+      // Pin the signed-in user to the top, but only in the unfiltered
+      // list — a search for someone else must not staple self on top.
+      if (!filtering) {
+        if (a.id === user?.id) return -1
+        if (b.id === user?.id) return 1
+      }
+      const rolePriority = { owner: 0, admin: 1, member: 2 } as const
+      if (a.role !== b.role) return rolePriority[a.role] - rolePriority[b.role]
+      return displayName(a).localeCompare(displayName(b))
+    })
+  const copyableEmails = uniqueActiveRecipients(shownMembers)
+
+  async function handleCopyEmails() {
+    if (copyableEmails.length === 0) return
+    const request = ++copyEmailsRequest.current
+    if (copyEmailsTimer.current) clearTimeout(copyEmailsTimer.current)
+    let status: 'copied' | 'error'
+    try {
+      await navigator.clipboard.writeText(copyableEmails.join(', '))
+      status = 'copied'
+    } catch {
+      status = 'error'
+    }
+    if (request !== copyEmailsRequest.current) return
+    setCopyEmailsStatus(status)
+    copyEmailsTimer.current = setTimeout(
+      () => setCopyEmailsStatus(null),
+      status === 'copied' ? COPIED_FEEDBACK_MS : COPY_ERROR_FEEDBACK_MS,
+    )
+  }
+
   return (
     <div style={{ padding: '24px 32px', maxWidth: 900, margin: '0 auto' }}>
       <SettingsNav />
@@ -646,15 +779,16 @@ export function Members() {
               <div style={{ color: color.textSecondary }}>
                 {[
                   `${inviteResult.summary.invited} invited`,
-                  inviteResult.summary.exists ? `${inviteResult.summary.exists} already members` : null,
-                  inviteResult.summary.duplicate ? `${inviteResult.summary.duplicate} duplicates` : null,
+                  inviteResult.summary.exists ? `${inviteResult.summary.exists} ${inviteResult.summary.exists === 1 ? 'already a member' : 'already members'}` : null,
+                  inviteResult.summary.duplicate ? `${inviteResult.summary.duplicate} ${inviteResult.summary.duplicate === 1 ? 'duplicate' : 'duplicates'}` : null,
                   inviteResult.summary.invalid ? `${inviteResult.summary.invalid} invalid` : null,
+                  inviteResult.summary.bounced ? `${inviteResult.summary.bounced} previously bounced` : null,
                 ].filter(Boolean).join(' · ')}
               </div>
               {inviteResult.results.some(r => r.status !== 'invited') && (
                 <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: color.textMuted }}>
                   {inviteResult.results.filter(r => r.status !== 'invited').map((r, i) => (
-                    <li key={i}>{r.email || '(no email)'} — {r.status}</li>
+                    <li key={i}>{r.email || '(no email)'} — {r.status === 'bounced' ? 'previously bounced, not invited' : r.status}</li>
                   ))}
                 </ul>
               )}
@@ -668,85 +802,117 @@ export function Members() {
         <div style={{ ...HELPER_TEXT, marginTop: 4, marginBottom: 14 }}>
           Assign roles to members (e.g., by committee, office, or region). In comments, any member can @-mention a role to notify everyone with that particular role. Role labels also appear as badges when you hover a commenter's name.
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+        <div style={{ marginBottom: 14 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {orgRoles.map(role => (
-            <span key={role.id} style={ROLE_CHIP}>
-              {editingRoleId === role.id ? (
-                <input
-                  // eslint-disable-next-line jsx-a11y/no-autofocus -- pre-existing: focus follows the user's own click/Enter into rename mode, out of scope for this task's focus-management redesign
-                  autoFocus
-                  value={editingRoleName}
-                  onChange={e => setEditingRoleName(e.target.value.replace(/@/g, ''))}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') handleRenameRole(role.id, editingRoleName)
-                    if (e.key === 'Escape') setEditingRoleId(null)
-                  }}
-                  style={{
-                    fontSize: fontSize.sm, border: 'none', background: 'transparent', outline: 'none',
-                    width: Math.max(60, editingRoleName.length * 8),
-                    fontFamily: 'inherit', color: 'inherit', fontWeight: 'inherit',
-                  }}
-                />
-              ) : (
+            <Fragment key={role.id}>
+              <span style={ROLE_CHIP}>
+                {editingRoleId === role.id ? (
+                  <input
+                    // eslint-disable-next-line jsx-a11y/no-autofocus -- pre-existing: focus follows the user's own click/Enter into rename mode, out of scope for this task's focus-management redesign
+                    autoFocus
+                    aria-label="Role name"
+                    aria-required="true"
+                    {...roleRenameGate.fieldProps}
+                    value={editingRoleName}
+                    onChange={e => setEditingRoleName(e.target.value.replace(/@/g, ''))}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !roleRenameGate.refuse()) void handleRenameRole(role.id, editingRoleName)
+                      if (e.key === 'Escape') cancelRoleRename()
+                    }}
+                    style={{
+                      fontSize: fontSize.sm, border: 'none', background: 'transparent', outline: 'none',
+                      width: Math.max(60, editingRoleName.length * 8),
+                      fontFamily: 'inherit', color: 'inherit', fontWeight: 'inherit',
+                    }}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    disabled={demoLocked}
+                    aria-label={`Rename role ${role.name}`}
+                    onClick={demoLocked ? undefined : () => { setEditingRoleId(role.id); setEditingRoleName(role.name); roleRenameGate.reset() }}
+                    title={demoLocked ? undefined : 'Click to rename'}
+                    style={{
+                      margin: 0,
+                      padding: 0,
+                      background: 'none',
+                      border: 'none',
+                      font: 'inherit',
+                      color: 'inherit',
+                      cursor: demoLocked ? 'default' : 'text',
+                    }}
+                  >
+                    {role.name}
+                  </button>
+                )}
                 <button
                   type="button"
                   disabled={demoLocked}
-                  aria-label={`Rename role ${role.name}`}
-                  onClick={demoLocked ? undefined : () => { setEditingRoleId(role.id); setEditingRoleName(role.name) }}
-                  title={demoLocked ? undefined : 'Click to rename'}
+                  aria-label={`Delete role ${role.name}`}
+                  onClick={demoLocked ? undefined : () => handleDeleteRole(role.id)}
+                  title={demoLocked ? undefined : `Delete role "${role.name}"`}
                   style={{
-                    margin: 0,
+                    ...(demoLocked ? { ...ROLE_CHIP_X, color: color.borderBlueDash, cursor: 'not-allowed' } : ROLE_CHIP_X),
                     padding: 0,
+                    margin: 0,
+                    marginLeft: 1,
                     background: 'none',
                     border: 'none',
                     font: 'inherit',
-                    color: 'inherit',
-                    cursor: demoLocked ? 'default' : 'text',
+                    fontSize: fontSize.sm,
+                    lineHeight: '1',
                   }}
-                >
-                  {role.name}
-                </button>
+                >✕</button>
+              </span>
+              {/* Beside the chip, not in it: a chip is too small to hold them. */}
+              {editingRoleId === role.id && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Save role name"
+                    {...roleRenameGate.buttonProps(() => { void handleRenameRole(role.id, editingRoleName) })}
+                    style={inlineEditSaveStyle(roleRenameGate.disabled)}
+                  >
+                    Save
+                  </button>
+                  <button type="button" aria-label="Cancel renaming role" onClick={cancelRoleRename} style={inlineEditCancelStyle()}>Cancel</button>
+                </>
               )}
-              <button
-                type="button"
-                disabled={demoLocked}
-                aria-label={`Delete role ${role.name}`}
-                onClick={demoLocked ? undefined : () => handleDeleteRole(role.id)}
-                title={demoLocked ? undefined : `Delete role "${role.name}"`}
-                style={{
-                  ...(demoLocked ? { ...ROLE_CHIP_X, color: color.borderBlueDash, cursor: 'not-allowed' } : ROLE_CHIP_X),
-                  padding: 0,
-                  margin: 0,
-                  marginLeft: 1,
-                  background: 'none',
-                  border: 'none',
-                  font: 'inherit',
-                  fontSize: fontSize.sm,
-                  lineHeight: '1',
-                }}
-              >✕</button>
-            </span>
+            </Fragment>
           ))}
           {orgRoles.length === 0 && (
             <span style={{ fontSize: fontSize.sm, color: color.textMuted }}>No roles yet.</span>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="text"
-            value={newRoleName}
-            onChange={e => setNewRoleName(e.target.value.replace(/@/g, ''))}
-            onKeyDown={e => e.key === 'Enter' && !demoLocked && handleAddRole()}
-            placeholder="New role name…"
-            style={{ fontSize: fontSize.sm, padding: '5px 10px', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, width: 200, fontFamily: 'inherit', color: color.textSlate }}
-          />
-          <button
-            onClick={handleAddRole}
-            disabled={addingRole || !newRoleName.trim() || demoLocked}
-            style={{ fontSize: fontSize.sm, padding: '5px 14px', borderRadius: radius.md, border: 'none', background: newRoleName.trim() && !demoLocked ? color.accentBlue : color.borderDefault, color: newRoleName.trim() && !demoLocked ? color.white : color.textMuted, cursor: newRoleName.trim() && !demoLocked ? 'pointer' : 'not-allowed', fontWeight: fontWeight.medium }}
-          >
-            {addingRole ? 'Adding…' : 'Add'}
-          </button>
+        {/* Its own line under the chips, outside their wrapping row: revealing
+            it must not reflow the chips and move Save. */}
+        {editingRoleId !== null && (
+          <MissingRequiredReason {...roleRenameGate.reasonProps} />
+        )}
+        </div>
+        <div role="group" aria-label="Add role">
+          <label htmlFor="new-role-name" style={FORM_LABEL}>New role name</label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <input
+              id="new-role-name"
+              type="text"
+              value={newRoleName}
+              onChange={e => setNewRoleName(e.target.value.replace(/@/g, ''))}
+              onKeyDown={e => e.key === 'Enter' && !demoLocked && handleAddRole()}
+              placeholder="e.g. Finance Committee"
+              aria-required="true"
+              style={{ fontSize: fontSize.sm, padding: '5px 10px', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, width: 200, fontFamily: 'inherit', color: color.textSlate }}
+            />
+            <button
+              {...addRoleGate.buttonProps(handleAddRole)}
+              style={{ fontSize: fontSize.sm, padding: '5px 14px', borderRadius: radius.md, border: 'none', background: !addRoleGate.disabled ? color.accentBlue : color.borderDefault, color: !addRoleGate.disabled ? color.white : color.textMuted, cursor: !addRoleGate.disabled ? 'pointer' : 'not-allowed', fontWeight: fontWeight.medium }}
+            >
+              {addingRole ? 'Adding…' : 'Add'}
+            </button>
+          </div>
+          {/* Below the input-and-button row, never in it: revealing it must not move Add. */}
+          <MissingRequiredReason {...addRoleGate.reasonProps} />
         </div>
       </div>
       {/* Members table card */}
@@ -772,7 +938,7 @@ export function Members() {
             type="text"
             value={memberSearch}
             onChange={(e) => setMemberSearch(e.target.value)}
-            placeholder="Search members by name or email…"
+            placeholder="Search by name, email, role, or permission level…"
             style={{ ...inputStyle, maxWidth: 320 }}
           />
           {!listLoading && !listError && members.some(m => m.loginTrouble) && (() => {
@@ -804,12 +970,37 @@ export function Members() {
           })()}
         </div>
         {!listLoading && !listError && (
-          <div style={{ ...HELPER_TEXT, marginTop: 14, marginBottom: 8 }}>
-            {(() => {
-              const shown = members.filter(memberMatchesFilters).length
-              const filtering = memberSearch.trim() !== '' || troubleFilter
-              return filtering ? `Showing ${shown} of ${members.length}` : `${members.length} ${members.length === 1 ? 'member' : 'members'}`
-            })()}
+          <div style={{ ...HELPER_TEXT, marginTop: 14, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span>
+              {filtering ? `Showing ${shownMembers.length} of ${members.length}` : `${members.length} ${members.length === 1 ? 'member' : 'members'}`}
+            </span>
+            <button
+              type="button"
+              onClick={handleCopyEmails}
+              disabled={copyableEmails.length === 0}
+              title="Copy these members' emails, separated by commas, to paste into your email's BCC field. Deactivated members are left out."
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                fontSize: fontSize.sm,
+                color: copyableEmails.length === 0 ? color.textMuted : color.accentBlue,
+                background: 'none',
+                border: 'none',
+                cursor: copyableEmails.length === 0 ? 'not-allowed' : 'pointer',
+                padding: '2px 4px',
+              }}
+            >
+              Copy {copyableEmails.length} {copyableEmails.length === 1 ? 'email' : 'emails'}
+            </button>
+            {/* Rendered unconditionally, with only its text changing, so assistive
+                tech has registered the live region before "Copied" appears. */}
+            <span role="status" style={{ color: color.textSuccess, fontWeight: fontWeight.medium }}>
+              {copyEmailsStatus === 'copied' ? 'Copied' : ''}
+            </span>
+            {copyEmailsStatus === 'error' && (
+              <span role="alert" style={{ color: color.textErrorRed }}>Couldn't copy — select the emails from the table instead.</span>
+            )}
           </div>
         )}
         {listLoading && <div style={{ color: color.textMuted, fontSize: fontSize.sm }}>Loading…</div>}
@@ -839,19 +1030,7 @@ export function Members() {
               </tr>
             </thead>
             <tbody>
-              {[...members]
-                .filter(memberMatchesFilters)
-                .sort((a, b) => {
-                  // Pin the signed-in user to the top, but only in the unfiltered
-                  // list — a search for someone else must not staple self on top.
-                  if (!(memberSearch.trim() !== '' || troubleFilter)) {
-                    if (a.id === user?.id) return -1
-                    if (b.id === user?.id) return 1
-                  }
-                  const rolePriority = { owner: 0, admin: 1, member: 2 } as const
-                  if (a.role !== b.role) return rolePriority[a.role] - rolePriority[b.role]
-                  return displayName(a).localeCompare(displayName(b))
-                })
+              {shownMembers
                 .map((member) => {
                 const isSelf = member.id === user?.id
                 const isDeactivated = !!member.deactivatedAt
@@ -947,7 +1126,26 @@ export function Members() {
                           }}>
                             Deactivated
                           </span>
-                        ) : !member.hasLoggedIn && member.invitedBy !== null ? (
+                        ) : isPendingInvite(member) && member.emailBounce ? (
+                          // A toggletip, not a `title`, so the reason opens on tap
+                          // (touch screens) and keyboard focus as well as hover.
+                          <HoverTooltip
+                            toggletip
+                            maxWidth={280}
+                            text={member.emailBounce.reason ?? "The email couldn't be delivered"}
+                          >
+                            <span style={{
+                              fontSize: fontSize.sm,
+                              padding: '2px 8px',
+                              borderRadius: radius.sm,
+                              fontWeight: fontWeight.semibold,
+                              background: color.bgDangerSoft,
+                              color: color.textDanger,
+                            }}>
+                              Email bounced
+                            </span>
+                          </HoverTooltip>
+                        ) : isPendingInvite(member) ? (
                           <span style={{
                             fontSize: fontSize.sm,
                             padding: '2px 8px',
@@ -1356,6 +1554,13 @@ export function Members() {
             )}
           </div>
         </div>
+      )}
+      {changeEmailMember && (
+        <ChangeEmailDialog
+          member={changeEmailMember}
+          onClose={() => { const id = changeEmailMember.id; setChangeEmailMember(null); actionsTriggerRefs.current[id]?.focus() }}
+          onChanged={(email) => handleEmailChanged(changeEmailMember, email)}
+        />
       )}
       {/* Toast notification */}
       {toast && (

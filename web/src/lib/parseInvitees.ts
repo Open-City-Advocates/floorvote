@@ -1,13 +1,21 @@
+import { isValidEmail, trimEmailPunctuation } from '../../../shared/email'
+
 export type ParsedInvitee = { name?: string; email: string; raw: string }
 
-// Matches a single email token. Mirrors the api single-invite route's regex,
-// applied per-token so we can find the email anywhere on a line.
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+// An email token after edge cleanup: punctuation stuck to the address by the
+// source sheet (`jane@x.gov;`) is stripped, so the preview shows — and the
+// server receives — the address that will actually be invited. Same check
+// as the api, so what the preview accepts the server accepts.
+const asEmail = (t: string): string | null => {
+  const cleaned = trimEmailPunctuation(t)
+  return isValidEmail(cleaned) ? cleaned.toLowerCase() : null
+}
 
 /**
  * Parse pasted roster text into invitees, one per non-blank line.
  *
- * Order-agnostic: on each line the email is whichever token matches EMAIL_RE;
+ * Order-agnostic: on each line the email is whichever token is a valid email
+ * once stray edge punctuation is trimmed;
  * everything else on the line (commas, angle brackets, and quotes stripped)
  * becomes the optional name.
  *
@@ -28,21 +36,21 @@ export function parseInvitees(text: string): ParsedInvitee[] {
     const raw = rawLine.trim()
     if (!raw) continue
 
-    // Tokens are separated by tabs or commas; <>, and quotes are stripped per token.
+    // Tokens are separated by tabs, commas, or semicolons; <>, and quotes are stripped per token.
     const tokens = raw
-      .split(/[\t,]/)
+      .split(/[\t,;]/)
       .map(t => t.trim().replace(/[<>"]/g, '').trim())
       .filter(t => t.length > 0)
 
-    let emails = tokens.filter(t => EMAIL_RE.test(t)).map(t => t.toLowerCase())
-    let nameParts = tokens.filter(t => !EMAIL_RE.test(t))
+    let emails = tokens.map(asEmail).filter((e): e is string => e !== null)
+    let nameParts = tokens.filter(t => asEmail(t) === null)
 
     // Fallback for "Name <email>" forms where stripping <> merged name + email
     // into a single token (e.g. "Jane Doe jane@example.com"): rescan on spaces.
     if (emails.length === 0) {
-      const words = raw.replace(/[<>",]/g, ' ').split(/\s+/).filter(Boolean)
-      emails = words.filter(w => EMAIL_RE.test(w)).map(w => w.toLowerCase())
-      nameParts = words.filter(w => !emails.includes(w.toLowerCase()))
+      const words = raw.replace(/[<>",;]/g, ' ').split(/\s+/).filter(Boolean)
+      emails = words.map(asEmail).filter((e): e is string => e !== null)
+      nameParts = words.filter(w => asEmail(w) === null)
     }
 
     if (emails.length === 0) {
