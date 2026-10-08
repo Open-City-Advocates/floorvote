@@ -14,13 +14,13 @@ import { actionRowStyle, actionRowStyleFirst, actionBtnBlue, actionBtnRed } from
 import { digestCadenceDescription, weekAheadCadenceDescription, isModuleEnabled } from '../lib/modules'
 import type { ModulesConfig } from '../lib/modules'
 import { DEFAULT_ORG_NOUN } from '../lib/orgNoun'
+import { emailChangedLabel, type EmailChangedFields } from '../lib/emailChangedLabel'
 
 const SECTION_CARD: React.CSSProperties = { ...CARD, padding: 24, marginBottom: 20 }
 
-type AccountAuthEvent = {
+type AccountAuthEvent = EmailChangedFields & {
   id: string
   event: string
-  reason: string | null
   linkType: string | null
   provider: string | null
   ipCountry: string | null
@@ -49,6 +49,8 @@ function accountEventLabel(e: AccountAuthEvent): string {
       return 'Email delivered'
     case 'email_complained':
       return 'Spam complaint'
+    case 'email_changed':
+      return emailChangedLabel(e)
     default:
       return e.event
   }
@@ -165,6 +167,7 @@ export function Profile() {
   }
 
   async function handleSave() {
+    if (saving || demoLocked) return
     setSaving(true)
     try {
       const payload = {
@@ -175,7 +178,10 @@ export function Profile() {
         method: 'PATCH',
         body: JSON.stringify(payload),
       })
-      setName(nameInput.trim())
+      // A blank name clears it; the user then shows by email wherever a name
+      // would appear. The field shows what was saved (trimmed, or blank).
+      setName(payload.name)
+      setNameInput(payload.name)
       setSubtitle(payload.subtitle)
       setSaved(true)
       setSaveError(null)
@@ -336,7 +342,7 @@ export function Profile() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
           <button
             onClick={handleSave}
             disabled={saving || demoLocked}

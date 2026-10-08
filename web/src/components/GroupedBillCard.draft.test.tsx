@@ -82,3 +82,26 @@ describe('GroupedBillCard draft marker', () => {
     expect(screen.queryByText('Draft')).toBeNull()
   })
 })
+
+describe('GroupedBillCard untitled draft title', () => {
+  it('labels a draft with a blank title "Untitled draft"', () => {
+    renderCard(makeGroup({ billIsDraft: true, billTitle: '' }))
+    expect(screen.getByText('Untitled draft')).toBeInTheDocument()
+  })
+
+  it('labels a draft with a null title (blank title and no abstract on the feed) "Untitled draft"', () => {
+    renderCard(makeGroup({ billIsDraft: true, billTitle: null as unknown as string }))
+    expect(screen.getByText('Untitled draft')).toBeInTheDocument()
+  })
+
+  it("keeps a titled draft's own title", () => {
+    renderCard(makeGroup({ billIsDraft: true, billTitle: 'Draft bill title' }))
+    expect(screen.getByText('Draft bill title')).toBeInTheDocument()
+    expect(screen.queryByText('Untitled draft')).toBeNull()
+  })
+
+  it('never labels a filed bill "Untitled draft"', () => {
+    renderCard(makeGroup({ billIsDraft: false, billTitle: '' }))
+    expect(screen.queryByText('Untitled draft')).toBeNull()
+  })
+})
