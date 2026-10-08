@@ -9,6 +9,9 @@ import { PRODUCT_NAME } from '../../../shared/brand'
 import { parseEmailList } from '../../../shared/operator'
 import { color, fontSize } from '../../../shared/tokens'
 import { renderEmailShell, emailButton, emailFooterLink } from './emailShell'
+import { isRecipientError, tally, recordSendStats } from './emailStats'
+import { PermanentSendError } from './emailErrors'
+import { isValidEmail } from '../../../shared/email'
 
 export type ProviderName = 'resend' | 'cloudflare'
 
@@ -22,7 +25,26 @@ export type EmailMessage = {
   headers?: Record<string, string>  // custom headers (e.g. List-Unsubscribe)
 }
 
-export type EmailSendResult = { ok: boolean; provider: ProviderName; error?: string; messageId?: string }
+export type EmailSendResult = {
+  ok: boolean
+  provider: ProviderName
+  error?: string
+  messageId?: string
+  /** Every attempt, in order, when sendEmail made them. This result's own fields are the last attempt's. */
+  attempts?: EmailSendResult[]
+}
+
+export type SendOptions = {
+  /**
+   * Retry once through the other provider when the first attempt fails for a
+   * reason that is not specific to the recipient. Magic links only: a login
+   * link that does not arrive locks someone out, and a digest that does not
+   * arrive does not.
+   */
+  fallback?: boolean
+  /** Send through this provider instead of the active one. The outage alert uses it. */
+  provider?: ProviderName
+}
 
 // Single fallback when no EMAIL_FROM is configured.
 const FALLBACK_EMAIL = 'notifications@example.com'
@@ -83,14 +105,28 @@ export function activeProvider(env: Pick<Env, 'EMAIL_PROVIDER' | 'EMAIL'>): Prov
   return 'resend' // fail-safe default to the proven path
 }
 
+/** The provider that is not `primary`, if it is configured. */
+export function otherProvider(env: Pick<Env, 'RESEND_API_KEY' | 'EMAIL'>, primary: ProviderName): ProviderName | null {
+  if (primary === 'cloudflare') return env.RESEND_API_KEY ? 'resend' : null
+  return env.EMAIL ? 'cloudflare' : null
+}
+
 async function resendSend(env: Pick<Env, 'RESEND_API_KEY'>, msg: ResolvedMessage, db?: AppDb): Promise<EmailSendResult> {
   const body: Record<string, unknown> = { from: msg.from, to: msg.to, subject: msg.subject, html: msg.html, text: msg.text, reply_to: msg.replyTo }
   if (msg.headers) body.headers = msg.headers
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  let res: Response
+  try {
+    res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  } catch (err) {
+    // A connection-level failure must come back as a failed result, not a throw:
+    // a throw would skip fallback and counting, and lose sendBatch's whole tally.
+    console.error('[email:resend]', err)
+    return { ok: false, provider: 'resend', error: `fetch failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
   if (db) {
     try { await recordResendUsage(db, res); await recordResendThrottle(db, res) }
     catch (e) { console.error('[resend-record]', e) }
@@ -118,15 +154,38 @@ async function cloudflareSend(env: Pick<Env, 'EMAIL'>, msg: ResolvedMessage): Pr
   }
 }
 
-/** Send one message via the active provider. Applies From/Reply-To defaults. Never throws. */
-export async function sendEmail(env: SendEnv, message: EmailMessage, db?: AppDb): Promise<EmailSendResult> {
-  const msg: ResolvedMessage = {
+function resolveMessage(env: SendEnv, message: EmailMessage): ResolvedMessage {
+  return {
     ...message,
     from: message.from ?? resolveFrom(env),
     replyTo: message.replyTo ?? resolveReplyTo(env),
     text: message.text ?? htmlToText(message.html),
   }
-  return activeProvider(env) === 'cloudflare' ? cloudflareSend(env, msg) : resendSend(env, msg, db)
+}
+
+function sendVia(env: SendEnv, msg: ResolvedMessage, provider: ProviderName, db?: AppDb): Promise<EmailSendResult> {
+  return provider === 'cloudflare' ? cloudflareSend(env, msg) : resendSend(env, msg, db)
+}
+
+/**
+ * Send one message. Applies From/Reply-To defaults. Never throws.
+ *
+ * With a `db`, every attempt is counted in email_send_stats for the email-health
+ * job, including the failed primary attempt of a send that fallback rescued. That
+ * is deliberate: fallback hides an outage from users, so the detector has to see
+ * the primary failing even when nobody else can.
+ */
+export async function sendEmail(env: SendEnv, message: EmailMessage, db?: AppDb, opts: SendOptions = {}): Promise<EmailSendResult> {
+  const msg = resolveMessage(env, message)
+  const first = opts.provider ?? activeProvider(env)
+  const attempts = [await sendVia(env, msg, first, db)]
+  const second = otherProvider(env, first)
+  if (opts.fallback && !attempts[0].ok && !isRecipientError(attempts[0]) && second) {
+    console.warn(`[email] ${first} failed (${attempts[0].error}) — retrying via ${second}`)
+    attempts.push(await sendVia(env, msg, second, db))
+  }
+  if (db) for (const a of attempts) await recordSendStats(db, a.provider, tally([a]))
+  return { ...attempts[attempts.length - 1], attempts }
 }
 
 /**
@@ -152,13 +211,18 @@ export async function sendBatch(env: SendEnv, messages: EmailMessage[], tag = 'e
     return { sent: 0, failed: 0 }
   }
   const bulkFrom = opts?.bulk ? resolveFromBulk(env) : undefined
-  let sent = 0, failed = 0
+  const provider = activeProvider(env)
+  const results: EmailSendResult[] = []
   for (let i = 0; i < messages.length; i += BATCH_CONCURRENCY) {
     const chunk = messages.slice(i, i + BATCH_CONCURRENCY)
-    const results = await Promise.all(chunk.map(m =>
-      sendEmail(env, bulkFrom && !m.from ? { ...m, from: bulkFrom } : m, db)))
-    for (const r of results) { if (r.ok) sent++; else failed++ }
+    results.push(...await Promise.all(chunk.map(m =>
+      sendVia(env, resolveMessage(env, bulkFrom && !m.from ? { ...m, from: bulkFrom } : m), provider, db))))
   }
+  // One write for the whole run rather than one per recipient: a 650-recipient
+  // digest would otherwise cost 650 upserts.
+  if (db) await recordSendStats(db, provider, tally(results))
+  const sent = results.filter(r => r.ok).length
+  const failed = results.length - sent
   console.log(`[${tag}] sent ${sent}, failed ${failed}`)
   return { sent, failed }
 }
@@ -255,6 +319,21 @@ export async function sendMagicLink(
     return
   }
 
+  // An address that fails the shared check is never sent. Neither provider
+  // can deliver it, so sending would only burn a retry cycle on each provider
+  // and count as provider failures toward the outage alert (a pasted roster
+  // with `jane@county.gov;` once produced 88 failures for 11 members). Logged
+  // without a provider: nothing was attempted.
+  if (!isValidEmail(to)) {
+    if (db) {
+      await recordAuthEvent(db, {
+        event: 'email_send_failed', email: to, userId: userId ?? null,
+        reason: 'invalid recipient address; not sent', linkType: type,
+      })
+    }
+    throw new PermanentSendError(`Invalid recipient address: ${to}`)
+  }
+
   const assocName = await resolveAssocName(env, db)
   const noun = isInvite ? await resolveOrgNounFromDb(db) : undefined
   const orgPhrase = assocName ? escHtml(assocName) : `your ${escHtml(noun ?? '')}`
@@ -268,23 +347,27 @@ export async function sendMagicLink(
 
   const { subject, html } = renderMagicLinkEmail({ type, magicLinkUrl, appUrl: env.APP_URL, instanceName: assocName ?? '', orgPhrase })
 
-  const r = await sendEmail(env, { to: [to], subject, html, text }, db)
+  const r = await sendEmail(env, { to: [to], subject, html, text }, db, { fallback: true })
   if (db) {
-    let event: 'email_sent' | 'email_send_failed' | 'email_bounced' = 'email_sent'
-    if (!r.ok) {
+    // One row per attempt, so a send that fallback rescued shows both halves:
+    // the primary's failure (with its reason) and the other provider's success.
+    for (const a of r.attempts ?? [r]) {
       // E_RECIPIENT_SUPPRESSED = address previously hard-bounced or was reported as
       // spam, so it's effectively a bounce; everything else is a send failure.
-      // Note: this is the Cloudflare-binding path. Resend's r.error is just an HTTP
-      // status string, so Resend failures always map to email_send_failed (Resend
-      // doesn't surface suppression synchronously) — bounces there would come via Phase 2.
-      event = r.error?.includes('E_RECIPIENT_SUPPRESSED') ? 'email_bounced' : 'email_send_failed'
+      // Resend's error is just an HTTP status string and never classifies as a
+      // bounce (Resend doesn't surface suppression synchronously).
+      const event = a.ok ? 'email_sent' : isRecipientError(a) ? 'email_bounced' : 'email_send_failed'
+      await recordAuthEvent(db, {
+        event, email: to, userId: userId ?? null, reason: a.error ?? null,
+        linkType: type, provider: a.provider, messageId: a.messageId ?? null,
+      })
     }
-    await recordAuthEvent(db, {
-      event, email: to, userId: userId ?? null, reason: r.error ?? null,
-      linkType: type, provider: r.provider, messageId: r.messageId ?? null,
-    })
   }
-  if (!r.ok) throw new Error(`Email send failed (${r.provider}): ${r.error}`)
+  if (!r.ok) {
+    // A suppressed recipient stays suppressed; only a provider failure is worth retrying.
+    const msg = `Email send failed (${r.provider}): ${r.error}`
+    throw isRecipientError(r) ? new PermanentSendError(msg) : new Error(msg)
+  }
 }
 
 function escHtml(s: string): string {
@@ -342,5 +425,9 @@ export async function sendFeedback(
     throw new Error('Feedback not configured — OPERATOR_CONTACT_EMAILS is empty')
   }
   const r = await sendEmail(env, { to: recipients, subject: `Feedback from ${from.email}`, html }, db)
-  if (!r.ok) throw new Error(`Email send failed (${r.provider}): ${r.error}`)
+  if (!r.ok) {
+    // A suppressed recipient stays suppressed; only a provider failure is worth retrying.
+    const msg = `Email send failed (${r.provider}): ${r.error}`
+    throw isRecipientError(r) ? new PermanentSendError(msg) : new Error(msg)
+  }
 }

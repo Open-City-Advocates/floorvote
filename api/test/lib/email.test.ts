@@ -28,7 +28,7 @@ describe('sendEmail (resend path)', () => {
     const calls: any[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: any) => { calls.push({ url, body: JSON.parse(init.body) }); return new Response('{}', { status: 200 }) }))
     const r = await sendEmail(baseEnv, { to: ['a@e.com'], subject: 's', html: 'h' })
-    expect(r).toEqual({ ok: true, provider: 'resend' })
+    expect(r).toEqual({ ok: true, provider: 'resend', attempts: [{ ok: true, provider: 'resend' }] })
     expect(calls[0].url).toContain('/emails')
     expect(calls[0].body.from).toBe(DEFAULT_FROM)
     expect(calls[0].body.reply_to).toBe(DEFAULT_REPLY_TO)
@@ -63,7 +63,7 @@ describe('sendEmail (resend path)', () => {
   it('still sends in DEMO_MODE (auth/transactional must not be suppressed)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })))
     const r = await sendEmail({ ...baseEnv, DEMO_MODE: 'true' }, { to: ['a@e.com'], subject: 's', html: 'h' })
-    expect(r).toEqual({ ok: true, provider: 'resend' })
+    expect(r).toEqual({ ok: true, provider: 'resend', attempts: [{ ok: true, provider: 'resend' }] })
   })
 })
 
@@ -72,7 +72,7 @@ describe('sendEmail (cloudflare path)', () => {
     const send = vi.fn(async () => undefined)
     const env = { EMAIL_PROVIDER: 'cloudflare', EMAIL: { send } } as any
     const r = await sendEmail(env, { to: ['a@e.com'], subject: 's', html: 'h' })
-    expect(r).toEqual({ ok: true, provider: 'cloudflare' })
+    expect(r).toEqual({ ok: true, provider: 'cloudflare', attempts: [{ ok: true, provider: 'cloudflare' }] })
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ['a@e.com'], from: DEFAULT_FROM, replyTo: DEFAULT_REPLY_TO, subject: 's', html: 'h' }))
   })
   it('returns ok:false when the binding throws', async () => {
