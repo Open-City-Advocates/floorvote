@@ -5,12 +5,14 @@ import { requireAdmin } from '../../middleware/auth'
 import { getDb } from '../../db/client'
 import {
   bills, memberVotes, officialPositions, comments, notes, feedEvents, billTexts,
+  billCustomFieldValues, calendarEventBills,
 } from '../../db/schema'
 import type { AppEnv } from '../../types'
 import { centralFetch } from '../../lib/centralFetch'
 import { backfillCalendar, parseLegiScanId } from '../../lib/calendarBackfill'
 import { nowDb } from '../../lib/dbTime'
 import { nextDraftNumber, findNumberCollision } from '../../lib/draftNumber'
+import { resolveCustomFieldValues } from '../../lib/customFieldValues'
 
 // Latch a bill as triaged. Idempotent: the isNull guard means only the first
 // triage (dismiss or priority-set) records the actor/timestamp, so re-triaging
@@ -36,7 +38,7 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
       db.select({ id: comments.id }).from(comments).where(and(eq(comments.billId, id), isNull(comments.deletedAt))).get(),
       db.select({ id: notes.id }).from(notes).where(and(eq(notes.billId, id), ne(notes.content, ''))).get(),
     ])
-    if (v || p || cm || nt) return c.json({ error: 'This draft has engagement; unlink or merge it into a filed bill instead.' }, 409)
+    if (v || p || cm || nt) return c.json({ error: 'This draft has engagement; link it to a filed bill instead.' }, 409)
 
     await db.batch([
       db.delete(feedEvents).where(eq(feedEvents.billId, id)),
@@ -54,11 +56,13 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
   router.post('/draft', requireAdmin, async (c) => {
     const db = getDb(c.env.DB)
     const body = await c.req.json<{
-      billNumber?: string; title?: string; summary?: string; sponsor?: string
-      text?: string; state?: string; year?: number
+      billNumber?: string; title?: string | null; summary?: string; sponsor?: string
+      text?: string; state?: string; year?: number; customFields?: unknown
     }>().catch(() => ({} as Record<string, string>))
-    const title = body.title?.trim()
-    if (!title) return c.json({ error: 'title is required' }, 400)
+    // A draft may be untitled: a request often has a number months before it
+    // has a title. bills.title is NOT NULL, so an untitled draft stores '' and
+    // display falls back to "Untitled draft" (shared/billTitle.ts).
+    const title = typeof body.title === 'string' ? body.title.trim() : ''
 
     const id = crypto.randomUUID()
     const user = c.get('user')
@@ -70,6 +74,16 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     if (!state) {
       return c.json({ error: 'This instance tracks multiple states. Include a state when creating a draft.' }, 400)
     }
+    // Custom field values set on the create form, in the same format and under
+    // the same rules as the bill page's PUT /bills/:id/custom-fields. Validated
+    // before anything is written, so a bad value leaves no draft behind.
+    const cf = 'customFields' in body ? body.customFields : undefined
+    if (cf !== undefined && cf !== null && (typeof cf !== 'object' || Array.isArray(cf))) {
+      return c.json({ error: 'customFields must be an object of field ID to value' }, 400)
+    }
+    const resolved = await resolveCustomFieldValues(db, (cf ?? {}) as Record<string, unknown>)
+    if (!resolved.ok) return c.json(resolved.error, 400)
+
     const year = Number.isInteger(body.year) ? Number(body.year) : await defaultDraftYear(c, db, state)
     const billNumber = body.billNumber?.trim() || await nextDraftNumber(db, state)
 
@@ -78,34 +92,47 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
       return c.json({ error: `${billNumber} is already used by another ${state} bill in ${year}.` }, 409)
     }
 
-    await db.insert(bills).values({
-      id,
-      externalId: null,
-      billNumber,
-      title,
-      state,
-      yearStart: year,
-      yearEnd: year,
-      matchType: 'manual',
-      isDraft: true,
-      draftText: body.text?.trim() || null,
-      tenantSummary: body.summary?.trim() || null,
-      sponsor: body.sponsor?.trim() || null,
-      addedBy: user.id,
-    })
-
-    await db.insert(feedEvents).values({
+    // One timestamp for the draft and its values: they are set "at creation".
+    const now = nowDb()
+    // The draft, its custom field values, and its feed event in one batch:
+    // either all are written or none are. A null (or empty multi-select) value
+    // means "not set", which on a new draft is simply no row.
+    const ops: Parameters<typeof db.batch>[0][number][] = [
+      db.insert(bills).values({
+        id,
+        externalId: null,
+        billNumber,
+        title,
+        state,
+        yearStart: year,
+        yearEnd: year,
+        matchType: 'manual',
+        isDraft: true,
+        draftText: body.text?.trim() || null,
+        tenantSummary: body.summary?.trim() || null,
+        sponsor: body.sponsor?.trim() || null,
+        addedBy: user.id,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    ]
+    for (const { fieldId, value } of resolved.values) {
+      if (value === null) continue
+      ops.push(db.insert(billCustomFieldValues).values({ billId: id, fieldId, value, setBy: user.id, updatedAt: now }))
+    }
+    ops.push(db.insert(feedEvents).values({
       id: crypto.randomUUID(),
       type: 'bill_added',
       billId: id,
       userId: user.id,
       metadata: JSON.stringify({ draft: true, billNumber, title }),
-    })
+    }))
+    await db.batch(ops as unknown as Parameters<typeof db.batch>[0])
 
     return c.json({ id, billNumber, title, year, isDraft: true }, 201)
   })
 
-  // POST /bills/:id/link — merge a draft into a filed bill (admin/owner only). :id is the DRAFT.
+  // POST /bills/:id/link — link a draft to its filed bill (admin/owner only). :id is the DRAFT.
   router.post('/:id/link', requireAdmin, async (c) => {
     const db = getDb(c.env.DB)
     const draftId = c.req.param('id')
@@ -127,6 +154,10 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
       .from(notes).where(eq(notes.billId, filedBillId)).all()).map(r => r.userId)
     const filedVoteUserIds = (await db.select({ userId: memberVotes.userId })
       .from(memberVotes).where(eq(memberVotes.billId, filedBillId)).all()).map(r => r.userId)
+    const filedFieldIds = (await db.select({ fieldId: billCustomFieldValues.fieldId })
+      .from(billCustomFieldValues).where(eq(billCustomFieldValues.billId, filedBillId)).all()).map(r => r.fieldId)
+    const filedEventIds = (await db.select({ eventId: calendarEventBills.eventId })
+      .from(calendarEventBills).where(eq(calendarEventBills.billId, filedBillId)).all()).map(r => r.eventId)
 
     // Heterogeneous update/delete queries collected for db.batch(); type as the element array.
     const ops: Parameters<typeof db.batch>[0][number][] = []
@@ -144,6 +175,17 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
       ops.push(db.delete(memberVotes).where(and(eq(memberVotes.billId, draftId), inArray(memberVotes.userId, filedVoteUserIds))))
     }
     ops.push(db.update(memberVotes).set({ billId: filedBillId }).where(eq(memberVotes.billId, draftId)))
+    // Custom field values cascade-delete with the draft, so they must move first.
+    // Filed bill wins on a shared field; set_by/updated_at are kept as-is.
+    if (filedFieldIds.length) {
+      ops.push(db.delete(billCustomFieldValues).where(and(eq(billCustomFieldValues.billId, draftId), inArray(billCustomFieldValues.fieldId, filedFieldIds))))
+    }
+    ops.push(db.update(billCustomFieldValues).set({ billId: filedBillId }).where(eq(billCustomFieldValues.billId, draftId)))
+    // calendar_event_bills has no FK, so unmoved rows would orphan on the dead draft id.
+    if (filedEventIds.length) {
+      ops.push(db.delete(calendarEventBills).where(and(eq(calendarEventBills.billId, draftId), inArray(calendarEventBills.eventId, filedEventIds))))
+    }
+    ops.push(db.update(calendarEventBills).set({ billId: filedBillId }).where(eq(calendarEventBills.billId, draftId)))
     ops.push(db.update(feedEvents).set({ billId: filedBillId }).where(eq(feedEvents.billId, draftId)))
     ops.push(db.delete(bills).where(eq(bills.id, draftId)))
 
@@ -161,17 +203,16 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     if (!existing.isDraft) return c.json({ error: 'not a draft bill' }, 400)
 
     const body = await c.req.json<{
-      title?: string; sponsor?: string; summary?: string; text?: string
+      title?: string | null; sponsor?: string; summary?: string; text?: string
       billNumber?: string; year?: number; state?: string
     }>().catch(() => ({} as Record<string, string>))
 
     // Build update object — only include fields present in body
     const patch: Partial<typeof existing> = {}
-    if ('title' in body) {
-      const t = body.title?.trim()
-      if (t) patch.title = t
-      // empty title is silently ignored (cannot clear required field)
-    }
+    // A blank title clears it: a draft may be untitled (stored as '', shown as
+    // "Untitled draft"). Filed bills never reach here — the isDraft guard above
+    // 400s them — so a source title can't be blanked through this endpoint.
+    if ('title' in body) patch.title = typeof body.title === 'string' ? body.title.trim() : ''
     if ('sponsor' in body) patch.sponsor = body.sponsor?.trim() || null
     if ('summary' in body) patch.tenantSummary = body.summary?.trim() || null
     if ('text' in body) patch.draftText = body.text?.trim() || null

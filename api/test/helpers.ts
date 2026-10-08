@@ -67,6 +67,8 @@ import migrationSql67 from '../migrations/0067_ai_heal_attempts.sql?raw'
 import migrationSql68 from '../migrations/0068_bills_ai_stalled_index.sql?raw'
 import migrationSql69 from '../migrations/0069_terms_acceptances.sql?raw'
 import migrationSql70 from '../migrations/0070_draft_numbers_and_years.sql?raw'
+import migrationSql73 from '../migrations/0073_email_health.sql?raw'
+import migrationSql75 from '../migrations/0075_auth_events_email_changed.sql?raw'
 
 export function parseMigration(sql: string, name: string) {
   const queries = sql
@@ -180,6 +182,8 @@ export async function applyMigrations(): Promise<void> {
     parseMigration(migrationSql68, '0068_bills_ai_stalled_index'),
     parseMigration(migrationSql69, '0069_terms_acceptances'),
     parseMigration(migrationSql70, '0070_draft_numbers_and_years'),
+    parseMigration(migrationSql73, '0073_email_health'),
+    parseMigration(migrationSql75, '0075_auth_events_email_changed'),
   ])
 }
 
@@ -191,6 +195,7 @@ export async function seedUser(overrides?: {
   canVote?: boolean
   emailDigestEnabled?: boolean
   deactivatedAt?: string | null
+  invitedBy?: string | null
 }): Promise<string> {
   const db = getDb(env.DB)
   const id = crypto.randomUUID()
@@ -203,6 +208,7 @@ export async function seedUser(overrides?: {
     canVote: overrides?.canVote === false ? 0 : 1,
     emailDigestEnabled: overrides?.emailDigestEnabled === false ? 0 : 1,
     deactivatedAt: overrides?.deactivatedAt ?? null,
+    invitedBy: overrides?.invitedBy ?? null,
   })
   return id
 }
@@ -428,7 +434,7 @@ export async function seedCalendarEvent(
 export async function seedAuthEvent(
   userId: string,
   event: string,
-  overrides: { email?: string; reason?: string; linkType?: string } = {},
+  overrides: { email?: string; reason?: string; linkType?: string; provider?: string; messageId?: string; createdAt?: string } = {},
 ): Promise<void> {
   const db = getDb(env.DB)
   await db.insert(authEvents).values({
@@ -438,5 +444,8 @@ export async function seedAuthEvent(
     event,
     reason: overrides.reason ?? null,
     linkType: overrides.linkType ?? null,
+    provider: overrides.provider ?? null,
+    messageId: overrides.messageId ?? null,
+    ...(overrides.createdAt ? { createdAt: overrides.createdAt } : {}),
   })
 }

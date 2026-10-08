@@ -249,7 +249,7 @@ describe('BillDetail draft State editor', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Edit state' }))
     expect(document.querySelector('input[name="draftState"]')).toBeNull()
-    const stateTrigger = await screen.findByRole('button', { name: 'State' })
+    const stateTrigger = await screen.findByRole('button', { name: 'State (required)' })
     expect(stateTrigger).toHaveTextContent('RI')
     await user.click(stateTrigger)
     fireEvent.click(screen.getByRole('radio', { name: 'TX' }))
@@ -272,7 +272,7 @@ describe('BillDetail draft State editor', () => {
     render(<MemoryRouter><BillDetail /></MemoryRouter>)
 
     await user.click(await screen.findByRole('button', { name: 'Edit state' }))
-    await user.click(await screen.findByRole('button', { name: 'State' }))
+    await user.click(await screen.findByRole('button', { name: 'State (required)' }))
     expect(screen.getByRole('radio', { name: 'RI' })).toBeChecked()
     expect(screen.getByRole('radio', { name: 'TX' })).toBeInTheDocument()
   })
@@ -285,7 +285,7 @@ describe('BillDetail draft State editor', () => {
     render(<MemoryRouter><BillDetail /></MemoryRouter>)
 
     await user.click(await screen.findByRole('button', { name: 'Edit state' }))
-    const stateTrigger = await screen.findByRole('button', { name: 'State' })
+    const stateTrigger = await screen.findByRole('button', { name: 'State (required)' })
     await user.click(stateTrigger)
     expect(screen.getByRole('radio', { name: 'RI' })).toBeChecked()
   })

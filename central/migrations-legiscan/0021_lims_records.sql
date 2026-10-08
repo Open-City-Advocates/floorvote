@@ -10,6 +10,10 @@
 -- filed, a vote is recorded) while the bulk record stays the same.
 --
 -- A new table only. Nothing existing reads it, so deploy order does not matter.
+--
+-- First numbered 0020, and renumbered when main added 0020_legiscan_limit_10k.
+-- Wrangler tracks migrations by name, so a central that applied it as 0020 runs
+-- it again as 0021, which IF NOT EXISTS makes a no-op.
 CREATE TABLE IF NOT EXISTS lims_records (
   bill_id            INTEGER PRIMARY KEY,
   legislation_number TEXT NOT NULL UNIQUE,

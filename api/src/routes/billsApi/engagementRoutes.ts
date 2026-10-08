@@ -4,7 +4,7 @@ import { requireAdmin } from '../../middleware/auth'
 import { getDb } from '../../db/client'
 import {
   bills, memberVotes, officialPositions, comments, notes, users, commentReactions, feedEvents,
-  customFieldDefinitions, billCustomFieldValues,
+  billCustomFieldValues,
 } from '../../db/schema'
 import { extractAndNotifyMentions, stripHtml } from '../../lib/mentions'
 import { COMMENT_PREVIEW_MAX, truncateWithEllipsis } from '../../../../shared/feedUtils'
@@ -12,6 +12,8 @@ import { sanitizeCommentHtml } from '../../lib/sanitizeHtml'
 import type { AppEnv } from '../../types'
 import { nowDb } from '../../lib/dbTime'
 import { activeUser } from '../../lib/accountDeletion'
+import { resolveCustomFieldValues } from '../../lib/customFieldValues'
+import { displayName } from '../../lib/displayName'
 
 // Max live (non-deleted) comments one bill may hold on a DEMO_MODE tenant. The
 // per-IP limiter in demoReadOnly bounds the *rate* an anonymous visitor can
@@ -174,7 +176,7 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
       if (!emojiMap.has(r.emoji)) emojiMap.set(r.emoji, { count: 0, userReacted: false, reactors: [] })
       const entry = emojiMap.get(r.emoji)!
       entry.count++
-      entry.reactors.push({ name: reactor.name, subtitle: reactor.subtitle })
+      entry.reactors.push({ name: displayName(reactor), subtitle: reactor.subtitle })
       if (r.userId === currentUser.id) entry.userReacted = true
     }
 
@@ -302,49 +304,17 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
     }
 
     const billId = c.req.param('id')
-    const body = await c.req.json<Record<string, string | string[] | null>>().catch(() => ({} as Record<string, string | string[] | null>))
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
     const db = getDb(c.env.DB)
 
     const bill = await db.select({ id: bills.id }).from(bills).where(eq(bills.id, billId)).get()
     if (!bill) return c.json({ error: 'Bill not found' }, 404)
 
-    const fieldIds = Object.keys(body)
-    if (fieldIds.length === 0) return c.json({ ok: true })
-
-    const fieldDefs = await db
-      .select()
-      .from(customFieldDefinitions)
-      .where(inArray(customFieldDefinitions.id, fieldIds))
-      .all()
-    const defsById = new Map(fieldDefs.map(f => [f.id, f]))
+    const resolved = await resolveCustomFieldValues(db, body)
+    if (!resolved.ok) return c.json(resolved.error, 400)
 
     const now = nowDb()
-
-    for (const [fieldId, raw] of Object.entries(body)) {
-      const def = defsById.get(fieldId)
-      if (!def) return c.json({ error: `unknown field: ${fieldId}` }, 400)
-
-      // Resolve to either a deletion or a string to store
-      let storeValue: string | null
-      if (raw === null) {
-        storeValue = null
-      } else if (def.multiple) {
-        if (!Array.isArray(raw)) {
-          return c.json({ error: `field ${fieldId} requires an array value` }, 400)
-        }
-        const opts = def.options ? (JSON.parse(def.options) as string[]) : []
-        const invalid = raw.filter(v => !opts.includes(v))
-        if (invalid.length > 0) {
-          return c.json({ error: 'invalid_options', fieldId, invalid }, 400)
-        }
-        storeValue = raw.length === 0 ? null : JSON.stringify(raw)
-      } else {
-        if (Array.isArray(raw)) {
-          return c.json({ error: `field ${fieldId} requires a string value` }, 400)
-        }
-        storeValue = raw
-      }
-
+    for (const { fieldId, value: storeValue } of resolved.values) {
       if (storeValue === null) {
         await db.delete(billCustomFieldValues)
           .where(and(

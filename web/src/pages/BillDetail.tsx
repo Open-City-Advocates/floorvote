@@ -36,7 +36,7 @@ import { color, radius, fontSize, fontWeight, shadow } from '../styles/tokens'
 import { TAG_CHIP, TAG_CHIP_HOVERED } from '../lib/tagChipStyle'
 import { CARD } from '../lib/cardStyle'
 import { COUNT_BADGE, displayName, ROLE_CHIP, TOOLTIP_STYLE, sortRoles } from '../lib/chipStyles'
-import { SECTION_LABEL, CHROME_TEXT, FONT_SANS } from '../lib/textStyles'
+import { SECTION_LABEL, CHROME_TEXT, FONT_SANS, FORM_LABEL } from '../lib/textStyles'
 import { HoverTooltip } from '../components/HoverTooltip'
 import { SubjectsTrigger, SubjectsPanel } from '../components/SubjectsDisclosure'
 import { ChangeHistoryTooltip, type ChangeRecord } from '../components/ChangeHistoryTooltip'
@@ -48,6 +48,7 @@ import { useNotifications } from '../context/NotificationsContext'
 import { markMentionsRead } from '../lib/demoReadState'
 import { relativeTime, absoluteTime } from '../lib/time'
 import { COMMENT_STYLE } from '../../../shared/commentStyle'
+import { billDisplayTitle } from '../../../shared/billTitle'
 import { getScrollContainer } from '../lib/scrollUtils'
 import { billUrl } from '../lib/sessionSlug'
 import { todayIso } from '../lib/calendarGrid'
@@ -60,6 +61,7 @@ import { CollapsibleSection } from '../components/CollapsibleSection'
 import { useMultiState } from '../context/ConfigContext'
 import { AnalysisBox, AnalysisProgressChip, DIMMED_WHILE_RUNNING } from '../components/AnalysisBox'
 import { pollForAnalysis, analysisOutcomeMessage } from '../lib/analysisPoll'
+import { MissingRequiredReason, requiredName, useRequiredSubmit } from '../components/RequiredField'
 
 function PartyBadge({ party }: { party: string }) {
   const bg = party === 'D' ? color.bgBlueChip : party === 'R' ? color.bgRedPriority : color.surfaceMuted
@@ -566,6 +568,18 @@ export async function billDetailLoader({ params, request }: LoaderFunctionArgs) 
   return bill
 }
 
+// Save/Cancel for the draft bill-number and State inline editors. Save greys
+// out (the inline-edit Save's disabled colors) while the quiet gate blocks it.
+function draftSaveStyle(disabled: boolean): React.CSSProperties {
+  return {
+    fontSize: fontSize.sm, fontWeight: fontWeight.medium, border: 'none', borderRadius: radius.md, padding: '4px 10px',
+    background: disabled ? color.borderDefault : color.accentBlue,
+    color: disabled ? color.textMuted : color.white,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+  }
+}
+const DRAFT_CANCEL_STYLE: React.CSSProperties = { fontSize: fontSize.sm, color: color.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px' }
+
 export function BillDetail() {
   const { billId, state: stateParam, sessionSlug: slugParam, billNumber: billNumberParam } = useParams<{ billId?: string; state?: string; sessionSlug?: string; billNumber?: string }>()
   const navigate = useNavigate()
@@ -601,7 +615,7 @@ export function BillDetail() {
   const [triageDismissed, setTriageDismissed] = useState(false)
   const [loading, setLoading] = useState(() => prefetchedBill ? false : true)
   const [error, setError] = useState<string | null>(null)
-  usePageTitle(bill ? `${bill.state} ${bill.billNumber} — ${bill.title ?? bill.abstract}` : null)
+  usePageTitle(bill ? `${bill.state} ${bill.billNumber} — ${billDisplayTitle(bill) || bill.abstract || ''}` : null)
   const [myVote, setMyVote] = useState<'support' | 'oppose' | 'neutral' | null>(prefetchedBill?.myVote ?? null)
   const [priority, setPriority] = useState<'high' | 'medium' | 'low' | null>(prefetchedBill?.priority ?? null)
   const [position, setPosition] = useState<string | null>(prefetchedBill?.position?.position ?? null)
@@ -648,6 +662,9 @@ export function BillDetail() {
   const [hoveredPinnedFieldId, setHoveredPinnedFieldId] = useState<string | null>(null)
   const [linkTarget, setLinkTarget] = useState<string | null>(null)
   const [linking, setLinking] = useState(false)
+  // Linking needs a filed bill chosen; demo lock and an in-flight link are the
+  // button's other disabled reasons.
+  const linkGate = useRequiredSubmit({ missingRequired: !linkTarget, blocked: linking || demoLocked })
   const [deletingDraft, setDeletingDraft] = useState(false)
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null)
   const [filedOptions, setFiledOptions] = useState<BillOption[]>([])
@@ -676,6 +693,22 @@ export function BillDetail() {
   // plain <input>s above which read their initial value via `defaultValue`.
   const [draftYearEdit, setDraftYearEdit] = useState('')
   const [draftStateEdit, setDraftStateEdit] = useState('')
+  // The bill-number editor is controlled too, so its Save can grey out.
+  const [draftNumberEdit, setDraftNumberEdit] = useState('')
+  // The bill-number and State editors refuse a blank value with the quiet gate
+  // (RequiredField.tsx): Save looks disabled and explains itself on hover,
+  // focus, click, or Enter. Both gates reset whenever a draft editor opens or
+  // closes, since Save unmounts without a leave or blur event.
+  const draftNumberGate = useRequiredSubmit({ missingRequired: !draftNumberEdit.trim(), blocked: demoLocked })
+  const draftStateGate = useRequiredSubmit({ missingRequired: !draftStateEdit.trim(), blocked: demoLocked })
+  const resetDraftNumberGate = draftNumberGate.reset
+  const resetDraftStateGate = draftStateGate.reset
+  const closeDraftEditor = useCallback(() => {
+    setEditingDraftField(null)
+    setDraftFieldError(null)
+    resetDraftNumberGate()
+    resetDraftStateGate()
+  }, [resetDraftNumberGate, resetDraftStateGate])
 
   const refreshSidebar = useSidebarRefresh()
   const { refresh: refreshNotifications, mentions } = useNotifications()
@@ -1124,7 +1157,7 @@ export function BillDetail() {
 
   async function handleLinkDraft() {
     if (!bill || !linkTarget || demoLocked) return
-    if (!window.confirm('Link this draft to the filed bill? The draft will be retired and all votes, positions, comments, and notes will be moved to the filed bill. This cannot be undone.')) return
+    if (!window.confirm('Link this draft to the filed bill? The draft will be retired and all votes, positions, comments, notes, custom fields, and calendar events will be moved to the filed bill. This cannot be undone.')) return
     setLinking(true)
     try {
       const result = await apiFetch<{ ok: boolean; filedBillId: string }>(`/bills/${bill.id}/link`, {
@@ -1262,7 +1295,7 @@ export function BillDetail() {
                           current={priority}
                           onChange={(p, result) => {
                             setPriority(p)
-                            setPriorityMeta(p ? { setByName: user!.name, updatedAt: new Date().toISOString() } : null)
+                            setPriorityMeta(p ? { setByName: displayName(user!), updatedAt: new Date().toISOString() } : null)
                             refreshSidebar()
                             if (result?.promoted) startAnalyzingPoll()
                           }}
@@ -1274,7 +1307,7 @@ export function BillDetail() {
                   <HoverTooltip text="This bill's priority level">
                     <CompactPrioritySelect billId={bill.id} current={priority} onChange={(p, result) => {
                       setPriority(p)
-                      setPriorityMeta(p ? { setByName: user!.name, updatedAt: new Date().toISOString() } : null)
+                      setPriorityMeta(p ? { setByName: displayName(user!), updatedAt: new Date().toISOString() } : null)
                       refreshSidebar()
                       if (result?.promoted) startAnalyzingPoll()
                     }} placeholder="Priority not set" />
@@ -1383,10 +1416,11 @@ export function BillDetail() {
         {bill.isDraft && (
           <div style={{ background: color.bgAmberPriority, border: `1px solid ${color.borderAmber}`, borderRadius: radius.md, padding: '10px 14px', marginBottom: 10, fontSize: fontSize.sm, color: color.textAmberWarning }}>
             <p style={{ margin: '0 0 10px', fontWeight: fontWeight.medium, lineHeight: 1.5 }}>
-              An admin added this draft pre-filed bill. When the associated bill is filed, link it here to transfer all votes, positions, comments, and notes to the filed bill:
+              An admin added this draft pre-filed bill. When the associated bill is filed, link it here to transfer all votes, positions, comments, notes, custom fields, and calendar events to the filed bill:
             </p>
             {isAdmin ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div role="group" aria-label="Link to filed bill" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <label htmlFor="link-draft-target" style={{ ...FORM_LABEL, color: color.textAmberWarning, marginBottom: 0 }}>Filed bill</label>
                 {/* Picker + link button on one row */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <div style={{ flex: 1 }}>
@@ -1396,16 +1430,17 @@ export function BillDetail() {
                       onChange={ids => setLinkTarget(ids[0] ?? null)}
                       multiState={filedOptions.some(o => o.state !== filedOptions[0]?.state)}
                       single
+                      inputId="link-draft-target"
+                      required
                     />
                   </div>
                   <button
                     type="button"
-                    onClick={handleLinkDraft}
-                    disabled={!linkTarget || linking || demoLocked}
+                    {...linkGate.buttonProps(handleLinkDraft)}
                     style={{
-                      background: (!linkTarget || linking || demoLocked) ? color.accentBlueMuted : color.accentBlue,
+                      background: linkGate.disabled ? color.accentBlueMuted : color.accentBlue,
                       color: color.white, border: 'none', borderRadius: radius.md,
-                      padding: '8px 14px', cursor: (!linkTarget || linking || demoLocked) ? 'not-allowed' : 'pointer',
+                      padding: '8px 14px', cursor: linkGate.disabled ? 'not-allowed' : 'pointer',
                       fontSize: fontSize.sm, fontWeight: fontWeight.medium, lineHeight: 1.4, whiteSpace: 'nowrap',
                       opacity: demoLocked ? 0.5 : 1,
                     }}
@@ -1413,6 +1448,8 @@ export function BillDetail() {
                     {linking ? 'Linking…' : 'Link & merge into filed bill'}
                   </button>
                 </div>
+                {/* Below the picker-and-button row, never in it: revealing it must not move the button. */}
+                <MissingRequiredReason {...linkGate.reasonProps} style={{ color: color.textAmberWarning, alignSelf: 'flex-end', marginTop: -4 }} />
               </div>
             ) : null}
           </div>
@@ -1425,11 +1462,17 @@ export function BillDetail() {
                 e.preventDefault()
                 if (demoLocked) return
                 const form = e.currentTarget
+                // A blank value clears the title: a draft may be untitled, and
+                // then shows as "Untitled draft" (shared/billTitle.ts).
                 const val = (form.elements.namedItem('draftTitle') as HTMLInputElement).value.trim()
-                if (!val) return
-                await apiFetch(`/bills/${bill.id}/draft`, { method: 'PATCH', body: JSON.stringify({ title: val }) })
-                setBill(prev => prev ? { ...prev, title: val } : prev)
-                setEditingDraftField(null)
+                try {
+                  await apiFetch(`/bills/${bill.id}/draft`, { method: 'PATCH', body: JSON.stringify({ title: val }) })
+                  setBill(prev => prev ? { ...prev, title: val } : prev)
+                  setEditingDraftField(null)
+                  setDraftFieldError(null)
+                } catch (err) {
+                  setDraftFieldError(err instanceof ApiError ? err.message : 'Failed to save title.')
+                }
               }}
               style={{ display: 'flex', gap: 8, alignItems: 'center' }}
             >
@@ -1438,7 +1481,7 @@ export function BillDetail() {
                 defaultValue={bill.title ?? ''}
                 // eslint-disable-next-line jsx-a11y/no-autofocus -- pre-existing: focus follows the user's own click/Enter into edit mode, out of scope for this task's focus-management redesign
                 autoFocus
-                onKeyDown={e => { if (e.key === 'Escape') setEditingDraftField(null) }}
+                onKeyDown={e => { if (e.key === 'Escape') { setEditingDraftField(null); setDraftFieldError(null) } }}
                 style={{
                   flex: 1,
                   fontSize: fontSize.xxxl,
@@ -1453,7 +1496,7 @@ export function BillDetail() {
                 }}
               />
               <button type="submit" style={{ fontSize: fontSize.sm, fontWeight: fontWeight.medium, background: color.accentBlue, color: color.white, border: 'none', borderRadius: radius.md, padding: '6px 12px', cursor: 'pointer' }}>Save</button>
-              <button type="button" onClick={() => setEditingDraftField(null)} style={{ fontSize: fontSize.sm, color: color.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px' }}>Cancel</button>
+              <button type="button" onClick={() => { setEditingDraftField(null); setDraftFieldError(null) }} style={{ fontSize: fontSize.sm, color: color.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px' }}>Cancel</button>
             </form>
           </div>
         ) : bill.isDraft && isAdmin ? (
@@ -1484,7 +1527,7 @@ export function BillDetail() {
                 opacity: demoLocked ? 0.5 : 1,
               }}
             >
-              {bill.title || bill.abstract}
+              {billDisplayTitle(bill) || bill.abstract}
             </button>
           </h1>
         ) : (
@@ -1493,7 +1536,7 @@ export function BillDetail() {
               fontSize: fontSize.xxxl, fontWeight: fontWeight.bold, color: color.textPrimary, margin: '0 0 4px', fontFamily: "'Source Serif 4', serif",
             }}
           >
-            {bill.title || bill.abstract}
+            {billDisplayTitle(bill) || bill.abstract}
           </h1>
         )}
         {bill.abstract && bill.title && bill.abstract.trim().toLowerCase() !== bill.title.trim().toLowerCase() && (
@@ -1701,13 +1744,17 @@ export function BillDetail() {
             rather than losing it to an uncaught rejection. */}
         {bill.isDraft && isAdmin && (
           <div style={{ fontSize: fontSize.sm, color: color.textSecondary, marginTop: 4, marginBottom: 0, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-            <span>
+            {/* A div, not a span: while editing it holds the form and, on its own
+                line below the form's buttons, the required message. (As a flex
+                item it is blockified either way, so nothing else changes.) */}
+            <div>
               {editingDraftField === 'billNumber' ? (
+                <>
                 <form
                   onSubmit={async (e) => {
                     e.preventDefault()
                     if (demoLocked) return
-                    const val = (e.currentTarget.elements.namedItem('draftBillNumber') as HTMLInputElement).value.trim()
+                    const val = draftNumberEdit.trim()
                     if (!val) return
                     try {
                       const updated = await apiFetch<{ billNumber: string; year: number }>(`/bills/${bill.id}/draft`, { method: 'PATCH', body: JSON.stringify({ billNumber: val }) })
@@ -1730,18 +1777,29 @@ export function BillDetail() {
                   <span style={{ color: color.textMuted }}>Bill number:</span>
                   <input
                     name="draftBillNumber"
-                    defaultValue={bill.billNumber ?? ''}
+                    aria-label="Bill number"
+                    aria-required="true"
+                    {...draftNumberGate.fieldProps}
+                    value={draftNumberEdit}
+                    onChange={e => setDraftNumberEdit(e.target.value)}
                     // eslint-disable-next-line jsx-a11y/no-autofocus -- pre-existing pattern: focus follows the user's own click/Enter into edit mode, see the sponsor editor above
                     autoFocus
-                    onKeyDown={e => { if (e.key === 'Escape') { setEditingDraftField(null); setDraftFieldError(null) } }}
+                    onKeyDown={e => {
+                      // Ask the gate before the browser's implicit submission.
+                      if (e.key === 'Enter' && draftNumberGate.refuse()) e.preventDefault()
+                      if (e.key === 'Escape') closeDraftEditor()
+                    }}
                     style={{
                       fontSize: fontSize.sm, border: `1px solid ${color.borderStrong}`, borderRadius: radius.md,
                       padding: '3px 7px', color: color.textPrimary, background: color.white, outline: 'none', minWidth: 120,
                     }}
                   />
-                  <button type="submit" style={{ fontSize: fontSize.sm, fontWeight: fontWeight.medium, background: color.accentBlue, color: color.white, border: 'none', borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Save</button>
-                  <button type="button" onClick={() => { setEditingDraftField(null); setDraftFieldError(null) }} style={{ fontSize: fontSize.sm, color: color.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px' }}>Cancel</button>
+                  <button type="submit" {...draftNumberGate.buttonProps()} style={draftSaveStyle(draftNumberGate.disabled)}>Save</button>
+                  <button type="button" onClick={closeDraftEditor} style={DRAFT_CANCEL_STYLE}>Cancel</button>
                 </form>
+                {/* Below the form's row, never in it: revealing it must not move Save. */}
+                <MissingRequiredReason {...draftNumberGate.reasonProps} />
+                </>
               ) : (
                 // The label is folded into the button's own text (rather than a
                 // preceding sibling, as the sponsor row above uses) so this
@@ -1751,7 +1809,7 @@ export function BillDetail() {
                 <button
                   type="button"
                   aria-label="Edit bill number"
-                  onClick={() => { if (!demoLocked) { setEditingDraftField('billNumber'); setDraftFieldError(null) } }}
+                  onClick={() => { if (!demoLocked) { setDraftNumberEdit(bill.billNumber ?? ''); setEditingDraftField('billNumber'); setDraftFieldError(null); resetDraftNumberGate() } }}
                   onMouseEnter={() => setHoveredDraftField('billNumber')}
                   onMouseLeave={() => setHoveredDraftField(null)}
                   disabled={demoLocked}
@@ -1772,7 +1830,7 @@ export function BillDetail() {
                   {`Bill number: ${bill.billNumber}`}
                 </button>
               )}
-            </span>
+            </div>
 
             <span>
               {editingDraftField === 'year' ? (
@@ -1887,8 +1945,10 @@ export function BillDetail() {
                 DraftBills.tsx); it falls back to free text when facets yields
                 nothing usable. */}
             {tenantState === null && (
-              <span>
+              // A div for the same reason as the bill-number one above.
+              <div>
                 {editingDraftField === 'state' ? (
+                  <>
                   <form
                     onSubmit={async (e) => {
                       e.preventDefault()
@@ -1935,11 +1995,11 @@ export function BillDetail() {
                         trigger={({ toggle, open }) => (
                           <button
                             type="button"
-                            aria-label="State"
+                            aria-label={requiredName('State')}
                             onClick={toggle}
                             // eslint-disable-next-line jsx-a11y/no-autofocus -- pre-existing pattern: focus follows the user's own click/Enter into edit mode, see the sponsor editor above
                             autoFocus
-                            onKeyDown={e => { if (e.key === 'Escape') { setEditingDraftField(null); setDraftFieldError(null) } }}
+                            onKeyDown={e => { if (e.key === 'Escape') closeDraftEditor() }}
                             style={{ ...pickerFieldTriggerStyle(), width: 'auto', minWidth: 70, fontSize: fontSize.sm, padding: '3px 7px', border: `1px solid ${color.borderStrong}` }}
                           >
                             <span>{draftStateEdit || 'Select a state…'}</span>
@@ -1950,22 +2010,32 @@ export function BillDetail() {
                     ) : (
                       <input
                         name="draftState"
+                        aria-label="State"
+                        aria-required="true"
+                        {...draftStateGate.fieldProps}
                         value={draftStateEdit}
                         placeholder="UT"
                         maxLength={2}
                         onChange={e => setDraftStateEdit(e.target.value.toUpperCase())}
                         // eslint-disable-next-line jsx-a11y/no-autofocus -- pre-existing pattern: focus follows the user's own click/Enter into edit mode, see the sponsor editor above
                         autoFocus
-                        onKeyDown={e => { if (e.key === 'Escape') { setEditingDraftField(null); setDraftFieldError(null) } }}
+                        onKeyDown={e => {
+                          // Ask the gate before the browser's implicit submission.
+                          if (e.key === 'Enter' && draftStateGate.refuse()) e.preventDefault()
+                          if (e.key === 'Escape') closeDraftEditor()
+                        }}
                         style={{
                           fontSize: fontSize.sm, border: `1px solid ${color.borderStrong}`, borderRadius: radius.md,
                           padding: '3px 7px', color: color.textPrimary, background: color.white, outline: 'none', minWidth: 60,
                         }}
                       />
                     )}
-                    <button type="submit" style={{ fontSize: fontSize.sm, fontWeight: fontWeight.medium, background: color.accentBlue, color: color.white, border: 'none', borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Save</button>
-                    <button type="button" onClick={() => { setEditingDraftField(null); setDraftFieldError(null) }} style={{ fontSize: fontSize.sm, color: color.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px' }}>Cancel</button>
+                    <button type="submit" {...draftStateGate.buttonProps()} style={draftSaveStyle(draftStateGate.disabled)}>Save</button>
+                    <button type="button" onClick={closeDraftEditor} style={DRAFT_CANCEL_STYLE}>Cancel</button>
                   </form>
+                  {/* Below the form's row, never in it: revealing it must not move Save. */}
+                  <MissingRequiredReason {...draftStateGate.reasonProps} />
+                  </>
                 ) : (
                   // Same fold-the-label-in reasoning as the two buttons above:
                   // a bare "UT" would collide with the state shown in the chip
@@ -1978,6 +2048,7 @@ export function BillDetail() {
                       setDraftStateEdit(bill.state ?? '')
                       setEditingDraftField('state')
                       setDraftFieldError(null)
+                      resetDraftStateGate()
                     }}
                     onMouseEnter={() => setHoveredDraftField('state')}
                     onMouseLeave={() => setHoveredDraftField(null)}
@@ -2001,7 +2072,7 @@ export function BillDetail() {
                       : <>State: <span style={{ color: color.textMuted, fontStyle: 'italic' }}>None — click to add</span></>}
                   </button>
                 )}
-              </span>
+              </div>
             )}
 
             {draftFieldError && (
@@ -2824,7 +2895,7 @@ export function BillDetail() {
                     onChange={(p) => {
                       setPosition(p)
                       if (p) {
-                        setPositionMeta({ setByName: user!.name, updatedAt: new Date().toISOString() })
+                        setPositionMeta({ setByName: displayName(user!), updatedAt: new Date().toISOString() })
                       } else {
                         setPositionMeta(null)
                       }

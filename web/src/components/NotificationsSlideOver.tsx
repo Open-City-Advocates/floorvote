@@ -13,6 +13,7 @@ import { BillBadge } from './BillBadge'
 import { DraftChip } from './DraftChip'
 import { color, radius, fontSize, fontWeight } from '../styles/tokens'
 import { MENTION_STYLE } from '../../../shared/mentionStyle'
+import { billDisplayTitle } from '../../../shared/billTitle'
 import { PopPanel, type PopPanelHandle } from './ui/PopPanel'
 
 const PURIFY_CONFIG = {
@@ -439,7 +440,7 @@ export function NotificationsSlideOver(
                     textOverflow: 'ellipsis',
                     minWidth: 0,
                   }}>
-                    {m.billTitle}
+                    {billDisplayTitle({ title: m.billTitle, isDraft: m.billIsDraft })}
                   </span>
                 </div>
               </Link>

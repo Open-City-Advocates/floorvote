@@ -192,3 +192,64 @@ describe('GET /config/custom-fields', () => {
     expect(fields[0].pinned).toBe(true)
   })
 })
+
+// The Config page disables "Add field" for a dropdown with no options; the
+// server's check stays as the backstop for any other client.
+describe('POST /admin/custom-fields dropdown options backstop', () => {
+  beforeEach(async () => {
+    await resetDb()
+    await applyMigrations()
+  })
+
+  async function post(body: Record<string, unknown>) {
+    const adminId = await seedUser({ role: 'owner' })
+    const adminToken = await seedSession(adminId)
+    return SELF.fetch('http://localhost/api/admin/custom-fields', {
+      method: 'POST',
+      headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  async function fieldCount() {
+    const db = getDb(env.DB)
+    return (await db.select().from(customFieldDefinitions).all()).length
+  }
+
+  it('rejects a dropdown with an empty options array and writes nothing', async () => {
+    const res = await post({ name: 'Committee', type: 'dropdown', options: [] })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toMatch(/options/i)
+    expect(await fieldCount()).toBe(0)
+  })
+
+  it('rejects a dropdown with no options key and writes nothing', async () => {
+    const res = await post({ name: 'Committee', type: 'dropdown' })
+    expect(res.status).toBe(400)
+    expect(await fieldCount()).toBe(0)
+  })
+
+  it('rejects a multi-select dropdown with no options', async () => {
+    const res = await post({ name: 'Committee', type: 'dropdown', options: [], multiple: true })
+    expect(res.status).toBe(400)
+    expect(await fieldCount()).toBe(0)
+  })
+
+  it('rejects a dropdown whose options are not an array', async () => {
+    const res = await post({ name: 'Committee', type: 'dropdown', options: 'A, B' })
+    expect(res.status).toBe(400)
+    expect(await fieldCount()).toBe(0)
+  })
+
+  it('accepts a dropdown with one option', async () => {
+    const res = await post({ name: 'Committee', type: 'dropdown', options: ['A'] })
+    expect(res.status).toBe(201)
+    expect(await fieldCount()).toBe(1)
+  })
+
+  it('rejects a blank name', async () => {
+    const res = await post({ name: '   ', type: 'text' })
+    expect(res.status).toBe(400)
+    expect(await fieldCount()).toBe(0)
+  })
+})
