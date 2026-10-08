@@ -8,6 +8,7 @@ import { activeUser } from './accountDeletion'
 import type { AppDb, Env } from '../types'
 import { isModuleEnabled, getModuleSetting, type ModulesConfig } from '../../../shared/modules'
 import { PRODUCT_NAME } from '../../../shared/brand'
+import { userDisplayNameSql } from './displayName'
 
 const DIGEST_CATEGORIES = ['bill_updated', 'hearing_added', 'hearing_changed', 'hearing_cancelled', 'position_set', 'comment_added', 'priority_set']
 
@@ -52,8 +53,8 @@ export async function runDigest(
       type: feedEvents.type, metadata: feedEvents.metadata, createdAt: feedEvents.createdAt,
       billId: bills.id, billNumber: bills.billNumber, billTitle: bills.title,
       billState: bills.state, billSession: bills.session, priority: bills.priority,
-      summary: bills.tenantSummary,
-      userName: users.name,
+      summary: bills.tenantSummary, billIsDraft: bills.isDraft,
+      userName: userDisplayNameSql,
     })
     .from(feedEvents)
     .innerJoin(bills, eq(feedEvents.billId, bills.id))

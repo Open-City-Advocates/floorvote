@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mock the email module so no real send happens.
 const sendEmail = vi.fn(
-  async (_env: any, _msg: { to: string[]; subject: string; html: string; text?: string }) =>
+  async (_env: any, _msg: { to: string[]; subject: string; html: string; text?: string }, _db?: unknown) =>
     ({ ok: true, provider: 'resend' as const }),
 )
-vi.mock('../../src/lib/email', () => ({ sendEmail: (env: any, msg: any) => sendEmail(env, msg) }))
+vi.mock('../../src/lib/email', () => ({ sendEmail: (env: any, msg: any, db?: any) => sendEmail(env, msg, db) }))
 
 import { runJob, reportJobFailure } from '../../src/lib/jobAlert'
 
@@ -44,6 +44,12 @@ describe('reportJobFailure', () => {
     expect(msg.to).toEqual(['a@e.com', 'b@e.com'])
     expect(msg.subject).toContain('week-ahead')
     expect(msg.html).toContain('nope')
+  })
+
+  it('does not pass a db, so alert mail is never counted in email_send_stats', async () => {
+    await reportJobFailure(env({ DB: {} }), { job: 'week-ahead', error: new Error('nope') })
+    expect(sendEmail).toHaveBeenCalledOnce()
+    expect(sendEmail.mock.calls[0][2]).toBeUndefined()
   })
 
   it('includes the stack when the error has one', async () => {

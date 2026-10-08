@@ -10,6 +10,7 @@ import { sendMagicLink } from '../lib/email'
 import { recordAuthEvent, authReqContext } from '../lib/authEvents'
 import { getSuperAdminCookieDomain } from '../lib/superadmin'
 import { parseAppDomains } from '../lib/appDomains'
+import { rememberInstance, forgetInstance } from '../lib/instanceHint'
 import { verifySuperadminJwt } from '../../../shared/superadminJwt'
 import { isSuperadminEmailViaCentral } from '../lib/superadminCentral'
 import { checkRateLimit } from '../../../shared/rateLimit'
@@ -19,6 +20,7 @@ import { ensureDemoSession, demoSessionCookie } from '../lib/demoSession'
 import { requireAuth } from '../middleware/auth'
 import { termsAcceptanceState } from '../lib/termsAcceptance'
 import type { AppEnv } from '../types'
+import { isValidEmail } from '../../../shared/email'
 
 export const authRoutes = new Hono<AppEnv>()
 
@@ -93,8 +95,7 @@ authRoutes.post('/magic-link', async (c) => {
   if (!body.email || typeof body.email !== 'string') {
     return c.json({ error: 'email is required' }, 400)
   }
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-  if (!emailRegex.test(body.email)) {
+  if (!isValidEmail(body.email)) {
     return c.json({ error: 'Invalid email address' }, 400)
   }
 
@@ -275,6 +276,7 @@ authRoutes.post('/verify', async (c) => {
     .from(users)
     .where(eq(users.id, userId))
     .get()
+  rememberInstance(c, verifiedUser?.email)
 
   // Tenants no longer mint the cross-tenant superadmin SSO cookie. Central is the
   // SOLE issuer: it sets the `.<parent-domain>`-scoped `superadmin_jwt` cookie on
@@ -320,6 +322,7 @@ authRoutes.get('/me', async (c) => {
             path: '/',
             expires: expiresInstant,
           })
+          rememberInstance(c, localUser!.email)
           await db.update(users).set({ lastActive: nowDb() }).where(eq(users.id, localUser!.id))
           return c.json({
             id: localUser!.id,
@@ -396,6 +399,7 @@ authRoutes.get('/me', async (c) => {
     path: '/',
     expires: newExpiryInstant,
   })
+  rememberInstance(c, sessionWithUser.email)
 
   return c.json({
     id: sessionWithUser.userId,
@@ -465,6 +469,7 @@ authRoutes.post('/logout', async (c) => {
     await db.delete(sessions).where(eq(sessions.tokenHash, tokenHash))
   }
   deleteCookie(c, 'session', { path: '/', httpOnly: true, secure: true, sameSite: 'Lax' })
+  forgetInstance(c)
   const cookieDomain = getSuperAdminCookieDomain(c.env.APP_URL, parseAppDomains(c.env.APP_DOMAINS))
   deleteCookie(c, 'superadmin_jwt', {
     path: '/',

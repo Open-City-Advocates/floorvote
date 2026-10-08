@@ -74,4 +74,25 @@ describe('parseInvitees', () => {
       raw: '"Doe, Jane" <j@x.com>',
     })
   })
+  it('strips trailing semicolons from a two-column spreadsheet paste', () => {
+    const out = parseInvitees('Jane Doe\tjane@example.gov;\nBob Roe\tbob@example.gov;')
+    expect(out).toEqual([
+      { name: 'Jane Doe', email: 'jane@example.gov', raw: 'Jane Doe\tjane@example.gov;' },
+      { name: 'Bob Roe', email: 'bob@example.gov', raw: 'Bob Roe\tbob@example.gov;' },
+    ])
+  })
+
+  it('strips other stray edge punctuation (trailing period, wrapping parens)', () => {
+    expect(parseInvitees('Jane Doe, jane@example.gov.')[0]).toMatchObject({ name: 'Jane Doe', email: 'jane@example.gov' })
+    expect(parseInvitees('Jane Doe (jane@example.gov)')[0]).toMatchObject({ name: 'Jane Doe', email: 'jane@example.gov' })
+  })
+
+  it('splits a semicolon-separated list, with or without spaces', () => {
+    expect(parseInvitees('a@example.gov;b@example.gov').map(o => o.email)).toEqual(['a@example.gov', 'b@example.gov'])
+    expect(parseInvitees('a@example.gov; b@example.gov;').map(o => o.email)).toEqual(['a@example.gov', 'b@example.gov'])
+  })
+
+  it('still surfaces an unrecoverable address as an invalid row', () => {
+    expect(parseInvitees('Jane Doe\tjane@example')[0]).toMatchObject({ email: '' })
+  })
 })
