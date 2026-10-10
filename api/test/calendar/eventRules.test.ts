@@ -1,0 +1,260 @@
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { env, SELF } from 'cloudflare:test'
+import { eq } from 'drizzle-orm'
+import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedCalendarEvent } from '../helpers'
+import { getDb } from '../../src/db/client'
+import { associationConfig, calendarEvents } from '../../src/db/schema'
+import { syncBodyEvents, type CentralBodyEvent } from '../../src/lib/bodyEvents'
+import { hearingUid } from '../../src/lib/hearingUid'
+import { runWeekAhead } from '../../src/lib/weekAhead'
+import { COUNCIL_CALENDAR_TOPIC } from '../../../shared/eventRules'
+
+// Event rules on an instance (#298): central's body events and rule options in
+// (fetch stubbed), an admin's rules saved through the settings route, and the
+// instance's calendar, ICS feed, and week-ahead email out.
+
+const sendBatch = vi.hoisted(() => vi.fn(async () => ({ sent: 1, failed: 0 })))
+vi.mock('../../src/lib/email', async (importOriginal) => ({ ...await importOriginal<typeof import('../../src/lib/email')>(), sendBatch }))
+
+const isoDay = (offsetDays: number) => new Date(Date.now() + offsetDays * 86400_000).toISOString().slice(0, 10)
+const HANDLE = 'legiscan:1012600769'
+const IDENTITY = 'hearing|2026-10-23|public hearing on b26-0769'
+const HEARING_UID = hearingUid(HANDLE, IDENTITY, 'bpc-test')
+const HOUSING = { committeeId: '3000000001', name: 'Committee on Housing' }
+const COW = { committeeId: '3000000002', name: 'Committee of the Whole' }
+const ROUNDTABLE = 'council-2408@lims.dccouncil.gov'
+const STADIUM = 'council-2405@lims.dccouncil.gov'
+const MEETING = 'council-2045@lims.dccouncil.gov'
+
+function bodyEvent(o: Partial<CentralBodyEvent> = {}): CentralBodyEvent {
+  return {
+    uid: ROUNDTABLE, state: 'DC', kind: 'hearing', type: 'Roundtable',
+    date: isoDay(2), time: '10:00', timezone: 'America/New_York',
+    committee: HOUSING, jointWith: null, location: 'Room 123', title: 'Housing roundtable',
+    agenda: [{ topic: 'Improving Housing Conditions at the DC Housing Authority', billNumber: null }],
+    url: 'https://lims.dccouncil.gov/Hearings/hearings/2408', eventHash: 'e1', cancelled: false,
+    bills: [], covers: [], ...o,
+  }
+}
+
+/** The Committee of the Whole's hearing on a prioritized bill, which covers the bill's own entry that day. */
+const stadiumHearing = () => bodyEvent({
+  uid: STADIUM, type: 'Hearing', date: isoDay(4), committee: COW, title: 'Committee of the Whole hearing',
+  agenda: [{ topic: 'Soccer Stadium Redevelopment Act of 2026', billNumber: 'B26-0769' }],
+  url: 'https://lims.dccouncil.gov/Hearings/hearings/2405', eventHash: 'e2',
+  bills: [HANDLE], covers: [{ billId: HANDLE, identityKey: IDENTITY }],
+})
+
+/** A whole-Council meeting: no committee. */
+const legislativeMeeting = () => bodyEvent({
+  uid: MEETING, kind: 'meeting', type: 'Meeting', date: isoDay(3), committee: null, title: 'Legislative Meeting',
+  agenda: [], url: 'https://lims.dccouncil.gov/Hearings/hearings/2045', eventHash: 'e3',
+})
+
+let central: { status?: number; events: CentralBodyEvent[] }
+const fetchMock = vi.fn()
+let admin: string
+let member: string
+let billId: string
+
+beforeEach(async () => {
+  await resetDb()
+  await applyMigrations()
+  admin = await seedSession(await seedUser({ role: 'admin', email: 'admin@b.com' }))
+  member = await seedSession(await seedUser({ email: 'member@b.com' }))
+  const db = getDb(env.DB)
+  await db.insert(associationConfig).values({ key: 'state_coverage', value: '["DC"]' })
+  billId = await seedBill({ billNumber: 'B26-0769', state: 'DC', priority: 'high', externalId: HANDLE })
+  await seedCalendarEvent(billId, { uid: HEARING_UID, kind: 'hearing', date: isoDay(4), time: '', location: '', description: 'Public Hearing on B26-0769' })
+  central = { events: [bodyEvent(), stadiumHearing(), legislativeMeeting()] }
+  fetchMock.mockReset()
+  fetchMock.mockImplementation(async (url: string) => {
+    if (central.status) return new Response('down', { status: central.status })
+    const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
+    if (String(url).startsWith('https://central.test/api/tenants/bpc-test/body-events?')) {
+      return json({ capabilities: { DC: { bodyEvents: true, deadlines: true } }, events: central.events })
+    }
+    if (String(url) === 'https://central.test/api/tenants/bpc-test/body-event-options') {
+      return json({ states: { DC: {
+        committees: [{ ...COW, chamber: 'C' }, { ...HOUSING, chamber: 'C' }, { committeeId: '3000000003', name: 'Committee on Health', chamber: 'C' }],
+        kinds: [{ kind: 'hearing', types: ['Hearing', 'Roundtable'] }, { kind: 'meeting', types: ['Meeting'] }],
+      } } })
+    }
+    throw new Error(`unexpected fetch ${url}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  sendBatch.mockClear()
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+const sync = () => syncBodyEvents(env as any, getDb(env.DB))
+
+async function api(path: string, init: RequestInit = {}, session = admin) {
+  return SELF.fetch(`http://localhost/api${path}`, { ...init, headers: { Cookie: `session=${session}`, 'content-type': 'application/json' } })
+}
+const saveRules = (rules: unknown, session = admin) => api('/admin/event-rules', { method: 'PUT', body: JSON.stringify({ rules }) }, session)
+
+async function calendarUids() {
+  const res = await api(`/calendar/events?from=${isoDay(-30)}&to=${isoDay(60)}`)
+  expect(res.status).toBe(200)
+  return ((await res.json()) as { uid: string }[]).map(e => e.uid).sort()
+}
+
+async function feed() {
+  const info = await (await api('/calendar/info')).json() as { slug: string }
+  return (await (await SELF.fetch(`http://localhost/api/calendar/feed/${info.slug}.ics`)).text()).replace(/\r?\n /g, '')
+}
+
+const RULES = { committees: [HOUSING], kinds: [], topics: [], trackedBills: false }
+
+describe('event rules', () => {
+  it('show every body event until an admin saves rules', async () => {
+    await sync()
+    expect(await calendarUids()).toEqual([ROUNDTABLE, MEETING, STADIUM].sort())
+    const res = await api('/admin/event-rules')
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    expect(body).toMatchObject({ rules: null, hasBodyEvents: true, optionsError: null })
+    expect(body.committees.map((c: any) => c.name)).toEqual(['Committee of the Whole', 'Committee on Housing', 'Committee on Health'])
+    expect(body.kinds).toEqual([{ kind: 'hearing', types: ['Hearing', 'Roundtable'] }, { kind: 'meeting', types: ['Meeting'] }])
+    expect(body.events.map((e: any) => e.facets.title)).toEqual(['Housing roundtable', 'Legislative Meeting', 'Committee of the Whole hearing'])
+    expect(body.events[2]).toMatchObject({ trackedOnAgenda: true, facets: { committeeId: COW.committeeId, kind: 'hearing', type: 'Hearing' } })
+  })
+
+  it('hide what saved rules don\'t select, at once and without asking central, and show the hearing a hidden event covered', async () => {
+    await sync()
+    fetchMock.mockClear()
+    const res = await saveRules(RULES)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ rules: RULES, shown: 1, hidden: 2 })
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    // The stadium hearing is hidden, so the prioritized bill's own entry shows in its place.
+    expect(await calendarUids()).toEqual([ROUNDTABLE, HEARING_UID].sort())
+    const ics = await feed()
+    expect(ics).toContain(`UID:${ROUNDTABLE}`)
+    expect(ics).toContain(`UID:${HEARING_UID}`)
+    expect(ics).not.toContain(`UID:${STADIUM}`)
+    expect(ics).not.toContain(`UID:${MEETING}`)
+  })
+
+  it('select by kind or event type, topic, and tracked bills', async () => {
+    await sync()
+    await saveRules({ committees: [], kinds: ['Meeting'], topics: [], trackedBills: false })
+    expect(await calendarUids()).toEqual([MEETING, HEARING_UID].sort())
+    await saveRules({ committees: [], kinds: [], topics: [{ name: 'Housing agencies', keywords: ['housing authority'] }], trackedBills: false })
+    expect(await calendarUids()).toEqual([ROUNDTABLE, HEARING_UID].sort())
+    await saveRules({ committees: [], kinds: [], topics: [], trackedBills: true })
+    expect(await calendarUids()).toEqual([STADIUM].sort())
+    await saveRules({ committees: [{ ...COW, kind: 'meeting' }], kinds: [], topics: [], trackedBills: false })
+    expect(await calendarUids()).toEqual([HEARING_UID].sort())
+  })
+
+  it('apply to events that arrive later, on the hourly sync', async () => {
+    await sync()
+    await saveRules(RULES)
+    central.events = [...central.events, bodyEvent({ uid: 'council-2500@lims.dccouncil.gov', date: isoDay(6), eventHash: 'e4' }),
+      bodyEvent({ uid: 'council-2501@lims.dccouncil.gov', committee: COW, date: isoDay(6), eventHash: 'e5' })]
+    await sync()
+    expect(await calendarUids()).toEqual([ROUNDTABLE, HEARING_UID, 'council-2500@lims.dccouncil.gov'].sort())
+  })
+
+  it('leave no event hidden once cleared, even while central is down', async () => {
+    await sync()
+    await saveRules(RULES)
+    central.status = 503
+    const res = await saveRules(null)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ rules: null, shown: 3, hidden: 0 })
+    expect(await calendarUids()).toEqual([ROUNDTABLE, MEETING, STADIUM].sort())
+    const rows = await getDb(env.DB).select({ ruleMatch: calendarEvents.ruleMatch }).from(calendarEvents).where(eq(calendarEvents.source, 'body')).all()
+    expect(rows.every(r => r.ruleMatch === null)).toBe(true)
+    expect(await getDb(env.DB).select().from(associationConfig).where(eq(associationConfig.key, 'event_rules')).get()).toBeUndefined()
+    // And a failed sync after clearing changes nothing.
+    await expect(sync()).rejects.toThrow()
+    expect(await calendarUids()).toEqual([ROUNDTABLE, MEETING, STADIUM].sort())
+  })
+
+  it('carry a fork team\'s DC Council calendar rules over, and save them as its event rules', async () => {
+    await getDb(env.DB).insert(associationConfig).values({ key: 'council_calendar_rules', value: JSON.stringify({
+      include: [{ committee: 'Housing' }, { committee: 'Legislative Meeting' }], types: [], topicKeywords: [], trackedBills: false,
+    }) })
+    await sync()
+    expect(await calendarUids()).toEqual([ROUNDTABLE, MEETING, HEARING_UID].sort())
+    const saved = await getDb(env.DB).select().from(associationConfig).where(eq(associationConfig.key, 'event_rules')).get()
+    expect(JSON.parse(saved!.value)).toEqual({
+      committees: [HOUSING], kinds: [], topics: [{ name: COUNCIL_CALENDAR_TOPIC, keywords: ['legislative meeting'] }], trackedBills: false,
+    })
+    expect(((await (await api('/admin/event-rules')).json()) as any).rules).toEqual(JSON.parse(saved!.value))
+
+    // Clearing drops both, so the fork's rules don't come back.
+    await saveRules(null)
+    await sync()
+    expect(await calendarUids()).toEqual([ROUNDTABLE, MEETING, STADIUM].sort())
+    expect(await getDb(env.DB).select().from(associationConfig).where(eq(associationConfig.key, 'council_calendar_rules')).get()).toBeUndefined()
+  })
+
+  it('refuse malformed rules and members', async () => {
+    expect((await saveRules({ committees: [{ committeeId: '1' }] })).status).toBe(400)
+    expect((await api('/admin/event-rules', { method: 'PUT', body: '{}' })).status).toBe(400)
+    expect((await saveRules(RULES, member)).status).toBe(403)
+    expect((await api('/admin/event-rules', {}, member)).status).toBe(403)
+  })
+
+  it('still list choices when central is down', async () => {
+    await sync()
+    await saveRules({ ...RULES, committees: [HOUSING, { committeeId: '999', name: 'Committee on Gone' }] })
+    central.status = 503
+    const body = await (await api('/admin/event-rules')).json() as any
+    expect(body.optionsError).toMatch(/unavailable/)
+    expect(body.committees.map((c: any) => c.name).sort()).toEqual(['Committee of the Whole', 'Committee on Gone', 'Committee on Housing'])
+    expect(body.kinds).toEqual([{ kind: 'hearing', types: ['Hearing', 'Roundtable'] }, { kind: 'meeting', types: ['Meeting'] }])
+  })
+})
+
+describe('the week-ahead email', () => {
+  beforeEach(async () => {
+    const weekday = String(new Date().getUTCDay())
+    await getDb(env.DB).insert(associationConfig).values({ key: 'modules', value: JSON.stringify({ 'week-ahead': { enabled: true, settings: { weeklyDay: weekday } } }) })
+  })
+
+  const emailed = () => {
+    const call = sendBatch.mock.calls.at(-1) as unknown as [unknown, { html: string }[]] | undefined
+    return call?.[1][0].html ?? ''
+  }
+
+  it('lists only body events with a prioritized bill while there are no rules', async () => {
+    await sync()
+    await runWeekAhead(env as any, getDb(env.DB))
+    expect(emailed()).toContain('Committee of the Whole hearing')
+    expect(emailed()).not.toContain('Housing roundtable')
+    expect(emailed()).not.toContain('Legislative Meeting')
+  })
+
+  it('lists the body events the rules select, and still a prioritized bill\'s', async () => {
+    await sync()
+    await saveRules(RULES)
+    await runWeekAhead(env as any, getDb(env.DB))
+    expect(emailed()).toContain('Housing roundtable')
+    expect(emailed()).toContain('Committee of the Whole hearing')
+    expect(emailed()).not.toContain('Legislative Meeting')
+  })
+})
+
+describe('deadlines', () => {
+  it('show for every tracked bill, while its hearings show only once it has a priority', async () => {
+    const tracked = await seedBill({ billNumber: 'B26-0100', state: 'DC', priority: null, matchType: 'keyword', externalId: 'legiscan:1' })
+    const untracked = await seedBill({ billNumber: 'B26-0101', state: 'DC', priority: null, matchType: null, externalId: 'legiscan:2' })
+    await seedCalendarEvent(tracked, { uid: 'deadline-1@test', kind: 'deadline', date: isoDay(8), description: 'Mayor\'s response due' })
+    await seedCalendarEvent(tracked, { uid: 'hearing-1@test', kind: 'hearing', date: isoDay(8), description: 'Public Hearing on B26-0100' })
+    await seedCalendarEvent(untracked, { uid: 'deadline-2@test', kind: 'deadline', date: isoDay(8), description: 'Mayor\'s response due' })
+    const uids = await calendarUids()
+    expect(uids).toContain('deadline-1@test')
+    expect(uids).not.toContain('hearing-1@test')
+    expect(uids).not.toContain('deadline-2@test')
+    expect(await feed()).toContain('UID:deadline-1@test')
+  })
+})

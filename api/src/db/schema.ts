@@ -365,6 +365,13 @@ export const calendarEvents = sqliteTable('calendar_events', {
   // (migration 0082): the entry is shown as that event, so a hearing appears
   // once. Null for an entry nothing covers, and for every other event.
   coveredBy: text('covered_by'),
+  // A body event's committee, kind, type, title, and agenda topics, as JSON
+  // (shared/eventRules.ts EventFacets), for the instance's event rules
+  // (migration 0083, lib/eventRules.ts). Null for every other event.
+  ruleFacets: text('rule_facets'),
+  // Whether the instance's event rules select this body event: null while the
+  // instance has none (it shows), 1 (it shows), or 0 (it's hidden).
+  ruleMatch: integer('rule_match'),
   sequence: integer('sequence').notNull().default(0),
   date: text('date'),
   time: text('time'),
