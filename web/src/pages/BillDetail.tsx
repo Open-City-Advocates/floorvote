@@ -13,7 +13,7 @@ import { NewMatchTriageControl } from '../components/NewMatchTriageControl'
 import { CompactPositionSelect } from '../components/CompactPositionSelect'
 import { StatusChip } from '../components/StatusChip'
 import { decodeStatus } from '../lib/legislativeStatus'
-import { useStatusExplainer } from '../lib/statusExplainers'
+import { billTypeExplainer, eventTypeExplainer, statusExplainer as explainStatus, useStateLabels } from '../lib/statusExplainers'
 import { getNoAnalysisMessage } from '../lib/billDetailCopy'
 import { REGENERATE_PRESERVES_DESCRIPTION } from '../lib/billDetailCopy'
 import { OverflowMenu, type OverflowMenuRow } from '../components/ui/OverflowMenu'
@@ -445,6 +445,8 @@ type BillDetailData = {
     eventHash: string
     typeId: number
     type: string
+    /** The entry's kind, from central: 'hearing', 'markup', 'meeting', or 'deadline'. */
+    kind?: string | null
     date: string
     time: string | null
     location: string | null
@@ -634,7 +636,9 @@ export function BillDetail() {
   const multiState = useMultiState()
   // What the bill's status means, from its state's provider vocabulary, shown
   // on hover over the status chip.
-  const statusExplainer = useStatusExplainer(bill && !bill.isDraft ? bill.state : null, bill ? decodeStatus(bill.status) : null)
+  // The state's explainers (GET /bills/labels): the status, bill type, and calendar entries' event types.
+  const stateLabels = useStateLabels(bill && !bill.isDraft ? bill.state : null)
+  const statusExplainer = explainStatus(stateLabels, bill ? decodeStatus(bill.status) : null)
   const [promoting, setPromoting] = useState(false)
   const [promoteError, setPromoteError] = useState<string | null>(null)
   const [pendingPromote, setPendingPromote] = useState(false)
@@ -1574,12 +1578,30 @@ export function BillDetail() {
             if (!grouped.has(key)) grouped.set(key, [])
             grouped.get(key)!.push(r)
           }
-          const hasAny = bodyLabel || typeLabel || bill.relatedBillIds.length > 0 || bill.companionBillIds.length > 0 || bill.stateUrl || bill.stateLink || bill.legiscanUrl || (bill.subjects ?? []).length > 0
+          const hasAny = bodyLabel || typeLabel || (bill.calendar ?? []).some(e => e.kind === 'deadline') || bill.relatedBillIds.length > 0 || bill.companionBillIds.length > 0 || bill.stateUrl || bill.stateLink || bill.legiscanUrl || (bill.subjects ?? []).length > 0
           if (!hasAny) return null
 
           // Collect all display items, then render with · separators only between items
           const metaItems: React.ReactNode[] = []
-          if (bodyLabel) metaItems.push(<span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>)
+          const typeExplainer = billTypeExplainer(stateLabels, bill.billType)
+          if (bodyLabel) metaItems.push(typeExplainer
+            ? <HoverTooltip key="body" text={typeExplainer} maxWidth={320}><span style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span></HoverTooltip>
+            : <span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>)
+          // The bill's next deadline (an executive's time to act, a review
+          // period ending, an act expiring), where it's hard to miss.
+          const nextDeadline = (bill.calendar ?? []).filter(e => e.kind === 'deadline' && e.date >= todayIso())
+            .sort((a, b) => a.date.localeCompare(b.date))[0]
+          if (nextDeadline) {
+            const explainer = eventTypeExplainer(stateLabels, nextDeadline.typeId)
+            const what = nextDeadline.description || nextDeadline.type
+            metaItems.push(
+              <span key="deadline" data-testid="next-deadline" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4, color: color.textAmberDark, fontWeight: fontWeight.medium }}>
+                <span className="material-symbols-outlined" aria-hidden="true" style={{ fontSize: fontSize.base }}>schedule</span>
+                {what}: {safeDate(nextDeadline.date) ?? nextDeadline.date}
+                {explainer && <InfoTooltip text={explainer} maxWidth={340} align="center" label={`About "${what}"`} />}
+              </span>
+            )
+          }
           if (typeLabel) metaItems.push(<span key="type" style={{ whiteSpace: 'nowrap' }}>{typeLabel}</span>)
           grouped.forEach((related, type) => {
             const label = type.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
@@ -2590,10 +2612,11 @@ export function BillDetail() {
         {/* Hearings collapsible */}
         {(bill.calendar ?? []).length > 0 && (() => {
           const today = todayIso()
+          const hasDeadlines = bill.calendar.some(e => e.kind === 'deadline')
           return (
             <CollapsibleSection
               id="section-hearings"
-              label="Hearings"
+              label={hasDeadlines ? 'Hearings and deadlines' : 'Hearings'}
               count={bill.calendar.length}
               open={showHearings}
               onToggle={() => setShowHearings(v => !v)}
@@ -2606,8 +2629,13 @@ export function BillDetail() {
                 // All hearings share the navy identity — the same navy as the
                 // bill-number badge and the calendar/feed gavel — so a hearing
                 // reads the same everywhere. Chamber (Senate / House) is carried
-                // by the label text, not colour.
-                const chipColor = { color: color.billBadgeNavy, background: color.bgInfo }
+                // by the label text, not colour. A deadline takes the calendar's
+                // amber deadline identity instead.
+                const isDeadline = entry.kind === 'deadline'
+                const chipColor = isDeadline
+                  ? { color: color.textAmberDark, background: color.bgAmberPriority }
+                  : { color: color.billBadgeNavy, background: color.bgInfo }
+                const explainer = eventTypeExplainer(stateLabels, entry.typeId)
                 return (
                   <TabularRow
                     key={entry.eventHash || `hearing-${i}`}
@@ -2626,7 +2654,10 @@ export function BillDetail() {
                     }
                     content={
                       <div style={{ color: color.textSlate }}>
-                        <div style={{ fontWeight: fontWeight.medium }}>{entry.description || entry.type}</div>
+                        <div style={{ fontWeight: fontWeight.medium, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          {entry.description || entry.type}
+                          {explainer && <InfoTooltip text={explainer} maxWidth={340} align="left" label={`About "${entry.description || entry.type}"`} />}
+                        </div>
                         {entry.location && <div style={{ color: color.textSecondary, fontSize: fontSize.xs, marginTop: 1 }}>{entry.location}</div>}
                       </div>
                     }

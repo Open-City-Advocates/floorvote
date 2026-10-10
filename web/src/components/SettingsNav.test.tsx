@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { SettingsNav } from './SettingsNav'
 import * as AuthContext from '../context/AuthContext'
+import { ConfigContext, type AppConfig } from '../context/ConfigContext'
 
 function mockAdminUser() {
   vi.spyOn(AuthContext, 'useAuth').mockReturnValue({
@@ -160,5 +161,18 @@ describe('SettingsNav', () => {
     expect(leftFade.style.pointerEvents).toBe('none')
     expect(rightFade.getAttribute('aria-hidden')).toBe('true')
     expect(leftFade.getAttribute('aria-hidden')).toBe('true')
+  })
+
+  it('offers Calendar events only while a covered state has body events', () => {
+    mockAdminUser()
+    const withCapabilities = (capabilities: AppConfig['capabilities']) => (
+      <ConfigContext value={{ config: { states: ['DC', 'MD'], capabilities }, multiState: true, loading: false }}>
+        <MemoryRouter><SettingsNav /></MemoryRouter>
+      </ConfigContext>
+    )
+    const { rerender } = render(withCapabilities({ MD: { bodyEvents: false, deadlines: true } }))
+    expect(screen.queryByRole('link', { name: 'Calendar events' })).not.toBeInTheDocument()
+    rerender(withCapabilities({ DC: { bodyEvents: true, deadlines: true } }))
+    expect(screen.getByRole('link', { name: 'Calendar events' })).toHaveAttribute('href', '/admin/calendar-events')
   })
 })
