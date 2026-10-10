@@ -184,6 +184,16 @@ export async function forgetSnapshotEtags(db: Db, state: string): Promise<void> 
   await forgetEtags(db, state)
 }
 
+/**
+ * `forgetSnapshotEtags` as one raw D1 statement that writes only while
+ * `condition` holds, for a batch of raw statements that changes the state's
+ * owner (lib/cutover.ts), as `writeClaim`'s batch does.
+ */
+export function forgetSnapshotEtagsStatement(db: Db, d1: D1Database, state: string, condition: SQL): D1PreparedStatement {
+  const { sql: text, params } = forgetEtags(db, state, condition).toSQL()
+  return d1.prepare(text).bind(...params)
+}
+
 function forgetEtags(db: Db, state: string, condition?: SQL) {
   return db.update(sessions).set({ snapshotEtag: null })
     .where(and(eq(sessions.state, state), isNotNull(sessions.snapshotEtag), condition))

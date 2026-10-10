@@ -10,7 +10,7 @@ import { billMatchKey, matchPeople, type PeopleMatch, type PersonFacts, type Per
 import { providerContext } from './providerContext'
 import { providerIdsFor } from './providerIds'
 import { providerConfigured } from './providerRouting'
-import { ownerOfState } from './stateProviders'
+import { forgetSnapshotEtagsStatement, ownerOfState } from './stateProviders'
 import { assignSessionSlugs } from './sessionSlugs'
 import { toHandle } from './billHandle'
 import { nowDb } from './dbTime'
@@ -529,6 +529,10 @@ export async function applyCutover(env: Env, db: Db, plan: CutoverPlan): Promise
         previous_provider = excluded.previous_provider, claimed_at = excluded.claimed_at
       WHERE state_providers.provider = ?4`)
       .bind(id, state, to.id, from.id),
+    // With the flip, as a claim does: the new owner's first pass reads its
+    // files in full rather than taking a 304 for records it stored the last
+    // time it owned the state.
+    forgetSnapshotEtagsStatement(db, d1, state, sql`EXISTS (SELECT 1 FROM cutovers WHERE id = ${id})`),
   ]
   await d1.batch(stmts)
 
@@ -619,6 +623,7 @@ export async function applyUndo(env: Env, db: Db, plan: UndoPlan): Promise<void>
       UPDATE state_providers SET provider = ?3, status = 'active', previous_provider = ?4, claimed_at = datetime('now')
       WHERE state = ?2 AND provider = ?4 AND ${undone}`)
       .bind(id, cutover.state, from.id, to.id),
+    forgetSnapshotEtagsStatement(db, d1, cutover.state, sql`EXISTS (SELECT 1 FROM cutovers WHERE id = ${id} AND undone_at IS NOT NULL)`),
   ])
   const row = await db.select({ undoneAt: cutovers.undoneAt }).from(cutovers).where(eq(cutovers.id, id)).get()
   if (!row?.undoneAt) {

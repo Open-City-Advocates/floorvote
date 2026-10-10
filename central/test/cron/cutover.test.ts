@@ -435,8 +435,34 @@ describe('a cutover', () => {
     expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: null })
   })
 
+  it('forgets DC\'s snapshot ETags with the flip, and again with the undo', async () => {
+    const etags = async () => (await env.DB.prepare('SELECT session_id, snapshot_etag FROM sessions WHERE snapshot_etag IS NOT NULL').all()).results
+    // As if LIMS had owned DC before and stored an ETag for its Council Period.
+    await env.DB.prepare(`INSERT INTO sessions (session_id, state, state_id, year_start, year_end, session_title, session_name, session_tag, provider, snapshot_etag)
+      VALUES (?, 'DC', 9, 2025, 2026, 'x', '2025-2026 Council Period 26', 'CP26', 'lims', 'stale')`).bind(limsSessionId(26)).run()
+    expect((await cutover(makeEnv())).status).toBe(200)
+    expect(await etags()).toEqual([{ session_id: limsSessionId(26), snapshot_etag: 'stale' }])
+
+    // LIMS's first sync after the flip fails, so only the cutover's batch can have forgotten the ETag.
+    let periods = 0
+    feed['CouncilPeriods'] = () => (++periods === 1 ? json([CP26]) : new Response('down', { status: 503 }))
+    const run = makeEnv()
+    const res = await cutover(run, '?confirm=true')
+    expect(res.status).toBe(200)
+    expect((await res.json() as any).sync.error).toBeDefined()
+    expect((await getJson('/admin/state-providers')).states[0]).toMatchObject({ state: 'DC', provider: 'lims' })
+    expect(await etags()).toEqual([])
+
+    // A pass stores one, and the undo forgets it.
+    await env.DB.prepare('UPDATE sessions SET snapshot_etag = ? WHERE session_id = ?').bind('lims-2', limsSessionId(26)).run()
+    expect((await undo(run, '?confirm=true')).status).toBe(200)
+    expect(await etags()).toEqual([])
+  })
+
   it('leaves the state on LegiScan, with nothing written, when it fails partway through', async () => {
     const run = makeEnv()
+    // An ETag stays too.
+    await env.DB.prepare('UPDATE sessions SET snapshot_etag = ? WHERE session_id = ?').bind('kept', LS_SESSION).run()
     const before = await snapshotTables()
     // The batch's last statement, the ownership flip, fails.
     await env.DB.prepare(`CREATE TRIGGER fail_flip BEFORE INSERT ON state_providers BEGIN SELECT RAISE(ABORT, 'flip failed'); END`).run()
