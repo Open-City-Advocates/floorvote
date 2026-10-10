@@ -245,7 +245,8 @@ export async function planCutover(env: Env, db: Db, state: string, toId: string,
   const listedPeople: ProviderPerson[] = []
   let listsPeople = !!to.listPeople
   for (const session of synced) {
-    const snap = await to.snapshot(session.stored, ctx)
+    // In full, never a 304: the plan matches what the feed holds now.
+    const snap = await to.snapshot({ ...session.stored, etag: null }, ctx)
     if (snap.people) {
       listsPeople = true
       listedPeople.push(...snap.people)
