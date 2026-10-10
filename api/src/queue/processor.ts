@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, lt, sql } from 'drizzle-orm'
 import { processBill } from '../lib/llm'
 import { DEFAULT_TAXONOMY, parseTaxonomyItems, filterTagsToTaxonomy } from '../lib/taxonomy'
 import { centralFetch } from '../lib/centralFetch'
@@ -274,6 +274,8 @@ export async function processCentralNotification(
 ): Promise<void> {
   if (msg.tenantId !== env.TENANT_ID) return
 
+  // When this copy of the bill was read: texts stored later come from a newer one.
+  const fetchedAt = nowDb()
   const res = await centralFetch(env, `/bills/${msg.billId}`)
   if (!res.ok) throw new Error(`Central API returned ${res.status} for bill ${msg.billId}`)
 
@@ -753,10 +755,12 @@ export async function processCentralNotification(
   }
   // Central never drops a text except when a cutover moves the bill to another
   // provider, which clears the old provider's. A text it no longer lists would
-  // only fail to open, so it goes here too.
+  // only fail to open, so it goes here too. A text another run stored from a
+  // newer copy than this one is left alone.
   await db.delete(billTexts).where(and(
     eq(billTexts.billId, billInternalId),
     sql`${billTexts.docId} NOT IN (SELECT value FROM json_each(${JSON.stringify(centralBill.texts.map(t => t.docId))}))`,
+    lt(billTexts.updatedAt, fetchedAt),
   ))
 
   // Feed events: only for tracked bills (keyword or manual) with AI data and detected changes from central.
