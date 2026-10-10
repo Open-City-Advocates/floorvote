@@ -109,7 +109,7 @@ adminRoutes.post('/state-providers/:state', async (c) => {
 // Cut a state that instances already track over to another provider
 // (lib/cutover.ts). Body: { "provider": "lims" }. A dry run unless
 // ?confirm=true: it reads the new provider's feed, reports matched and
-// unmatched bills, calendar entries, and people, and writes nothing. With
+// unmatched bills, calendar entries, and people, and writes nothing but the API call log. With
 // confirm, every matched bill keeps its row id and handle, ownership flips
 // last, and the new provider's sync runs at once. Operator-only, like the
 // claim, so it isn't on the tenant surface allowlist.
@@ -121,7 +121,8 @@ adminRoutes.post('/state-providers/:state/cutover', async (c) => {
   const db = drizzle(c.env.DB, { schema })
   const dryRun = c.req.query('confirm') !== 'true'
   try {
-    const plan = await planCutover(c.env, db, state, body.provider, { dryRun })
+    // ?calendar=false skips the dry run's calendar preview, which costs LIMS a details call per bill with entries.
+    const plan = await planCutover(c.env, db, state, body.provider, { dryRun, calendar: c.req.query('calendar') !== 'false' })
     if (dryRun) return c.json({ dryRun: true, ...cutoverReport(plan) })
     const { id } = await applyCutover(c.env, db, plan)
     // The new provider's first pass stores its records under the kept ids and

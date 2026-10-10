@@ -344,7 +344,9 @@ export interface ProviderContext<K extends ProviderEnvKey = ProviderEnvKey> {
   ids(kind: string, nativeKeys: readonly string[]): Promise<Map<string, number>>
   /**
    * The people core has stored for this provider, by central id ascending, for
-   * resolving the names its records use.
+   * resolving the names its records use. People a cutover carried over from
+   * another provider come after the rest, so where two share a name, the
+   * last one listed is the person instances already know.
    */
   people(): Promise<{ peopleId: number; name: string; role: string | null }[]>
 }

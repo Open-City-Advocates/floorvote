@@ -235,13 +235,13 @@ export async function applyMasterList(
 
   // Load existing bills + bill_tenants links in chunks
   const billIds = list.map(b => b.bill_id)
-  const existing = new Map<number, { changeHash: string }>()
+  const existing = new Map<number, { changeHash: string; carriedFrom: string | null }>()
   const existingLinks = new Map<string, string | null>()
   for (let i = 0; i < billIds.length; i += BATCH) {
     const chunk = billIds.slice(i, i + BATCH)
-    const rows = await db.select({ billId: bills.billId, changeHash: bills.changeHash })
+    const rows = await db.select({ billId: bills.billId, changeHash: bills.changeHash, carriedFrom: bills.carriedFrom })
       .from(bills).where(inArray(bills.billId, chunk)).all()
-    for (const r of rows) existing.set(r.billId, { changeHash: r.changeHash })
+    for (const r of rows) existing.set(r.billId, { changeHash: r.changeHash, carriedFrom: r.carriedFrom })
 
     const links = await db.select({
       billId: billTenants.billId,
@@ -338,7 +338,11 @@ export async function applyMasterList(
 
       const justMatched = newMatchType !== null && (prevMatchType ?? null) !== newMatchType
       const alreadyMatchedAndChanged = newMatchType !== null && billChanged
-      if (justMatched || alreadyMatchedAndChanged) {
+      // A bill a cutover moved here that no longer matches under the new
+      // provider's title still gets its first ingest, which replaces the
+      // documents the cutover cleared (lib/cutover.ts).
+      const carriedAndUnmatched = (prevMatchType ?? null) !== null && newMatchType === null && !!stored?.carriedFrom
+      if (justMatched || alreadyMatchedAndChanged || carriedAndUnmatched) {
         toQueue.add(entry.bill_id)
       }
 

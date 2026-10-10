@@ -1,5 +1,6 @@
 import { and, desc, eq, gt, gte, inArray, isNull, or, sql } from 'drizzle-orm'
-import { bills, billCalendar, cutoverBills, cutoverPeople, cutovers, people, providerIds, sessions } from '../db/schema'
+import { bills, billCalendar, billTenants, cutoverBills, cutoverPeople, cutovers, keywordRegistry, people, providerIds, sessions } from '../db/schema'
+import { matchesUnion } from './keywords'
 import {
   DEFAULT_PROVIDER_ID, findProvider,
   type CentralMeasure, type Provider, type ProviderContext, type ProviderPerson, type ProviderRecord, type StoredSession, type SyncSession,
@@ -22,7 +23,7 @@ import type { Db, Env } from '../types'
  *
  * A dry run (`planCutover` alone) reads the new provider's sessions and
  * records, matches them to the state's bills and legislators, previews what
- * happens to each moved bill's calendar, and writes nothing. The cutover
+ * happens to each moved bill's calendar, and writes only the API call log. The cutover
  * (`applyCutover`) plans again, then writes everything in one D1 batch, which
  * is one transaction, with the ownership flip last:
  *
@@ -80,6 +81,7 @@ interface OldBill {
   special: number
   linked: boolean
   tracked: boolean
+  description: string | null
 }
 
 interface NewRecord {
@@ -116,6 +118,8 @@ export interface CutoverPlan {
   ambiguous: { side: 'old' | 'new'; numbers: string[] }[]
   /** Bills the new provider already holds under another row. */
   conflicts: { old: OldBill; next: NewRecord; heldAs: number }[]
+  /** Keyword links the new provider's title and description won't match, which become monitor links. */
+  losingMatch: { billId: number; number: string; tenantId: string }[]
   people: PeopleMatch<OldPerson, NewPerson>
   /** The dry run's preview of each moved bill's calendar. */
   calendar: CalendarPreview | null
@@ -133,12 +137,12 @@ const MAX_JSON_CHARS = 60_000
 const READ_CHUNK = 5_000
 
 /**
- * The provider context a plan reads with. It writes nothing: `ids` answers
- * from the id table as it stands, and hands out negative placeholders for
- * keys it doesn't hold, which only the cutover mints. A dry run also logs no
- * calls.
+ * The provider context a plan reads with. It writes nothing but the API
+ * call log, which records every call a plan spends: `ids` answers from the id
+ * table as it stands, and hands out negative placeholders for keys it doesn't
+ * hold, which only the cutover mints.
  */
-async function planContext(provider: Provider, env: Env, db: Db, logCalls: boolean) {
+async function planContext(provider: Provider, env: Env, db: Db) {
   const base = providerContext(provider, env, db, { reason: 'cutover' })
   const known = new Map<string, number>()
   const rows = await db.select({ kind: providerIds.kind, key: providerIds.nativeKey, id: providerIds.id })
@@ -149,7 +153,6 @@ async function planContext(provider: Provider, env: Env, db: Db, logCalls: boole
   let held: ReturnType<ProviderContext['people']> | null = null
   const ctx: ProviderContext = {
     ...base,
-    logCall: logCalls ? base.logCall : () => {},
     async ids(kind, keys) {
       const out = new Map<string, number>()
       for (const key of keys) {
@@ -205,9 +208,13 @@ function keyed<T>(items: T[], key: (item: T) => string): Map<string, T[]> {
 
 /**
  * Plan a cutover of `state` to provider `toId`. Reads the new provider's feed,
- * and writes nothing.
+ * and writes nothing but the API call log.
  */
-export async function planCutover(env: Env, db: Db, state: string, toId: string, opts: { dryRun: boolean }): Promise<CutoverPlan> {
+export async function planCutover(
+  env: Env, db: Db, state: string, toId: string,
+  /** `calendar: false` skips the dry run's calendar preview, and the per-measure calls it costs some providers. */
+  opts: { dryRun: boolean; calendar?: boolean },
+): Promise<CutoverPlan> {
   const to = findProvider(toId)
   if (!to) throw new CutoverError(400, `unknown provider "${toId}"`)
   if (!isSnapshotProvider(to)) throw new CutoverError(400, `a cutover moves a state to a provider read as a snapshot, and "${to.id}" isn't one`)
@@ -223,7 +230,8 @@ export async function planCutover(env: Env, db: Db, state: string, toId: string,
   const oldSessions = await db.select({ sessionId: sessions.sessionId, prior: sessions.prior, sineDie: sessions.sineDie })
     .from(sessions).where(and(eq(sessions.state, state), eq(sessions.provider, from.id))).all()
 
-  const { ctx, provisional } = await planContext(to, env, db, !opts.dryRun)
+  const { ctx, provisional } = await planContext(to, env, db)
+  const preview = opts.dryRun && opts.calendar !== false
 
   // The new provider's sessions, as its sync would store them, and the ones it would sync.
   const newSessions: NewSession[] = (await to.listSessions(state, ctx)).map(s => ({
@@ -262,7 +270,7 @@ export async function planCutover(env: Env, db: Db, state: string, toId: string,
   // Earlier sessions stay as they are.
   const fromYear = Math.min(...synced.map(s => s.stored.yearStart))
   const oldBills: OldBill[] = (await db.select({
-    billId: bills.billId, number: bills.billNumber, sessionId: bills.sessionId,
+    billId: bills.billId, number: bills.billNumber, sessionId: bills.sessionId, description: bills.description,
     sessionName: sessions.sessionName, yearStart: sessions.yearStart, special: sessions.special,
     linked: sql<number>`EXISTS (SELECT 1 FROM bill_tenants bt WHERE bt.bill_id = ${bills.billId})`,
     tracked: sql<number>`EXISTS (SELECT 1 FROM bill_tenants bt WHERE bt.bill_id = ${bills.billId} AND bt.match_type IS NOT NULL)`,
@@ -304,13 +312,35 @@ export async function planCutover(env: Env, db: Db, state: string, toId: string,
   const unmatchedOld = oldBills.filter(b => !movedOld.has(b.billId))
   const unmatchedNew = newRecords.filter(r => !movedNew.has(r.record))
 
+  // Keyword links the new provider's title and description no longer match,
+  // as its first pass will match them (cron/sync.ts). The pass still ingests
+  // those bills, but instances keep them only as monitored bills.
+  const losingMatch: CutoverPlan['losingMatch'] = []
+  const trackedMoved = new Map(moved.filter(m => m.old.tracked).map(m => [m.old.billId, m]))
+  for (const chunk of idChunks([...trackedMoved.keys()])) {
+    const links = await db.select({ billId: billTenants.billId, tenantId: billTenants.tenantId }).from(billTenants)
+      .where(and(eq(billTenants.matchType, 'keyword'), sql`${billTenants.billId} IN (SELECT value FROM json_each(${chunk}))`)).all()
+    const keywords = new Map<string, string[]>()
+    for (const tenantId of new Set(links.map(l => l.tenantId))) {
+      keywords.set(tenantId, (await db.select({ keyword: keywordRegistry.keyword }).from(keywordRegistry)
+        .where(eq(keywordRegistry.tenantId, tenantId)).all()).map(k => k.keyword.toLowerCase()))
+    }
+    for (const l of links) {
+      const m = trackedMoved.get(l.billId)!
+      const entry = await to.toEntry(m.next.record, { description: m.old.description }, ctx)
+      const kws = keywords.get(l.tenantId) ?? []
+      const haystack = `${entry.title ?? ''} ${entry.description ?? ''} ${entry.number}`
+      if (kws.length === 0 || !matchesUnion(haystack, kws).matched) losingMatch.push({ billId: m.old.billId, number: m.old.number, tenantId: l.tenantId })
+    }
+  }
+
   // The measures a plan reads: for the dry run's calendar preview, each moved
   // bill with live calendar entries, and, when the provider lists no
   // legislators of its own (Maryland names them only on its bills), each
   // tracked moved bill, for its sponsors.
   const now = nowDb()
   const liveRows = new Map<number, CalendarRow[]>()
-  if (opts.dryRun) {
+  if (preview) {
     for (const chunk of idChunks(moved.map(m => m.old.billId))) {
       const rows = await db.select().from(billCalendar)
         .where(and(isNull(billCalendar.cancelledAt), sql`${billCalendar.billId} IN (SELECT value FROM json_each(${chunk}))`)).all()
@@ -331,7 +361,7 @@ export async function planCutover(env: Env, db: Db, state: string, toId: string,
   }
 
   let calendar: CalendarPreview | null = null
-  if (opts.dryRun) {
+  if (preview) {
     calendar = { bills: 0, kept: [], cancelled: [], added: [] }
     for (const m of moved) {
       const rows = liveRows.get(m.old.billId)
@@ -397,7 +427,7 @@ export async function planCutover(env: Env, db: Db, state: string, toId: string,
   return {
     state, from, to,
     sessions: newSessions,
-    moved, unmatchedOld, unmatchedNew, ambiguous, conflicts,
+    moved, unmatchedOld, unmatchedNew, ambiguous, conflicts, losingMatch,
     people: { ...matchedPeople, matched: kept },
     calendar,
     oldSessions,
@@ -513,11 +543,16 @@ export async function applyCutover(env: Env, db: Db, plan: CutoverPlan): Promise
     // Each moved bill: its new provider and session. Its rows still hold the
     // old provider's data until the new provider's first ingest.
     d1.prepare(`
-      UPDATE bills SET provider = ?2, carried_from = COALESCE(carried_from, ?3),
+      UPDATE bills SET provider = ?2, carried_from = COALESCE(carried_from, ?3), carried_waits = NULL,
         session_id = (SELECT to_session_id FROM cutover_bills WHERE cutover_id = ?1 AND bill_id = bills.bill_id)
       WHERE bill_id IN (SELECT bill_id FROM cutover_bills WHERE cutover_id = ?1) AND provider = ?3`)
       .bind(id, to.id, from.id),
     ...clearStatements(d1, 'SELECT bill_id FROM cutover_bills WHERE cutover_id = ?', [id]),
+    // Matched legislators become the new provider's now, not at its first
+    // session refresh, so a provider that finds sponsors among its own people
+    // (LIMS, through ctx.people) has them even if that refresh fails.
+    d1.prepare(`UPDATE people SET provider = ?2 WHERE people_id IN (SELECT people_id FROM cutover_people WHERE cutover_id = ?1) AND provider = ?3`)
+      .bind(id, to.id, from.id),
     // Nothing syncs the losing provider's sessions in the state any more.
     d1.prepare(`UPDATE sessions SET prior = 1, sine_die = 1 WHERE state = ?2 AND provider = ?3 AND EXISTS (SELECT 1 FROM cutovers WHERE id = ?1)`)
       .bind(id, state, from.id),
@@ -560,6 +595,8 @@ export interface UndoPlan {
   people: number
   /** Bills the provider being undone added in the state, which stay with it. */
   added: number
+  /** How many of those an instance tracks, which stop syncing with the undo. */
+  addedTracked: number
 }
 
 export async function planUndo(env: Env, db: Db, state: string): Promise<UndoPlan> {
@@ -583,6 +620,10 @@ export async function planUndo(env: Env, db: Db, state: string): Promise<UndoPla
     added: await count(db.select({ n: sql<number>`COUNT(*)` }).from(bills)
       .where(and(eq(bills.state, state), eq(bills.provider, to.id),
         sql`${bills.billId} NOT IN (SELECT bill_id FROM cutover_bills WHERE cutover_id = ${cutover.id})`)).get()),
+    addedTracked: await count(db.select({ n: sql<number>`COUNT(*)` }).from(bills)
+      .where(and(eq(bills.state, state), eq(bills.provider, to.id),
+        sql`${bills.billId} NOT IN (SELECT bill_id FROM cutover_bills WHERE cutover_id = ${cutover.id})`,
+        sql`EXISTS (SELECT 1 FROM bill_tenants bt WHERE bt.bill_id = ${bills.billId} AND bt.match_type IS NOT NULL)`)).get()),
   }
 }
 
@@ -606,7 +647,7 @@ export async function applyUndo(env: Env, db: Db, plan: UndoPlan): Promise<void>
     // A bill the new provider never ingested still holds the old provider's
     // data, so it keeps carried_from as it is.
     d1.prepare(`
-      UPDATE bills SET provider = ?2, carried_from = COALESCE(carried_from, ?3),
+      UPDATE bills SET provider = ?2, carried_from = COALESCE(carried_from, ?3), carried_waits = NULL,
         session_id = (SELECT from_session_id FROM cutover_bills WHERE cutover_id = ?1 AND bill_id = bills.bill_id)
       WHERE bill_id IN (SELECT bill_id FROM cutover_bills WHERE cutover_id = ?1) AND provider = ?3 AND ${undone}`)
       .bind(id, from.id, to.id),
@@ -655,6 +696,8 @@ export function cutoverReport(plan: CutoverPlan) {
       },
       ambiguous: plan.ambiguous,
       conflicts: plan.conflicts.map(c => ({ billId: toHandle(c.old.billId), number: c.old.number, heldAs: toHandle(c.heldAs) })),
+      // Tracked bills the instance's keywords won't match under the new provider's title: they become monitored bills.
+      losingMatch: plan.losingMatch.map(l => ({ ...l, billId: toHandle(l.billId) })),
     },
     calendar: plan.calendar && {
       ...plan.calendar,
@@ -686,5 +729,6 @@ export function undoReport(plan: UndoPlan) {
     bills: plan.bills,
     people: plan.people,
     added: plan.added,
+    addedTracked: plan.addedTracked,
   }
 }

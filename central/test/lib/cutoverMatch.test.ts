@@ -72,6 +72,16 @@ describe('people matching', () => {
     expect(result.ambiguous.map(a => [a.person.id, a.candidates.map(c => c.id)])).toEqual([[-1, [1, 2]]])
   })
 
+  it('leaves out every new person one candidate would fit, whatever their order', () => {
+    const old = [legiscan(1, 'Pat Smith', 1, 'HD-001')]
+    const sponsors = [{ id: -1, name: 'Smith', role: 'Delegate', roleId: 1 }, { id: -2, name: 'Smith', role: 'Delegate', roleId: 1, district: '1' }]
+    for (const order of [sponsors, [...sponsors].reverse()]) {
+      const result = matchPeople(old, order)
+      expect(result.matched).toEqual([])
+      expect(result.ambiguous.map(a => a.person.id).sort((a, b) => a - b)).toEqual([-2, -1])
+    }
+  })
+
   it('prefers whole names to initials, so two Whites stay apart', () => {
     const result = matchPeople(
       [{ id: 1, name: 'Robert White' }, { id: 2, name: 'Trayon White' }],

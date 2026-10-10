@@ -134,12 +134,23 @@ export function matchPeople<A extends PersonFacts, B extends PersonFacts>(from: 
   const ambiguous: PeopleMatch<A, B>['ambiguous'] = []
   for (const tier of ['full', 'initial', 'last'] as const) {
     for (const person of [...freeTo]) {
+      // Left out as ambiguous earlier in this tier.
+      if (!freeTo.has(person)) continue
       const candidates = [...freeFrom].filter(o => related(tier, o, person))
       if (candidates.length === 0) continue
-      const other = candidates.length === 1 ? [...freeTo].filter(n => related(tier, candidates[0], n)) : []
-      if (candidates.length > 1 || other.length > 1) {
-        ambiguous.push({ person, candidates: candidates.length > 1 ? candidates : [candidates[0]] })
+      if (candidates.length > 1) {
+        ambiguous.push({ person, candidates })
         freeTo.delete(person)
+        continue
+      }
+      // Every new person the one candidate would fit is left out alike, so
+      // which of them comes first decides nothing.
+      const other = [...freeTo].filter(n => related(tier, candidates[0], n))
+      if (other.length > 1) {
+        for (const n of other) {
+          ambiguous.push({ person: n, candidates })
+          freeTo.delete(n)
+        }
         continue
       }
       const o = candidates[0]

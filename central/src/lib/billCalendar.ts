@@ -383,23 +383,42 @@ export function carryCalendar(
   const paired = new Set<string>()
   const added: MeasureCalendarEntry[] = []
 
+  const pairs: { row: CalendarRow; entry: MeasureCalendarEntry }[] = []
   for (const [slot, group] of entriesBySlot) {
     const free = [...(rowsBySlot.get(slot) ?? [])].sort((a, b) => order(a, b) || a.id.localeCompare(b.id))
     const sorted = [...group].sort((a, b) => order({ time: a.time || null, description: a.description || null }, { time: b.time || null, description: b.description || null }))
     for (const entry of sorted) {
       const row = free.shift()
-      if (!row) { added.push(entry); continue }
-      const identityKey = sentIdentity(row)
-      const before = { ...row }
-      Object.assign(row, {
-        typeId: entry.type_id || null, type: entry.type || null, date: entry.date || null, time: entry.time || null,
-        location: entry.location || null, description: entry.description || null, eventHash: entry.event_hash || null,
-        eventId: entry.event_id || null, identityKey, missedPulls: 0, missedHash: null,
-      })
-      paired.add(row.id)
-      writes.push(row)
-      kept.push({ identityKey, before, row, entry })
+      if (row) pairs.push({ row, entry })
+      else added.push(entry)
     }
+  }
+
+  // LegiScan's rows with the same type and description on different days
+  // share one identity, and instances hold one event for them. Only one row
+  // can carry it on, or instances would get one of the new provider's events
+  // in place of another: the row they hold, the latest. The others' rows are
+  // cancelled, and their entries arrive as new events.
+  const winners = new Map<string, CalendarRow>()
+  for (const { row } of pairs) {
+    const held = winners.get(sentIdentity(row))
+    if (!held || outranks(row, held)) winners.set(sentIdentity(row), row)
+  }
+  for (const { row, entry } of pairs) {
+    const identityKey = sentIdentity(row)
+    if (winners.get(identityKey) !== row) {
+      added.push(entry)
+      continue
+    }
+    const before = { ...row }
+    Object.assign(row, {
+      typeId: entry.type_id || null, type: entry.type || null, date: entry.date || null, time: entry.time || null,
+      location: entry.location || null, description: entry.description || null, eventHash: entry.event_hash || null,
+      eventId: entry.event_id || null, identityKey, missedPulls: 0, missedHash: null,
+    })
+    paired.add(row.id)
+    writes.push(row)
+    kept.push({ identityKey, before, row, entry })
   }
 
   const cancelled: CalendarRow[] = []

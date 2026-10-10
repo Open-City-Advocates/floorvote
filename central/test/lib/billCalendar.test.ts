@@ -281,6 +281,23 @@ describe('a cutover\'s carry-over', () => {
     expect(pulled.writes.map(w => w.id)).not.toContain('hearing')
   })
 
+  it('carries a shared LegiScan identity on through the one row instances hold, and the others\' entries arrive as new', () => {
+    // Two LegiScan hearings before one committee: one identity, and instances hold the later.
+    const earlier = legacyRow({ id: 'earlier', typeId: 1, date: '2026-06-10', description: 'Committee on Health' })
+    const later = legacyRow({ id: 'later', typeId: 1, date: '2026-06-17', description: 'Committee on Health' })
+    const first = entry({ date: '2026-06-10', description: 'Public Hearing on B26-0001', event_hash: 'l1' })
+    const second = entry({ date: '2026-06-17', description: 'Public Hearing on B26-0001', event_hash: 'l2' })
+    const carry = carryCalendar(legiscan, lims, [earlier, later], [first, second], NOW)
+    expect(carry.kept.map(k => [k.identityKey, k.row.id, k.row.date])).toEqual([['1|committee on health', 'later', '2026-06-17']])
+    expect(carry.cancelled.map(r => r.id)).toEqual(['earlier'])
+    expect(carry.added).toEqual([first])
+    const pulled = planCalendarPull(lims, BILL, carry.rows, [first, second], 'lims-1', NOW)
+    expect(calendarBlockEvents(lims, pulled.live).map(e => [e.identityKey, e.date])).toEqual([
+      ['hearing|2026-06-10|public hearing on b26-0001', '2026-06-10'],
+      ['1|committee on health', '2026-06-17'],
+    ])
+  })
+
   it('pairs two entries in one slot by time, and cancels every old entry when the new provider lists none', () => {
     const morning = legacyRow({ id: 'am', typeId: 1, date: '2026-06-10', time: '09:00', description: 'A', identityKey: '1|a' })
     const afternoon = legacyRow({ id: 'pm', typeId: 1, date: '2026-06-10', time: '14:00', description: 'B', identityKey: '1|b' })

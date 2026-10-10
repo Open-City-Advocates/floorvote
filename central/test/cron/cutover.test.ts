@@ -25,6 +25,39 @@ vi.mock('../../src/lib/sync-schedule', async () => {
   const actual = await vi.importActual<typeof import('../../src/lib/sync-schedule')>('../../src/lib/sync-schedule')
   return { ...actual, getCurrentEtHour: vi.fn(() => 5) }
 })
+// Hooks into the ingest's calendar steps, to land a cutover partway through
+// an ingest, or fail one partway. Off unless a test sets them.
+const hooks = vi.hoisted(() => ({
+  beforeRead: null as null | (() => Promise<void>),
+  beforeLog: null as null | (() => Promise<void>),
+  failWrite: false,
+}))
+vi.mock('../../src/lib/billCalendar', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/billCalendar')>('../../src/lib/billCalendar')
+  const once = async (key: 'beforeRead' | 'beforeLog') => {
+    const hook = hooks[key]
+    hooks[key] = null
+    if (hook) await hook()
+  }
+  return {
+    ...actual,
+    readCalendarRows: async (...args: Parameters<typeof actual.readCalendarRows>) => {
+      await once('beforeRead')
+      return actual.readCalendarRows(...args)
+    },
+    logCalendarChanges: async (...args: Parameters<typeof actual.logCalendarChanges>) => {
+      await once('beforeLog')
+      return actual.logCalendarChanges(...args)
+    },
+    writeCalendarRows: async (...args: Parameters<typeof actual.writeCalendarRows>) => {
+      if (hooks.failWrite) {
+        hooks.failWrite = false
+        throw new Error('D1_ERROR: a write failed')
+      }
+      return actual.writeCalendarRows(...args)
+    },
+  }
+})
 const fetchMock = vi.fn()
 vi.stubGlobal('fetch', fetchMock)
 
@@ -228,6 +261,7 @@ beforeEach(async () => {
   vi.setSystemTime(new Date('2026-09-28T09:00:00Z'))   // 5 ET
   await setupLsDb()
   vi.clearAllMocks()
+  Object.assign(hooks, { beforeRead: null, beforeLog: null, failWrite: false })
   vi.mocked(getCurrentEtHour).mockReturnValue(5)
   feed = recordedFeed()
   calls = []
@@ -284,6 +318,18 @@ describe('a cutover\'s dry run', () => {
       { personId: String(BONDS), name: 'Anita Bonds', as: 'Anita Bonds', nameMatch: 'full', on: ['name'], weak: true },
     ]))
     expect(body.people.unmatched.old).toEqual([{ personId: String(GONE), name: 'Jack Evans' }])
+
+    // The one thing it writes is the API call log, which counts every call it spent.
+    await vi.waitFor(async () => expect((await env.DB.prepare(`SELECT call_type FROM api_call_log`).all()).results.map((r: any) => r.call_type))
+      .toEqual(expect.arrayContaining(['lims:BulkData', 'lims:LegislationDetails', 'lims:Members'])))
+  })
+
+  it('skips the calendar preview, and its details calls, with calendar=false', async () => {
+    const res = await cutover(makeEnv(), '?calendar=false')
+    const body = await res.json() as any
+    expect(body.calendar).toBeNull()
+    expect(body.bills.matched).toBe(2)
+    expect(calls.filter(u => u.includes('LegislationDetails'))).toEqual([])
   })
 
   it('is refused for a provider that doesn\'t serve the state, or the provider the state already has', async () => {
@@ -490,6 +536,150 @@ describe('a cutover', () => {
   })
 })
 
+describe('a cutover beside other work', () => {
+  /** A LegiScan ingest of B26-0400, queued before the cutover. */
+  async function legiscanIngest(run: Run) {
+    const message = { body: { billId: B0400 }, ack: vi.fn(), retry: vi.fn() }
+    await processIngestorQueue({ messages: [message] } as any, run.env, drizzle(env.DB, { schema }))
+    return message
+  }
+  const quietFirstIngest = (run: Run) => {
+    const sent = sentToTenant(run).filter((m: any) => m.billId === toHandle(B0400) && !m.stubOnly)
+    expect(sent).toHaveLength(1)
+    expect(sent[0].changes).toBeUndefined()
+    expect(sent[0].calendar.changes).toEqual([])
+    const keys = sent[0].calendar.events.map((e: any) => e.identityKey)
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(keys).toEqual(expect.arrayContaining(['1|committee on youth affairs', '3|committee on youth affairs']))
+    return sent[0]
+  }
+
+  it('drops a LegiScan ingest that read the bill before the cutover and writes after it', async () => {
+    const run = makeEnv()
+    hooks.beforeRead = async () => { expect((await cutover(run, '?confirm=true')).status).toBe(200) }
+    const stale = makeEnv()
+    await legiscanIngest(stale)
+    // It wrote nothing: not the bill row, its documents, its change log, or instances.
+    expect(await row('SELECT provider, carried_from, change_hash FROM bills WHERE bill_id = ?', B0400))
+      .toEqual({ provider: 'lims', carried_from: 'legiscan', change_hash: 'ls-v1' })
+    expect(await row('SELECT COUNT(*) AS n FROM bill_texts WHERE bill_id = ?', B0400)).toEqual({ n: 0 })
+    expect(await row('SELECT COUNT(*) AS n FROM bill_change_log WHERE bill_id = ?', B0400)).toEqual({ n: 0 })
+    expect(sentToTenant(stale)).toEqual([])
+
+    await drain(run.limsQueue, run)
+    quietFirstIngest(run)
+    expect((await getJson(`/bills/${toHandle(B0400)}`)).texts.map((t: any) => t.docId)).not.toContain('5002')
+  })
+
+  it('keeps the first LIMS ingest quiet after a LegiScan ingest that wrote around the cutover', async () => {
+    const run = makeEnv()
+    // The cutover lands after LegiScan's ingest wrote the bill row and before its documents.
+    hooks.beforeLog = async () => { expect((await cutover(run, '?confirm=true')).status).toBe(200) }
+    await legiscanIngest(makeEnv())
+    expect(await row('SELECT provider, carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ provider: 'lims', carried_from: 'legiscan' })
+
+    await drain(run.limsQueue, run)
+    quietFirstIngest(run)
+    expect((await getJson(`/bills/${toHandle(B0400)}`)).texts.map((t: any) => t.docId)).not.toContain('5002')
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: null })
+  })
+
+  it('retries a first LIMS ingest that failed partway just as quietly', async () => {
+    const run = makeEnv()
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    const body = queued(run.limsQueue).find(b => b.billId === B0400)
+    hooks.failWrite = true
+    const first = { body, ack: vi.fn(), retry: vi.fn() }
+    await processIngestorQueue({ messages: [first] } as any, run.env, drizzle(env.DB, { schema }))
+    expect(first.retry).toHaveBeenCalled()
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: 'legiscan' })
+
+    const again = { body, ack: vi.fn(), retry: vi.fn() }
+    await processIngestorQueue({ messages: [again] } as any, run.env, drizzle(env.DB, { schema }))
+    expect(again.ack).toHaveBeenCalled()
+    quietFirstIngest(run)
+    expect(await row('SELECT COUNT(*) AS n FROM bill_change_log WHERE bill_id = ?', B0400)).toEqual({ n: 0 })
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: null })
+  })
+
+  it('keeps sponsors and votes when LIMS\'s first sync fails and the next hourly pass ingests', async () => {
+    let periods = 0
+    feed['CouncilPeriods'] = () => (++periods === 2 ? new Response('down', { status: 503 }) : json([CP26]))
+    const res = await cutover(makeEnv(), '?confirm=true')
+    expect((await res.json() as any).sync.error).toBeDefined()
+    // The matched legislators are LIMS's already, without its session refresh.
+    expect(await row('SELECT provider FROM people WHERE people_id = ?', PARKER)).toEqual({ provider: 'lims' })
+
+    vi.mocked(getCurrentEtHour).mockReturnValue(13)
+    const next = makeEnv()
+    const { runSnapshotSync } = await import('../../src/cron/sync-snapshots')
+    const { lims } = await import('../../src/providers/lims')
+    await runSnapshotSync(lims, next.env, drizzle(env.DB, { schema }))
+    await drain(next.limsQueue, next)
+    const bill = await getJson(`/bills/${toHandle(B0400)}`)
+    expect(bill.sponsors.map((s: any) => s.personId)).toEqual([String(PARKER), String(BONDS)])
+    expect(bill.votes.find((v: any) => v.date === '2026-03-03').legislatorVotes)
+      .toContainEqual({ personId: String(PARKER), name: 'Zachary Parker', vote: 'Yes' })
+  })
+
+  it('ingests a tracked bill whose keyword match the new title loses, so its documents are replaced', async () => {
+    // B26-0001 is tracked through a keyword only LegiScan's title has.
+    await env.DB.prepare(`INSERT INTO keyword_registry (tenant_id, keyword) VALUES ('oca', 'legiscan-only-term')`).run()
+    await env.DB.prepare(`UPDATE bills SET title = 'Legiscan-only-term act' WHERE bill_id = ?`).bind(B0001).run()
+    await env.DB.prepare(`UPDATE bill_tenants SET match_type = 'keyword' WHERE bill_id = ?`).bind(B0001).run()
+    await env.DB.prepare(`INSERT INTO bill_texts (doc_id, bill_id, date, type, mime, state_link) VALUES (5011, ?, '2025-01-01', 'Introduced', 'application/pdf', 'x')`).bind(B0001).run()
+    feed['LegislationDetails/B26-0001'] = () => json({
+      ...JSON.parse(details0400Raw), legislationNumber: 'B26-0001', status: 'Under Council Review',
+      committeeHearing: [], committeeMarkup: [], actions: [], otherDocuments: [], mayoralReview: null, congressionalReview: null,
+    })
+
+    // The dry run says so.
+    const dry = await (await cutover(makeEnv())).json() as any
+    expect(dry.bills.losingMatch).toEqual([{ billId: toHandle(B0001), number: 'B26-0001', tenantId: 'oca' }])
+
+    const run = makeEnv()
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    expect(queued(run.limsQueue).map(b => b.billId)).toContain(B0001)
+    await drain(run.limsQueue, run)
+    expect(await row('SELECT match_type FROM bill_tenants WHERE bill_id = ?', B0001)).toEqual({ match_type: null })
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0001)).toEqual({ carried_from: null })
+    const bill = await getJson(`/bills/${toHandle(B0001)}`)
+    expect(bill.texts.map((t: any) => t.docId)).not.toContain('5011')
+    expect(bill.actions.length).toBeGreaterThan(0)
+  })
+
+  it('keeps giving a legislator their kept id once LIMS lists them under a new one', async () => {
+    const run = makeEnv()
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    await drain(run.limsQueue, run)
+    // A new Council Period's member id for the same person.
+    await env.DB.prepare(`INSERT INTO people (people_id, name, provider) VALUES (?, 'Zachary Parker', 'lims')`).bind(1_000_000_900).run()
+    const again = makeEnv()
+    await processIngestorQueue({ messages: [{ body: { billId: B0400 }, ack: vi.fn(), retry: vi.fn() }] } as any, again.env, drizzle(env.DB, { schema }))
+    expect((await getJson(`/bills/${toHandle(B0400)}`)).sponsors.map((s: any) => s.personId)).toEqual([String(PARKER), String(BONDS)])
+  })
+
+  it('stops waiting for a calendar after three ingests without one, and cancels the old entries', async () => {
+    const rec = bulk['B26-0400']
+    feed['BulkData/1/26'] = () => json(Object.values(bulk).filter(r => r.legislationCategory === 'Bill' && r.legislationNumber !== 'B26-0400')
+      .concat({ ...rec, legislationHistory: [] }))
+    const run = makeEnv()
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    await drain(run.limsQueue, run)
+    const ingest = async () => {
+      const r = makeEnv()
+      await processIngestorQueue({ messages: [{ body: { billId: B0400 }, ack: vi.fn(), retry: vi.fn() }] } as any, r.env, drizzle(env.DB, { schema }))
+      return sentToTenant(r).find((m: any) => m.billId === toHandle(B0400))
+    }
+    expect((await ingest()).calendar).toBeUndefined()
+    expect(await row('SELECT carried_from, carried_waits FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: 'legiscan', carried_waits: 2 })
+    const third = await ingest()
+    expect(third.changes).toBeUndefined()
+    expect(await row('SELECT carried_from, carried_waits FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: null, carried_waits: null })
+    expect(await row('SELECT COUNT(*) AS n FROM bill_calendar WHERE bill_id = ? AND cancelled_at IS NULL', B0400)).toEqual({ n: 0 })
+  })
+})
+
 describe('undoing a cutover', () => {
   it('flips DC back, and LegiScan\'s next sync rewrites the moved bills with a quiet first ingest', async () => {
     const run = makeEnv()
@@ -499,7 +689,8 @@ describe('undoing a cutover', () => {
     // A dry run first: what would go back.
     const dry = await undo(run)
     expect(dry.status).toBe(200)
-    expect(await dry.json()).toMatchObject({ dryRun: true, state: 'DC', from: 'lims', to: 'legiscan', bills: 2, people: 2, added: 5 })
+    // LIMS added five bills in the meantime, two of them tracked through the instance's keywords.
+    expect(await dry.json()).toMatchObject({ dryRun: true, state: 'DC', from: 'lims', to: 'legiscan', bills: 2, people: 2, added: 5, addedTracked: 2 })
     expect((await getJson('/admin/state-providers')).states[0]).toMatchObject({ provider: 'lims' })
 
     const res = await undo(run, '?confirm=true')

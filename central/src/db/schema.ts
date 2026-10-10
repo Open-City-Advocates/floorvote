@@ -90,6 +90,12 @@ export const bills = sqliteTable('bills', {
    * (0036, lib/cutover.ts). Null otherwise.
    */
   carriedFrom:     text('carried_from'),
+  /**
+   * How many of those ingests came with no calendar, so the carry-over waited
+   * (0036). Null for none. Nullable with no default, so multi-row inserts
+   * don't bind one more parameter per row.
+   */
+  carriedWaits:    integer('carried_waits'),
 }, (t) => [
   index('idx_bills_session').on(t.sessionId),
   index('idx_bills_state').on(t.state),

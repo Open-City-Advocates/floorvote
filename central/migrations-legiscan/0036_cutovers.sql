@@ -19,8 +19,11 @@
 --                 until its new provider's first ingest. That ingest sends
 --                 instances no changes, and carries the bill's calendar entries
 --                 over under the identities instances know.
+-- carried_waits   how many of those ingests came with no calendar at all, so
+--                 the carry-over waited (null for none). After a few it stops
+--                 waiting.
 --
--- New tables and one nullable column, so this succeeds on any existing data.
+-- New tables and two nullable columns, so this succeeds on any existing data.
 -- No semicolons in these comments. The test helpers split migration files on
 -- the statement terminator.
 CREATE TABLE IF NOT EXISTS cutovers (
@@ -53,3 +56,4 @@ CREATE TABLE IF NOT EXISTS cutover_people (
 );
 
 ALTER TABLE bills ADD COLUMN carried_from TEXT;
+ALTER TABLE bills ADD COLUMN carried_waits INTEGER;
