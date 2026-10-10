@@ -210,7 +210,7 @@ describe('the Council\'s calendar', () => {
 
   it('links agenda bills, and marks the bill calendar entry the event covers, so the hearing shows once', async () => {
     // Another committee's roundtable that day, on a topic B26-0769's title mentions.
-    const roundtable = { ...october.find(h => h.hearingId === 2408)!, hearingId: 9001, hearingDateTime: '2026-10-23T14:00:00', topics: [{ hearingTopicId: 1, topic: 'Stadium Redevelopment', legislationNumber: null }] }
+    const roundtable = { ...october.find(h => h.hearingId === 2408)!, hearingId: 9001, hearingDateTime: '2026-10-23T14:00:00', topics: [{ hearingTopicId: 1, topic: 'Soccer Stadium Redevelopment and Maintenance', legislationNumber: null }] }
     calendar['2026-10'] = () => json([...october, roundtable])
     await claimDc()
     await syncBills()
@@ -226,7 +226,7 @@ describe('the Council\'s calendar', () => {
     expect(byUid.get('council-2428@lims.dccouncil.gov')).toMatchObject({ bills: [toHandle(HN)], covers: [expect.objectContaining({ billId: toHandle(HN) })] })
     // A bill on the agenda with no entry that day is linked and covers nothing.
     expect(byUid.get('council-2413@lims.dccouncil.gov')).toMatchObject({ covers: [] })
-    // A numberless topic that is only part of a bill's title names no bill.
+    // A numberless topic matching a bill's title, not its entry, names no bill.
     expect(byUid.get('council-9001@lims.dccouncil.gov')).toMatchObject({ bills: [], covers: [] })
 
     const bill = await getJson(`/bills/${toHandle(B0769)}`)

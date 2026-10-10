@@ -276,6 +276,7 @@ export const bodyEvents = sqliteTable('body_events', {
   url:         text('url'),
   eventHash:   text('event_hash').notNull(),
   missedPulls: integer('missed_pulls').notNull().default(0),
+  emptyPulls:  integer('empty_pulls').notNull().default(0),
   cancelledAt: text('cancelled_at'),
   createdAt:   text('created_at').notNull().default(sql`(datetime('now'))`),
   updatedAt:   text('updated_at').notNull().default(sql`(datetime('now'))`),

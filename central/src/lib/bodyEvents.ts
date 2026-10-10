@@ -18,9 +18,11 @@ import type { Db } from '../types'
  *   event is the same event, changed.
  * - **Cancellation.** Only on positive evidence (the provider marks the event
  *   cancelled), or once the event is missing from two successful pulls in a
- *   row. A pull is one month of the provider's calendar, and only a month that
- *   lists a live event counts: a failed month changes nothing, and an empty one
- *   is no evidence that anything went away. A date passing never cancels
+ *   row. A pull is one month of the provider's calendar. A sync in which any
+ *   month failed counts no absences, and neither does one that lists no live
+ *   event anywhere. A month that comes back empty while others list events
+ *   counts, far more slowly (EMPTY_PULLS_TO_CANCEL): it may be a bad answer,
+ *   or a lone event cancelled from its month. A date passing never cancels
  *   anything.
  * - **No deletes.** A cancelled event keeps its row, and comes back if the
  *   provider lists it again.
@@ -48,6 +50,14 @@ export interface BodyEventPull {
   to: string
   events: BodyEvent[]
 }
+
+/**
+ * Syncs in a row whose pull of an event's month came back empty, while other
+ * months listed events, that cancel it: a day of hourly syncs. A whole month
+ * gone blank is likelier a bad answer than the month's only event cancelled,
+ * so it takes far longer than an event left out of a month that lists others.
+ */
+export const EMPTY_PULLS_TO_CANCEL = 24
 
 /** How far around today core reads a provider's calendar: last month through three months ahead. */
 export const BODY_EVENT_MONTHS = { back: 1, ahead: 3 } as const
@@ -95,7 +105,7 @@ function checkBodyEvent(provider: Provider, e: BodyEvent): void {
 }
 
 /** What a listed event writes to its row. */
-function eventValues(provider: Provider, state: string, e: BodyEvent): Omit<BodyEventValues, 'missedPulls' | 'cancelledAt' | 'updatedAt'> {
+function eventValues(provider: Provider, state: string, e: BodyEvent): Omit<BodyEventValues, 'missedPulls' | 'emptyPulls' | 'cancelledAt' | 'updatedAt'> {
   return {
     provider: provider.id,
     eventId: e.event_id,
@@ -124,10 +134,11 @@ function storedValues(row: BodyEventRow): BodyEventValues {
 /**
  * What one sync's pulls do to a provider's events in a state. `prior` holds
  * the stored rows dated within the pulls' months and the rows of every event
- * they list. Returns the rows to write, each whole. Nothing is deleted.
+ * they list. `complete` says every month of the sync answered. Returns the
+ * rows to write, each whole. Nothing is deleted.
  */
 export function planBodyEventPulls(
-  provider: Provider, state: string, prior: BodyEventRow[], pulls: BodyEventPull[], now: string,
+  provider: Provider, state: string, prior: BodyEventRow[], pulls: BodyEventPull[], now: string, complete = true,
 ): BodyEventValues[] {
   const stored = new Map(prior.map(r => [r.eventId, r]))
   // Each event once: listed twice, the last listing counts, unless one says cancelled.
@@ -145,22 +156,30 @@ export function planBodyEventPulls(
       continue
     }
     const values = eventValues(provider, state, e)
-    const unchanged = row && !row.cancelledAt && row.missedPulls === 0
+    const unchanged = row && !row.cancelledAt && row.missedPulls === 0 && row.emptyPulls === 0
       && (Object.keys(values) as (keyof typeof values)[]).every(k => row[k] === values[k])
-    if (!unchanged) writes.push({ ...values, missedPulls: 0, cancelledAt: null, updatedAt: now })
+    if (!unchanged) writes.push({ ...values, missedPulls: 0, emptyPulls: 0, cancelledAt: null, updatedAt: now })
   }
 
-  // A month that lists no live event (none at all, or only cancellations) is
-  // no evidence that any other went away.
-  const counting = pulls.filter(p => p.events.some(e => !e.cancelled))
+  // Absences count only when every month answered: an event that moved into
+  // a month that failed would otherwise read as missing from its old one.
+  if (!complete) return writes
+  // A month lists a live event, or only cancellations, or nothing.
+  const lists = (p: BodyEventPull) => p.events.some(e => !e.cancelled)
+  // A sync with no live event anywhere is no evidence that anything went away.
+  if (!pulls.some(lists)) return writes
   for (const row of prior) {
     if (row.cancelledAt || listed.has(row.eventId)) continue
-    if (!counting.some(p => p.from <= row.date && row.date <= p.to)) continue
-    const missedPulls = row.missedPulls + 1
-    writes.push({
-      ...storedValues(row), missedPulls, updatedAt: now,
-      cancelledAt: missedPulls >= MISSED_PULLS_TO_CANCEL ? now : null,
-    })
+    const pull = pulls.find(p => p.from <= row.date && row.date <= p.to)
+    if (!pull) continue
+    if (lists(pull)) {
+      const missedPulls = row.missedPulls + 1
+      writes.push({ ...storedValues(row), missedPulls, updatedAt: now, cancelledAt: missedPulls >= MISSED_PULLS_TO_CANCEL ? now : null })
+    } else {
+      // Its month came back empty while others list events.
+      const emptyPulls = row.emptyPulls + 1
+      writes.push({ ...storedValues(row), emptyPulls, updatedAt: now, cancelledAt: emptyPulls >= EMPTY_PULLS_TO_CANCEL ? now : null })
+    }
   }
   return writes
 }
@@ -215,7 +234,7 @@ export async function syncBodyEvents(
   if (pulls.length === 0) return report
 
   const prior = await priorRows(db, provider.id, state, pulls)
-  const writes = planBodyEventPulls(provider, state, prior, pulls, now)
+  const writes = planBodyEventPulls(provider, state, prior, pulls, now, failed === 0)
   await batch(db, writes.map(values => {
     const { provider: _p, eventId: _e, ...set } = values
     return db.insert(bodyEvents).values(values).onConflictDoUpdate({ target: [bodyEvents.provider, bodyEvents.eventId], set })
@@ -281,10 +300,8 @@ function topicKey(s: string | null | undefined): string {
 const MIN_TOPIC_KEY = 12
 
 /**
- * Whether a numberless topic names the bill whose title or entry is `text`:
- * the text carries the topic's words, and they are most of it. So a notice
- * titled with the roundtable's own words pairs, and a long bill title that
- * happens to mention an agency an oversight hearing is about doesn't.
+ * Whether a numberless topic names the calendar entry described by `text`:
+ * the text carries the topic's words, and they are most of it.
  */
 function topicNames(topic: string, text: string): boolean {
   return text.includes(topic) && topic.length * 2 >= text.length
@@ -295,9 +312,11 @@ function topicNames(topic: string, text: string): boolean {
  * where they changed. An item with a bill number links the provider's bill of
  * that number in the state (the one whose session spans the event's year,
  * when numbers repeat across sessions). An item without one links the one
- * bill with a live calendar entry that day whose title or entry is mostly the
+ * bill with a live calendar entry that day whose description is mostly the
  * item's words (topicNames), which is how DC's oversight hearing notices pair
- * with the Council's calendar.
+ * with the Council's calendar: a notice's entry is described by its title. A
+ * bill's own title isn't matched, since an oversight topic naming an agency
+ * would pair with any act about that agency heard the same day.
  */
 async function linkAgendas(db: Db, provider: Provider, state: string, events: BodyEvent[]): Promise<void> {
   if (events.length === 0) return
@@ -311,14 +330,14 @@ async function linkAgendas(db: Db, provider: Provider, state: string, events: Bo
   }
 
   const dates = [...new Set(events.filter(e => e.agenda.some(a => !a.bill_number)).map(e => e.date))]
-  const entriesByDate = new Map<string, { billId: number; keys: string[] }[]>()
+  const entriesByDate = new Map<string, { billId: number; key: string }[]>()
   for (const chunk of chunks(dates)) {
-    const rows = await db.select({ billId: billCalendar.billId, date: billCalendar.date, typeId: billCalendar.typeId, description: billCalendar.description, title: bills.title })
+    const rows = await db.select({ billId: billCalendar.billId, date: billCalendar.date, typeId: billCalendar.typeId, description: billCalendar.description })
       .from(billCalendar).innerJoin(bills, eq(bills.billId, billCalendar.billId))
       .where(and(inArray(billCalendar.date, chunk), isNull(billCalendar.cancelledAt), eq(bills.state, state), eq(bills.provider, provider.id))).all()
     for (const r of rows) {
       if (!r.date || calendarKind(provider, r.typeId) === 'deadline') continue
-      entriesByDate.set(r.date, [...(entriesByDate.get(r.date) ?? []), { billId: r.billId, keys: [topicKey(r.title), topicKey(r.description)] }])
+      entriesByDate.set(r.date, [...(entriesByDate.get(r.date) ?? []), { billId: r.billId, key: topicKey(r.description) }])
     }
   }
 
@@ -335,8 +354,9 @@ async function linkAgendas(db: Db, provider: Provider, state: string, events: Bo
         continue
       }
       const key = topicKey(item.topic)
-      if (key.length < MIN_TOPIC_KEY) continue
-      const hits = new Set((entriesByDate.get(e.date) ?? []).filter(x => x.keys.some(k => topicNames(key, k))).map(x => x.billId))
+      // A topic that only repeats the event's own name ("Legislative Meeting") names no bill.
+      if (key.length < MIN_TOPIC_KEY || key === topicKey(e.title)) continue
+      const hits = new Set((entriesByDate.get(e.date) ?? []).filter(x => topicNames(key, x.key)).map(x => x.billId))
       if (hits.size === 1) ids.add([...hits][0])
     }
     want.set(e.event_id, [...ids].sort((a, b) => a - b))
@@ -353,16 +373,18 @@ async function linkAgendas(db: Db, provider: Provider, state: string, events: Bo
       current.set(r.bodyEventId, [...(current.get(r.bodyEventId) ?? []), r.billId])
     }
   }
-  const stmts: any[] = []
   for (const [eventId, billIds] of want) {
     const id = rowIds.get(eventId)
     if (id === undefined) continue
     const have = (current.get(id) ?? []).sort((a, b) => a - b)
     if (have.length === billIds.length && have.every((b, i) => b === billIds[i])) continue
-    stmts.push(db.delete(bodyEventBills).where(eq(bodyEventBills.bodyEventId, id)))
-    for (const billId of billIds) stmts.push(db.insert(bodyEventBills).values({ bodyEventId: id, billId }).onConflictDoNothing())
+    // One batch per event, so no reader sees it between its delete and its inserts.
+    const stmts = [
+      db.delete(bodyEventBills).where(eq(bodyEventBills.bodyEventId, id)),
+      ...chunks(billIds, 40).map(c => db.insert(bodyEventBills).values(c.map(billId => ({ bodyEventId: id, billId }))).onConflictDoNothing()),
+    ]
+    await db.batch(stmts as [typeof stmts[0], ...typeof stmts])
   }
-  await batch(db, stmts)
 }
 
 /** An event that may cover a bill's calendar entry. */
@@ -372,19 +394,21 @@ interface Cover {
   date: string
   time: string | null
   kind: string
+  cancelledAt: string | null
 }
 
 /**
  * Of the events with a bill on their agenda, the one covering a calendar
- * entry of the bill: an event that day, preferring one of the entry's kind,
- * then the earliest, so the choice is the same wherever it is made. None for
- * a deadline, which isn't a meeting.
+ * entry of the bill: an event that day, preferring a live one, then one of
+ * the entry's kind, then the earliest, so the choice is the same wherever it
+ * is made. None for a deadline, which isn't a meeting.
  */
 function chooseCover(kind: CalendarKind, date: string | null, covers: Cover[]): Cover | undefined {
   if (kind === 'deadline' || !date) return undefined
   return covers
     .filter(c => c.date === date)
-    .sort((a, b) => Number(b.kind === kind) - Number(a.kind === kind)
+    .sort((a, b) => Number(!!a.cancelledAt) - Number(!!b.cancelledAt)
+      || Number(b.kind === kind) - Number(a.kind === kind)
       || (a.time ?? '99:99').localeCompare(b.time ?? '99:99') || a.id - b.id)[0]
 }
 
@@ -394,7 +418,7 @@ async function coversByBill(db: Db, provider: Provider, billIds: number[]): Prom
   for (const chunk of chunks(billIds)) {
     const rows = await db.select({
       billId: bodyEventBills.billId, id: bodyEvents.id, eventId: bodyEvents.eventId,
-      date: bodyEvents.date, time: bodyEvents.time, kind: bodyEvents.kind,
+      date: bodyEvents.date, time: bodyEvents.time, kind: bodyEvents.kind, cancelledAt: bodyEvents.cancelledAt,
     })
       .from(bodyEventBills).innerJoin(bodyEvents, eq(bodyEvents.id, bodyEventBills.bodyEventId))
       .where(and(inArray(bodyEventBills.billId, chunk), eq(bodyEvents.provider, provider.id))).all()
@@ -462,15 +486,16 @@ export async function bodyEventDetails(db: Db, provider: Provider, state: string
     for (const l of found) links.set(l.eventRow, [...(links.get(l.eventRow) ?? []), l.billId])
   }
 
-  // The entries each event covers: each linked bill's live entries on an event's day.
+  // The entries each event covers: each linked bill's entries on an event's day,
+  // cancelled ones too, so an instance keeps a cancelled hearing covered and
+  // shows its cancellation once, as the event's.
   const billIds = [...new Set([...links.values()].flat())]
   const covered = new Map<number, { billId: string; identityKey: string }[]>()
   if (billIds.length > 0) {
     const covers = await coversByBill(db, provider, billIds)
     for (const chunk of chunks(billIds)) {
       const entries = await db.select().from(billCalendar)
-        .where(and(inArray(billCalendar.billId, chunk), isNull(billCalendar.cancelledAt),
-          gte(billCalendar.date, from), lte(billCalendar.date, to))).all()
+        .where(and(inArray(billCalendar.billId, chunk), gte(billCalendar.date, from), lte(billCalendar.date, to))).all()
       for (const entry of entries) {
         const cover = chooseCover(calendarKind(provider, entry.typeId), entry.date, covers.get(entry.billId) ?? [])
         if (!cover) continue

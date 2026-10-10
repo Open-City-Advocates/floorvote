@@ -557,8 +557,10 @@ tenantsRoutes.get('/:tenantId/body-events', guardCallerTenantParam(), async (c) 
   const to = c.req.query('to') ?? ''
   const isDate = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d)
   if (!isDate(from) || !isDate(to) || from > to) return c.json({ error: 'from and to (YYYY-MM-DD, from <= to) are required' }, 400)
-  // At most a year, which bounds the read.
-  if (Date.parse(to) - Date.parse(from) > 366 * 86400_000) return c.json({ error: 'at most a year from from to to' }, 400)
+  // Real days, at most a year apart, which bounds the read.
+  const span = Date.parse(to) - Date.parse(from)
+  if (Number.isNaN(span)) return c.json({ error: 'from and to must be real dates' }, 400)
+  if (span > 366 * 86400_000) return c.json({ error: 'at most a year from from to to' }, 400)
 
   const db = drizzle(c.env.DB, { schema })
   const tenant = await db.select({ stateCoverage: schema.tenants.stateCoverage }).from(schema.tenants)

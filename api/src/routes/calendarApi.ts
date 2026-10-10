@@ -16,8 +16,8 @@ import type { AppEnv } from '../types'
 
 export const calendarRouter = new Hono<AppEnv>()
 
-/** Custom events and body events link their bills through calendar_event_bills, not bill_id. */
-const linksBills = (source: string) => source === 'custom' || source === 'body'
+/** Custom events, body events, and a fork's 'council' rows link their bills through calendar_event_bills, not bill_id. */
+const linksBills = (source: string) => source === 'custom' || source === 'body' || source === 'council'
 
 /** Event ids per IN list, under D1's 100 bound parameters a query. */
 const LINK_CHUNK = 80
@@ -503,7 +503,7 @@ calendarRouter.get('/feed/:slugIcs', async (c) => {
       description,
       url,
       // A body event carries the legislature's own zone, which no linked bill's state can contradict.
-      tzid: (r.source === 'body' ? r.timezone : null) ?? tzidForState(state) ?? r.timezone ?? fallbackTz,
+      tzid: (r.source === 'body' || r.source === 'council' ? r.timezone : null) ?? tzidForState(state) ?? r.timezone ?? fallbackTz,
     }
   })
 

@@ -10,7 +10,9 @@ import { bills, calendarEvents } from '../db/schema'
  *   has covers the entry (covered_by): the event is shown in its place, so
  *   the hearing appears once (lib/bodyEvents.ts);
  * - custom events;
- * - body events, the legislature's own calendar for covered states.
+ * - body events, the legislature's own calendar for covered states, and a
+ *   fork's 'council' rows (#217) not yet taken over as body events, so its
+ *   calendar history stays.
  */
 export const visibleCalendarEvent = or(
   and(
@@ -24,4 +26,5 @@ export const visibleCalendarEvent = or(
   ),
   eq(calendarEvents.source, 'custom'),
   eq(calendarEvents.source, 'body'),
+  eq(calendarEvents.source, 'council'),
 )!

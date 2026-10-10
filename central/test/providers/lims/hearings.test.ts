@@ -90,6 +90,9 @@ describe('mapping the hearings calendar', () => {
     expect(hearingCommittee('Transportation and the Environment')).toBe('Committee on Transportation and the Environment')
     expect(hearingCommittee('Committee of the Whole')).toBe('Committee of the Whole')
     expect(hearingCommittee('Legislative Meeting')).toBeNull()
+    expect(hearingCommittee('Additional Legislative Meeting')).toBeNull()
+    expect(hearingCommittee('Mayor-Council Breakfast')).toBeNull()
+    expect(hearingCommittee('Council')).toBeNull()
   })
 
   it('gives every recorded type a kind', async () => {
@@ -103,6 +106,7 @@ describe('mapping the hearings calendar', () => {
 
   it('titles a legislative meeting by itself, and keeps agenda bill numbers', async () => {
     expect((await mapHearing(byId(2045))).event).toMatchObject({ title: 'Legislative Meeting', kind: 'meeting', agenda: [{ topic: 'Legislative Meeting', bill_number: null }] })
+    expect(await mapHearing({ ...byId(2045), hearingTitle: 'Additional Legislative Meeting' })).toMatchObject({ event: { title: 'Additional Legislative Meeting' }, committee: null })
     expect((await mapHearing(byId(2405))).event.agenda).toEqual([{ topic: 'Soccer Stadium Redevelopment and Maintenance Act of 2026', bill_number: 'B26-0769' }])
     expect((await mapHearing(byId(2420))).event).toMatchObject({ joint_with: 'Joint with Facilities', title: 'Committee of the Whole joint hearing' })
   })

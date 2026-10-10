@@ -111,7 +111,8 @@ export interface BodyEventSyncResult {
  * Mirror the body events of the instance's covered states, and record the
  * capabilities central sends with them. Null when no covered state has body
  * events and the capabilities are less than a day old, so nothing was asked.
- * Throws when central doesn't answer, leaving every event as it was.
+ * Throws when central doesn't answer, or answers without its events and
+ * capabilities, leaving every event as it was.
  */
 export async function syncBodyEvents(env: Env, db: AppDb): Promise<BodyEventSyncResult | null> {
   const known = await readStateCapabilities(db)
@@ -122,24 +123,35 @@ export async function syncBodyEvents(env: Env, db: AppDb): Promise<BodyEventSync
   const to = isoDay(WINDOW_AHEAD_DAYS)
   const res = await centralFetch(env, `/tenants/${env.TENANT_ID}/body-events?from=${from}&to=${to}`)
   if (!res.ok) throw new Error(`central body-events HTTP ${res.status}`)
-  const body = await res.json() as { capabilities?: Record<string, StateCapabilities>; events?: CentralBodyEvent[] }
-  const events = Array.isArray(body.events) ? body.events : []
+  const body = await res.json() as { capabilities?: unknown; events?: unknown }
+  // An answer without both is a bad one, not an empty calendar: it changes nothing.
+  if (!Array.isArray(body.events) || !body.capabilities || typeof body.capabilities !== 'object' || Array.isArray(body.capabilities)) {
+    throw new Error('central body-events: the answer has no events or capabilities')
+  }
+  const capabilities = body.capabilities as Record<string, StateCapabilities>
 
-  const cache = JSON.stringify({ data: body.capabilities ?? {}, cachedAt: new Date().toISOString() }) // ts-write-ok: cache metadata inside a JSON config blob, never SQL-sorted
+  const cache = JSON.stringify({ data: capabilities, cachedAt: new Date().toISOString() }) // ts-write-ok: cache metadata inside a JSON config blob, never SQL-sorted
   await db.insert(associationConfig).values({ key: CAPABILITIES_KEY, value: cache })
     .onConflictDoUpdate({ target: associationConfig.key, set: { value: cache } })
 
-  return reconcileBodyEvents(env, db, events, from, to)
+  return reconcileBodyEvents(env, db, body.events as CentralBodyEvent[], from, to, anyBodyEvents(capabilities))
 }
 
 /**
  * Make the instance's body events in the window match central's: add and
  * update events (bumping an event's ICS sequence when it changes, is
- * cancelled, or comes back), link their agenda bills, remove events central
- * no longer sends for the instance (a state it stopped covering), and point
- * covered bill entries at their events.
+ * cancelled, or comes back), link their agenda bills, and point covered bill
+ * entries at their events.
+ *
+ * Central never drops an event it has, so one it stops sending means the
+ * instance's coverage or a state's provider changed, or the event moved out
+ * of the window. When no covered state has body events any more, the
+ * instance's events go. Otherwise a missing event is cancelled, never
+ * deleted, so its SEQUENCE keeps rising if it comes back.
  */
-async function reconcileBodyEvents(env: Env, db: AppDb, events: CentralBodyEvent[], from: string, to: string): Promise<BodyEventSyncResult> {
+async function reconcileBodyEvents(
+  env: Env, db: AppDb, events: CentralBodyEvent[], from: string, to: string, anyBodyEvents: boolean,
+): Promise<BodyEventSyncResult> {
   const now = nowDb()
   const result: BodyEventSyncResult = { upserted: 0, cancelled: 0, removed: 0, covered: 0 }
   const incoming = new Map(events.map(e => [e.uid, e]))
@@ -200,12 +212,19 @@ async function reconcileBodyEvents(env: Env, db: AppDb, events: CentralBodyEvent
   }
 
   // Events central no longer sends for this instance.
-  const removed = [...existing.values()].filter(r => r.source === 'body' && !incoming.has(r.uid))
+  const missing = [...existing.values()].filter(r => r.source === 'body' && !incoming.has(r.uid))
+  const removed = anyBodyEvents ? [] : missing
   for (const chunk of chunks(removed.map(r => r.id))) {
     await db.delete(calendarEventBills).where(inArray(calendarEventBills.eventId, chunk))
     await db.delete(calendarEvents).where(inArray(calendarEvents.id, chunk))
   }
   result.removed = removed.length
+  if (anyBodyEvents) {
+    for (const r of missing.filter(m => m.status !== 'cancelled')) {
+      await db.update(calendarEvents).set({ status: 'cancelled', sequence: r.sequence + 1, updatedAt: now }).where(eq(calendarEvents.id, r.id))
+      result.cancelled++
+    }
+  }
 
   result.covered = await pointCovers(env, db, events, new Set(removed.map(r => r.uid)))
   return result

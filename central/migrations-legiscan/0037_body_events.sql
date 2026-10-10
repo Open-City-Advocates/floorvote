@@ -25,6 +25,10 @@
 --   event_hash          changes whenever anything shown changes
 --   missed_pulls        successful pulls in a row that left the event out.
 --                       Two cancel it, the rule bill calendar entries follow.
+--   empty_pulls         syncs in a row whose pull of the event's month came
+--                       back empty while other months listed events. A lone
+--                       event cancelled from its month leaves it empty, so
+--                       those count too, but far more slowly (24 cancel it).
 --   cancelled_at        when central cancelled it, or null while it is live.
 --                       Rows are never deleted.
 --
@@ -55,6 +59,7 @@ CREATE TABLE IF NOT EXISTS body_events (
   url           TEXT,
   event_hash    TEXT NOT NULL,
   missed_pulls  INTEGER NOT NULL DEFAULT 0,
+  empty_pulls   INTEGER NOT NULL DEFAULT 0,
   cancelled_at  TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at    TEXT NOT NULL DEFAULT (datetime('now'))

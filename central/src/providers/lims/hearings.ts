@@ -108,12 +108,22 @@ export function hearingKind(type: string): CalendarKind {
 }
 
 /**
+ * Whether an event's title names the whole Council rather than a committee:
+ * a legislative meeting ("Legislative Meeting", "Additional Legislative
+ * Meeting"), a breakfast, or the Council itself. Anything naming a committee,
+ * the Committee of the Whole included, isn't.
+ */
+function wholeCouncil(title: string): boolean {
+  return !/\bcommittee\b/i.test(title) && (/^council$/i.test(title) || /\blegislative meeting\b|\bbreakfast\b/i.test(title))
+}
+
+/**
  * The committee holding an event, in the Council's own form, which is the
  * name LIMS referrals carry ("Health" is "Committee on Health"), or null for
- * a legislative or breakfast meeting of the whole Council.
+ * a meeting of the whole Council.
  */
 export function hearingCommittee(title: string): string | null {
-  if (!title || /^(legislative meeting|council)$/i.test(title)) return null
+  if (!title || wholeCouncil(title)) return null
   return referralParts(title)[0] ?? null
 }
 
@@ -148,8 +158,8 @@ export async function mapHearing(h: LimsHearing): Promise<MappedHearing> {
       timezone: DC_ZONE,
       joint_with: jointWith,
       location,
-      // "Youth Affairs roundtable", or "Legislative Meeting".
-      title: /^legislative meeting$/i.test(body) ? body : `${body} ${type.toLowerCase()}`,
+      // "Youth Affairs roundtable", or a whole-Council meeting by its own name ("Legislative Meeting").
+      title: wholeCouncil(body) && body !== 'Council' ? body : `${body} ${type.toLowerCase()}`,
       agenda: topics.map(t => ({ topic: t.topic, bill_number: t.number })),
       url: hearingUrl(h.hearingId),
       event_hash: eventHash,
