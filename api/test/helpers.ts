@@ -91,6 +91,58 @@ export function parseMigration(sql: string, name: string) {
   return { name, queries }
 }
 
+// Split a migration into statements on `;`, dropping `--` and `/* */`
+// comments first and ignoring semicolons inside quotes, so a `;` in a comment
+// can't break it the way it breaks parseMigration. The same splitter central's
+// tests use (central/test/helpers/migrations.ts). Not handled: a CREATE
+// TRIGGER body, whose own semicolons would be split apart.
+export function splitStatements(sql: string): string[] {
+  const statements: string[] = []
+  let current = ''
+  let quote: string | null = null
+  const flush = () => {
+    const s = current.trim()
+    if (s.length > 0) statements.push(s + ';')
+    current = ''
+  }
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i]
+    if (quote) {
+      current += c
+      if (c === quote) quote = null
+    } else if (c === "'" || c === '"' || c === '`') {
+      quote = c
+      current += c
+    } else if (c === '-' && sql[i + 1] === '-') {
+      const eol = sql.indexOf('\n', i)
+      i = eol === -1 ? sql.length : eol - 1
+    } else if (c === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2)
+      i = end === -1 ? sql.length : end + 1
+    } else if (c === ';') {
+      flush()
+    } else {
+      current += c
+    }
+  }
+  flush()
+  return statements
+}
+
+/**
+ * Migration files keyed by path, valued by raw SQL (what
+ * import.meta.glob(..., { query: '?raw', import: 'default', eager: true })
+ * returns), as migrations in filename order, each named by its basename
+ * without the extension, like applyMigrations' names. For building a database
+ * from a whole folder, such as a fork's (test/migrations/forkUpgrade.test.ts).
+ */
+export function migrationsFromFiles(files: Record<string, string>): { name: string; queries: string[] }[] {
+  return Object.entries(files)
+    .map(([path, sql]) => ({ name: path.split('/').pop()!.replace(/\.sql$/, ''), sql }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .map(({ name, sql }) => ({ name, queries: splitStatements(sql) }))
+}
+
 export async function resetDb(): Promise<void> {
   await reset()
 }
