@@ -77,17 +77,28 @@ export async function runSnapshotSync(
   const toSync: SessionRow[] = []
   for (const state of owned) toSync.push(...await sessionsToSync(provider, state, ctx, etHour, force, db))
 
+  // A session that fails (a provider failing closed on a bad file, say)
+  // doesn't stop the others. Its errors are thrown together at the end, so
+  // the job still fails and alerts.
   const reports: SnapshotPassReport[] = []
+  const errors: Error[] = []
   for (const session of toSync) {
     const covering = coveringByState.get(session.state)
     if (!covering) continue
     // A snapshot is the only kind of pull, so only the session's full-pass hours run it.
     if (!force && decideMode(session, etHour) !== 'full') continue
     console.log(`[sync-${provider.id}] full pass: ${session.sessionName}`)
-    const counts = await runSnapshotPass(provider, session, covering, env, db, ctx, force)
-    reports.push({ sessionId: session.sessionId, sessionName: session.sessionName, ...counts })
-    await db.update(sessions).set({ lastSyncedAt: nowDb() }).where(eq(sessions.sessionId, session.sessionId))
+    try {
+      const counts = await runSnapshotPass(provider, session, covering, env, db, ctx, force)
+      reports.push({ sessionId: session.sessionId, sessionName: session.sessionName, ...counts })
+      await db.update(sessions).set({ lastSyncedAt: nowDb() }).where(eq(sessions.sessionId, session.sessionId))
+    } catch (err) {
+      console.error(`[sync-${provider.id}] ${session.sessionName} failed:`, err)
+      errors.push(err instanceof Error ? err : new Error(String(err)))
+    }
   }
+  if (errors.length === 1) throw errors[0]
+  if (errors.length > 1) throw new AggregateError(errors, `[sync-${provider.id}] ${errors.length} sessions failed: ${errors.map(e => e.message).join('; ')}`)
   return reports
 }
 

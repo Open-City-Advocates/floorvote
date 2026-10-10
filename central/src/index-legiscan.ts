@@ -99,7 +99,7 @@ export default {
     ctx.waitUntil(runJob(env, 'ls-sync', () => runSync(env, db)))
     // One job per snapshot provider, so one failing never stops another, run
     // one after another: a pass holds a session's whole snapshot in memory
-    // (Virginia's largest session needs about 70 MB at its peak), and two at
+    // (Virginia's largest session needs a 40 MB heap), and two at
     // once could pass a Worker's 128 MB. See "Memory" in docs/internal/sync-pipeline.md.
     ctx.waitUntil((async () => {
       for (const provider of PROVIDERS.filter(isSnapshotProvider)) {
