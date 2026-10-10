@@ -12,6 +12,7 @@ import {
 } from '../lib/billCalendar'
 import { carriedPeopleIds, measureWithCarriedPeople } from '../lib/carriedIds'
 import { clearProviderData } from '../lib/cutover'
+import { calendarCoverage } from '../lib/bodyEvents'
 import type { Env, Db, IngestorMessage, BillMessage, NotificationMessage, CalendarBlock } from '../types'
 import { personRow } from '../lib/people'
 import { writeMemberVotes, type RollCallMemberVotes } from '../lib/rollCallVotes'
@@ -570,7 +571,7 @@ export async function ingestMeasure(
   if (memberVotes.length > 0) await writeMemberVotes(env.DB, memberVotes, { replace: true })
 
   const calendarBlock: CalendarBlock | undefined = calendarPlan ? {
-    events: calendarBlockEvents(provider, calendarPlan.live),
+    events: calendarBlockEvents(provider, calendarPlan.live, await calendarCoverage(db, provider, bill.bill_id, calendarPlan.live)),
     changes: calendarChanges,
   } : undefined
   await notifyTenants(bill.bill_id, env, db, now, forceMetadata, forceAI, detectedChanges, calendarBlock, interactive)
@@ -598,7 +599,7 @@ async function recheckCalendar(billId: number, pullHash: string, provider: Provi
   // first try wrote its rows and then failed to reach instances must still
   // reach them, and instances reconcile the same block idempotently.
   await notifyTenants(billId, env, db, now, false, false, [], {
-    events: calendarBlockEvents(provider, plan.live),
+    events: calendarBlockEvents(provider, plan.live, await calendarCoverage(db, provider, billId, plan.live)),
     changes: plan.changes,
   })
 }
