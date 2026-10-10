@@ -24,13 +24,13 @@ export const lis: Provider<'LIS_STATES'> = {
 
   /**
    * The sessions the LIS has published for this year and next: the regular
-   * session and up to two special sessions this year, and next year's regular
-   * session once its prefiles appear.
+   * session and up to three special sessions this year, and next year's
+   * regular session once its prefiles appear.
    */
   async listSessions(_state, ctx) {
     const year = Number(ctx.today.slice(0, 4))
     const codes: string[] = []
-    for (const code of [`${year}1`, `${year}2`, `${year}3`, `${year + 1}1`]) {
+    for (const code of [`${year}1`, `${year}2`, `${year}3`, `${year}4`, `${year + 1}1`]) {
       if (await lisSessionExists(code)) codes.push(code)
     }
     const ids = await ctx.ids('session', codes)
@@ -61,7 +61,7 @@ export const lis: Provider<'LIS_STATES'> = {
    * One session's files, joined into a record per bill.
    *
    * ETags: the session's stored ETag is every file's ETag, packed into one
-   * string (`packEtags`). When there is one, a HEAD request per file checks
+   * versioned string (`packEtags`). When there is one, a HEAD request per file checks
    * them first, and if no file changed (or appeared, or went), the pass reads
    * nothing more and reports the session unchanged. Otherwise it reads every
    * file, since each bill's record joins all of them.
@@ -69,11 +69,13 @@ export const lis: Provider<'LIS_STATES'> = {
    * Fails closed: a file the session must publish that is missing (a 404),
    * cut short, or shaped differently throws, so the pass writes nothing from
    * that answer and no bill is rebuilt without its history, patrons, or
-   * votes. See `checkMissing` for which files may be missing.
+   * votes. See `checkMissing` for which files may be missing, and
+   * LisAssembler.check for files cut down to their header.
    */
   async snapshot(session, ctx): Promise<ProviderSnapshot> {
     const code = session.sessionTag
-    const stored = unpackEtags(session.etag)
+    const packed = unpackEtags(session.etag)
+    const stored = packed?.files ?? null
     if (stored && await unchangedSince(code, stored)) return { records: [], unchanged: true }
 
     // One file at a time, each folded in and let go before the next: a
@@ -82,20 +84,23 @@ export const lis: Provider<'LIS_STATES'> = {
     let assembler: LisAssembler | null = null
     for (const file of LIS_FILE_ORDER) {
       const read = await getLisFile(code, file)
-      // An empty file is as good as a missing one.
+      // An empty file is as good as a missing one. Its ETag is kept, marked,
+      // so the next pass's check sees it unchanged rather than appeared.
       if (!read || read.text === '') {
         checkMissing(code, file, assembler, stored)
+        if (read) etags[file] = `${EMPTY}${read.etag ?? ''}`
         continue
       }
       etags[file] = read.etag ?? ''
       if (file === 'bills') assembler = new LisAssembler(code, read.text)
       else assembler!.add(file, read.text)
     }
+    assembler!.check(packed?.docketed ?? false)
     const { records, members } = assembler!.result()
     return {
       records: await toRecords(code, records, ctx),
       people: await toPeople(members, ctx),
-      etag: packEtags(etags),
+      etag: packEtags(etags, assembler!.docketed),
     }
   },
 
@@ -150,7 +155,7 @@ export const lis: Provider<'LIS_STATES'> = {
 function checkMissing(code: string, file: LisFile, assembler: LisAssembler | null, stored: Record<string, string> | null): void {
   const missing = `LIS ${code}: ${LIS_FILES[file]} is missing`
   if (LIS_REQUIRED_FILES.includes(file)) throw new Error(missing)
-  if (stored && file in stored) throw new Error(`${missing}, though the last pass read it`)
+  if (stored?.[file] !== undefined && !stored[file].startsWith(EMPTY)) throw new Error(`${missing}, though the last pass read it`)
   if ((file === 'votes' || file === 'fiscal') && assembler?.expects(file)) {
     throw new Error(`${missing}, though this session's history records ${file === 'votes' ? 'counted votes' : 'fiscal impact statements'}`)
   }
@@ -161,25 +166,40 @@ async function unchangedSince(code: string, stored: Record<string, string>): Pro
   for (const file of LIS_FILE_ORDER) {
     const etag = await getLisFileEtag(code, file)
     // A file served without an ETag ('') can't be compared, so reads as changed.
-    if (etag === null ? file in stored : etag === '' || stored[file] !== etag) return false
+    if (etag === null ? file in stored : etag === '' || stored[file]?.replace(EMPTY, '') !== etag) return false
   }
   return true
 }
 
-/** The files' ETags as the session's one stored string, by file: `{"bills":"0x8DE...",...}`. A file the session lacks has no key. */
-export function packEtags(etags: Record<string, string>): string {
-  return JSON.stringify(etags)
+/**
+ * The packed ETag's format. Bump it when LisRecord's shape changes: a stored
+ * ETag of another version reads as none, so the next pass reads every file
+ * and rewrites every stored record, rather than taking a 304 and handing the
+ * mapping records of the old shape.
+ */
+const ETAG_VERSION = 2
+/** Marks a file the last pass read as empty (an empty file is treated as missing). */
+const EMPTY = 'empty:'
+
+/**
+ * The files' ETags as the session's one stored string:
+ * `{"v":2,"files":{"bills":"0x8DE...",...},"docketed":true}`. A file the
+ * session lacks has no key. `docketed` records that some bill was on a
+ * docket, so the next pass can tell a docket file cut to its header.
+ */
+export function packEtags(files: Record<string, string>, docketed: boolean): string {
+  return JSON.stringify({ v: ETAG_VERSION, files, docketed })
 }
 
-/** The stored string back as ETags by file, or null for none (or one this code didn't write). */
-export function unpackEtags(etag: string | null): Record<string, string> | null {
+/** The stored string back, or null for none, or one of another version or shape. */
+export function unpackEtags(etag: string | null): { files: Record<string, string>; docketed: boolean } | null {
   if (!etag) return null
   try {
-    const parsed = JSON.parse(etag) as unknown
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
-    const files = Object.entries(parsed)
+    const parsed = JSON.parse(etag) as { v?: unknown; files?: unknown; docketed?: unknown }
+    if (parsed?.v !== ETAG_VERSION || typeof parsed.files !== 'object' || parsed.files === null) return null
+    const files = Object.entries(parsed.files)
     if (!files.every(([file, v]) => file in LIS_FILES && typeof v === 'string')) return null
-    return Object.fromEntries(files) as Record<string, string>
+    return { files: Object.fromEntries(files) as Record<string, string>, docketed: parsed.docketed === true }
   } catch {
     return null
   }

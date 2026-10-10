@@ -135,12 +135,47 @@ export class LisAssembler {
   private refs = new Map<string, LisRecord[]>()
   private committees = new Map<string, string>()
   private members: LisMember[] = []
+  /** Rows of each file that attached to a bill (or a vote), for check(). */
+  private matched: Partial<Record<LisFile, number>> = {}
 
   constructor(private readonly sessionCode: string, billsCsv: string) {
     this.fold('bills', () => forEachCsvRecord(billsCsv, b => {
       const id = lisBillNumber(b.Bill_id)
       if (id) this.records.set(id, { bill: { ...b, Bill_id: id }, history: '', sponsors: [], summaries: [], fiscal: [], votes: {}, dockets: null })
     }, COLUMNS.bills))
+  }
+
+  /**
+   * Throws when a file came back with its header but none of the rows a
+   * session that far along must have: a history or patrons naming none of
+   * the bills, no vote rows for the counted votes this session's history
+   * records, or no statements for the ones it records. A file cut down to
+   * its header parses cleanly, so the row checks can't catch it, and the
+   * ingest would rebuild every bill without it. `docketed` says the last
+   * pass found bills on dockets, which then can't all be gone.
+   */
+  check(docketed = false): void {
+    const none = (file: LisFile, why: string) => {
+      if (!this.matched[file]) throw new Error(`LIS ${this.sessionCode} ${file}: no rows for ${why}, so the file is truncated`)
+    }
+    if (this.records.size > 0) {
+      none('history', 'any of the bills')
+      none('sponsors', 'any of the bills')
+    }
+    if (this.expects('votes')) none('votes', 'the counted votes this session\'s history records')
+    if (this.expects('fiscal')) none('fiscal', 'the fiscal impact statements this session\'s history records')
+    if (docketed && !this.matched.dockets && !this.matched.subdockets) {
+      throw new Error(`LIS ${this.sessionCode} dockets: no bill is on a docket, though the last pass found some, so the files are truncated`)
+    }
+  }
+
+  /** Whether any bill is on a docket, for the next pass's check(). */
+  get docketed(): boolean {
+    return !!(this.matched.dockets || this.matched.subdockets)
+  }
+
+  private count(file: LisFile): void {
+    this.matched[file] = (this.matched[file] ?? 0) + 1
   }
 
   result(): { records: Map<string, LisRecord>; members: LisMember[] } {
@@ -172,6 +207,7 @@ export class LisAssembler {
         this.fold(file, () => forEachCsvRecord(text, h => {
           const rec = records.get(lisBillNumber(h.Bill_id))
           if (!rec) return
+          this.count('history')
           const line = [lisDate(h.History_date), h.History_description, h.History_refid].map(f => f.replace(/[\t\r\n]+/g, ' ')).join('\t')
           const list = lines.get(rec)
           if (list) list.push(line)
@@ -204,22 +240,28 @@ export class LisAssembler {
           if (!targets) return
           const votes = parts.join(',')
           for (const rec of targets) rec.votes[id] = votes
+          this.count('votes')
         }), () => this.refs.clear())
       case 'sponsors':
         return this.fold(file, () => forEachCsvRecord(text, s => {
-          records.get(lisBillNumber(s.BILL_NUMBER))?.sponsors.push([s.MEMBER_ID, s.MEMBER_NAME, s.PATRON_TYPE])
+          const rec = records.get(lisBillNumber(s.BILL_NUMBER))
+          if (!rec) return
+          rec.sponsors.push([s.MEMBER_ID, s.MEMBER_NAME, s.PATRON_TYPE])
+          this.count('sponsors')
         }, COLUMNS.sponsors))
       case 'summaries':
         return this.fold(file, () => forEachCsvRecord(text, s => {
           const rec = records.get(lisBillNumber(s.SUM_BILNO))
-          const plain = rec ? htmlToText(s.SUMMARY_TEXT).replace(/\s+/g, ' ').trim() : ''
+          const plain = rec ? htmlToText(s.SUMMARY_TEXT) : ''
           if (rec && plain) rec.summaries.push([s.SUMMARY_TYPE, plain])
         }, COLUMNS.summaries))
       case 'fiscal':
         // The header is written `"HST_BILNO", "HST_REFID", "HST_URL"`; its names are trimmed.
         return this.fold(file, () => forEachCsvRecord(text, f => {
           const rec = records.get(lisBillNumber(f.HST_BILNO))
-          if (rec && f.HST_URL && !rec.fiscal.some(x => x[1] === f.HST_URL)) rec.fiscal.push([f.HST_REFID, f.HST_URL])
+          if (!rec || !f.HST_URL) return
+          this.count('fiscal')
+          if (!rec.fiscal.some(x => x[1] === f.HST_URL)) rec.fiscal.push([f.HST_REFID, f.HST_URL])
         }, COLUMNS.fiscal))
       case 'committees':
         return this.fold(file, () => forEachCsvRecord(text, c => { this.committees.set(c.COM_COMNO, c.COM_NAME) }, COLUMNS.committees))
@@ -230,7 +272,10 @@ export class LisAssembler {
         for (const rec of records.values()) rec.dockets ??= []
         return this.fold(file, () => forEachCsvRecord(text, d => {
           const committee = `${chamberName(d.Com_no)} ${this.committees.get(d.Com_no) ?? d.Com_no}`
-          records.get(lisBillNumber(d.Bill_no))?.dockets!.push([lisDate(d.Doc_date),
+          const rec = records.get(lisBillNumber(d.Bill_no))
+          if (!rec) return
+          this.count(file)
+          rec.dockets!.push([lisDate(d.Doc_date),
             file === 'subdockets' ? `${committee} subcommittee ${Number(d.Sub_no)} docket` : `${committee} docket`])
         }, COLUMNS[file]))
       }
@@ -319,23 +364,30 @@ function thisSessionHistory(rec: LisRecord, sessionCode: string): LisHistoryEntr
 }
 
 /**
- * The sessions a carried-over bill may have come from, latest first: every
- * session of the year its continuation was written in, up to this one. The
- * LIS numbers a year's sessions 1 (regular) and 2 onward (special), and a bill
- * can be continued from either into either (the 2026 budget went from the
- * regular session to Special Session I). The caller links the bill to the
- * first of these central already holds.
+ * The sessions a carried-over bill may have come from, most likely first.
+ * The LIS numbers a year's sessions 1 (regular) and 2 onward (special), and a
+ * bill can be continued from either into either (the 2026 budget went from
+ * the regular session to Special Session I). In order:
+ * 1. an earlier session of that year the bill's own history continued it
+ *    into, latest first (a bill continued twice came from the second);
+ * 2. that year's regular session, where continuations usually start;
+ * 3. its other special sessions, latest first.
+ * A special session may number its bills from 1 again, so its bills come
+ * after the regular session's unless the history names it. The caller links
+ * the bill to the first of these central already holds.
  */
 export function lisCarriedFromCandidates(rec: LisRecord, sessionCode: string): string[] {
   const { into } = lisCarry(rec, sessionCode)
   if (!into) return []
   const year = into.date.slice(0, 4)
-  const codes: string[] = []
-  for (let n = 9; n >= 1; n--) {
-    const code = `${year}${n}`
-    if (code < sessionCode) codes.push(lisNativeKey(code, rec.bill.Bill_id))
-  }
-  return codes
+  const earlier = (code: string) => code.startsWith(year) && code < sessionCode
+  const named = lisHistory(rec)
+    .map(([date, desc]) => continuationTarget(date, desc))
+    .filter((code): code is string => !!code && earlier(code))
+    .sort().reverse()
+  const specials = [9, 8, 7, 6, 5, 4, 3, 2].map(n => `${year}${n}`).filter(earlier)
+  const codes = [...new Set([...named, `${year}1`, ...specials])].filter(earlier)
+  return codes.map(code => lisNativeKey(code, rec.bill.Bill_id))
 }
 
 /** The code a LIS bill stores in `bills.status` (labeled in vocabulary.ts). */

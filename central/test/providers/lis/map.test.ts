@@ -119,6 +119,27 @@ describe('LisAssembler', () => {
     expect(() => new LisAssembler('20261', '"Bill_id","Bill_description"\n"HB1","x"\n')).toThrow(/LIS 20261 bills: the header has no Emergency/)
   })
 
+  it('fails on a file cut down to its header, which would rebuild every bill without it', () => {
+    const header = (text: string) => text.slice(0, text.indexOf('\n') + 1)
+    const check = (changed: Partial<LisFiles>) => () => assemble('20261', { ...files2026, ...changed }).check()
+    expect(check({})).not.toThrow()
+    expect(check({ history: header(files2026.history) })).toThrow('LIS 20261 history: no rows for any of the bills, so the file is truncated')
+    expect(check({ sponsors: header(files2026.sponsors) })).toThrow('LIS 20261 sponsors: no rows for any of the bills')
+    expect(check({ votes: header(files2026.votes) })).toThrow('LIS 20261 votes: no rows for the counted votes this session\'s history records')
+    expect(check({ fiscal: header(files2026.fiscal) })).toThrow('LIS 20261 fiscal: no rows for the fiscal impact statements')
+    // Dockets can be empty, unless the last pass found bills on them.
+    const noDockets = assemble('20261', { ...files2026, dockets: header(files2026.dockets) })
+    expect(() => noDockets.check()).not.toThrow()
+    expect(() => noDockets.check(true)).toThrow('LIS 20261 dockets: no bill is on a docket, though the last pass found some')
+    expect(assemble('20261', files2026).docketed).toBe(true)
+  })
+
+  it('keeps a summary\'s paragraph breaks', () => {
+    const a = new LisAssembler('20261', files2026.bills)
+    a.add('summaries', '"SUM_BILNO","SUMMARY_DOCID","SUMMARY_TYPE","SUMMARY_TEXT"\n"HB0001","HB1S","SUMMARY AS INTRODUCED","<p><b>Minimum wage.</b>  Raises it.</p><p>Also   this.</p>"\n')
+    expect(a.result().records.get('HB1')!.summaries).toEqual([['SUMMARY AS INTRODUCED', 'Minimum wage. Raises it.\n\nAlso this.']])
+  })
+
   it('expects votes and fiscal impact statements only once this session\'s history records them', () => {
     expect(assemble('20261', files2026).expects('votes')).toBe(true)
     expect(assemble('20261', files2026).expects('fiscal')).toBe(true)
@@ -183,11 +204,22 @@ describe('carry-over', () => {
   })
 
   it('looks for the earlier copy in every session of the year it was continued, not only the regular one', () => {
+    // The regular session first, then the special sessions, latest first: a special session may number from 1 again.
     expect(lisCarriedFromCandidates(y2027.records.get('HB9')!, '20271')).toEqual(
-      ['20269', '20268', '20267', '20266', '20265', '20264', '20263', '20262', '20261'].map(c => `${c}/HB9`))
+      ['20261', '20269', '20268', '20267', '20266', '20265', '20264', '20263', '20262'].map(c => `${c}/HB9`))
     const hb30 = record('HB30', { Carried_over: 'Y' }, [['2026-03-14', 'H Continued to 2026 Sp. Sess. 1 pursuant to HJR 316', '']])
     expect(lisCarriedFromCandidates(hb30, '20262')).toEqual(['20261/HB30'])
     expect(lisCarriedFromCandidates(y2027.records.get('HB1532')!, '20271')).toEqual([])
+  })
+
+  it('looks first in an earlier session the bill\'s own history continued it into', () => {
+    // Continued into Special Session I, then on to Special Session II: it came from Special Session I.
+    const twice = record('HB30', { Carried_over: 'Y' }, [
+      ['2026-03-14', 'H Continued to 2026 Sp. Sess. 1 pursuant to HJR 316', ''],
+      ['2026-06-01', 'H Continued to 2026 Sp. Sess. 2 pursuant to HJR 6001', ''],
+    ])
+    expect(lisCarriedFromCandidates(twice, '20263')[0]).toBe('20262/HB30')
+    expect(lisCarriedFromCandidates(twice, '20263')[1]).toBe('20261/HB30')
   })
 })
 

@@ -400,7 +400,70 @@ describe('failing closed', () => {
   })
 })
 
+describe('files cut down to their header', () => {
+  const header = (text: string) => text.slice(0, text.indexOf('\n') + 1)
+
+  it.each(['history', 'sponsors', 'votes', 'fiscal'] as const)('fails on a header-only %s, rather than rebuilding every bill without it', async file => {
+    await claim('lis')
+    await syncAndIngest()
+    const before = await getJson(`/bills/${toHandle(await billId('HB1'))}`)
+    const served = sessions['20261'][file]!
+    served.text = header(served.text)
+    served.etag = '"cut"'
+    const run = makeEnv()
+    await expect(runSnapshotSync(lis, run.env, drizzle(env.DB, { schema }))).rejects.toThrow(`LIS 20261 ${file}: no rows for`)
+    expect(queuedIds(run)).toEqual([])
+    expect(await getJson(`/bills/${toHandle(await billId('HB1'))}`)).toEqual(before)
+  })
+
+  it('fails on header-only dockets once the last pass found bills on them, so no docket is cancelled', async () => {
+    await claim('lis')
+    await syncAndIngest()
+    const dockets = sessions['20261'].dockets!
+    dockets.text = header(dockets.text)
+    dockets.etag = '"cut"'
+    await expect(runSnapshotSync(lis, makeEnv().env, drizzle(env.DB, { schema }))).rejects.toThrow('LIS 20261 dockets: no bill is on a docket, though the last pass found some')
+  })
+})
+
+describe('one session failing', () => {
+  it('doesn\'t stop the next session\'s pass, and still fails the job', async () => {
+    // 2026 Special Session I, served from the 2027 prefile rows.
+    serve('20262', s2027())
+    sessions['20261'].sponsors = null
+    await claim('lis')
+    const run = makeEnv()
+    await expect(runSnapshotSync(lis, run.env, drizzle(env.DB, { schema }))).rejects.toThrow('LIS 20261: Sponsors.csv is missing')
+    expect(await billId('HB1532', '20262')).toBeGreaterThan(3_000_000_000)
+    await expect(billId('HB1', '20261')).rejects.toThrow()
+  })
+})
+
 describe('reading the files with their ETags', () => {
+  it('keeps an empty file\'s ETag, so it doesn\'t read as appeared on every pass', async () => {
+    const files = s2026()
+    files.subdockets = ''
+    serve('20261', files)
+    sessions['20261'].subdockets = { text: '', etag: '"20261-subdockets-v1"' }
+    await claim('lis')
+    await syncAndIngest()
+    calls = []
+    await runSnapshotSync(lis, makeEnv().env, drizzle(env.DB, { schema }))
+    expect(gets()).toEqual([])
+  })
+
+  it('reads in full when the stored ETag is from another version', async () => {
+    await claim('lis')
+    await syncAndIngest()
+    const db = drizzle(env.DB, { schema })
+    // The format before versioning: ETags by file, with no version.
+    const old = JSON.stringify(Object.fromEntries((Object.keys(LIS_FILES) as LisFile[]).map(f => [f, `"20261-${f}-v1"`])))
+    await db.update(schema.sessions).set({ snapshotEtag: old }).where(eq(schema.sessions.sessionTag, '20261'))
+    calls = []
+    await runSnapshotSync(lis, makeEnv().env, db)
+    expect(gets().sort()).toEqual(Object.keys(LIS_FILES).sort())
+  })
+
   it('checks every file\'s ETag first, and reads none when nothing changed', async () => {
     await claim('lis')
     await syncAndIngest()
