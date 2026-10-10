@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { bodyEventMonths, bodyEventUid, planBodyEventPulls, type BodyEventPull, type BodyEventRow } from '../../src/lib/bodyEvents'
+import { bodyEventMonths, bodyEventUid, EMPTY_PULLS_TO_CANCEL, planBodyEventPulls, type BodyEventPull, type BodyEventRow } from '../../src/lib/bodyEvents'
 import { getProvider, type BodyEvent } from '../../src/providers'
 
 // The body-event planner on its own: what one sync's pulls do to a provider's
@@ -21,12 +21,13 @@ function event(o: Partial<BodyEvent> = {}): BodyEvent {
 function rows(values: ReturnType<typeof planBodyEventPulls>): BodyEventRow[] {
   return values.map((v, i) => ({
     id: i + 1, createdAt: NOW, type: null, time: null, timezone: null, committeeId: null, committee: null, jointWith: null,
-    location: null, agendaJson: '[]', url: null, missedPulls: 0, cancelledAt: null, ...v,
+    location: null, agendaJson: '[]', url: null, missedPulls: 0, emptyPulls: 0, cancelledAt: null, ...v,
   } as BodyEventRow))
 }
 
 const pull = (events: BodyEvent[], range = OCTOBER): BodyEventPull => ({ ...range, events })
 const plan = (prior: BodyEventRow[], ...pulls: BodyEventPull[]) => planBodyEventPulls(lims, 'DC', prior, pulls, NOW)
+const NOVEMBER = { from: '2026-11-01', to: '2026-11-30' }
 
 describe('body events', () => {
   it('are stored under the provider\'s event id, and an unchanged listing writes nothing', () => {
@@ -66,6 +67,26 @@ describe('body events', () => {
     // November listed something, but the event is in October: a date passing never cancels anything.
     expect(plan(stored, pull([event({ event_id: '3', date: '2026-11-02' })], { from: '2026-11-01', to: '2026-11-30' })))
       .toEqual([expect.objectContaining({ eventId: '3' })])
+  })
+
+  it('count no absences in a sync where a month failed, since an event may have moved into it', () => {
+    const stored = rows(plan([], pull([event(), event({ event_id: '2' })])))
+    const incomplete = planBodyEventPulls(lims, 'DC', stored, [pull([event({ event_id: '2' })])], NOW, false)
+    expect(incomplete).toEqual([])
+  })
+
+  it('cancel an event whose month comes back empty only after a day of syncs where other months list events', () => {
+    let stored = rows(plan([], pull([event()])))
+    const emptied = () => plan(stored, pull([]), pull([event({ event_id: '3', date: '2026-11-02' })], NOVEMBER))
+      .filter(r => r.eventId === '1')
+    for (let i = 1; i < EMPTY_PULLS_TO_CANCEL; i++) {
+      const [row] = emptied()
+      expect(row).toMatchObject({ emptyPulls: i, missedPulls: 0, cancelledAt: null })
+      stored = rows([row])
+    }
+    expect(emptied()).toEqual([expect.objectContaining({ emptyPulls: EMPTY_PULLS_TO_CANCEL, cancelledAt: NOW })])
+    // Listed again, both counts start over.
+    expect(plan(stored, pull([event()]))).toEqual([expect.objectContaining({ eventId: '1', missedPulls: 0, emptyPulls: 0, cancelledAt: null })])
   })
 
   it('are read last month through three months ahead, across a year\'s end', () => {

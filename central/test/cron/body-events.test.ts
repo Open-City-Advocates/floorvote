@@ -242,6 +242,29 @@ describe('the Council\'s calendar', () => {
     expect(sent.calendar.events).toEqual([expect.objectContaining({ identityKey: 'hearing|2026-10-23|public hearing on b26-0769', coveredBy: 'council-2405@lims.dccouncil.gov' })])
   })
 
+  it('keeps covering a bill entry once it is cancelled, so the cancellation shows once', async () => {
+    await claimDc()
+    await syncBills()
+    await syncCalendar()
+    await db().update(schema.billCalendar).set({ cancelledAt: '2026-09-28 09:00:00' }).where(eq(schema.billCalendar.billId, B0769))
+    expect((await eventsFor()).byUid.get('council-2405@lims.dccouncil.gov').covers)
+      .toEqual([{ billId: toHandle(B0769), identityKey: 'hearing|2026-10-23|public hearing on b26-0769' }])
+  })
+
+  it('pairs no bill with a topic that only repeats the event\'s own name', async () => {
+    // A hearing notice whose entry that day is described as the legislative meeting is.
+    const notice = { ...bulk['HN26-0171'], title: 'Legislative Meeting Notice' }
+    feed['BulkData/18/26'] = () => json([notice])
+    const meeting = { ...october.find(h => h.hearingId === 2045)!, hearingDateTime: '2026-10-02T12:00:00' }
+    calendar['2026-10'] = () => json([...october.filter(h => h.hearingId !== 2045), meeting])
+    await db().insert(schema.keywordRegistry).values({ tenantId: 'oca', keyword: 'legislative meeting' })
+    await claimDc()
+    await syncBills()
+    await syncCalendar()
+    expect((await getJson(`/bills/${toHandle(HN)}`)).calendar).toEqual([expect.objectContaining({ date: '2026-10-02', description: 'Legislative Meeting Notice' })])
+    expect((await eventsFor()).byUid.get('council-2045@lims.dccouncil.gov')).toMatchObject({ title: 'Legislative Meeting', bills: [], covers: [] })
+  })
+
   it('records each committee holding an event, under the id the committee\'s referrals point at', async () => {
     await claimDc()
     await syncBills()

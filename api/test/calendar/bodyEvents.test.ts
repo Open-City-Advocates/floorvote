@@ -158,6 +158,26 @@ describe('body events on an instance', () => {
     expect((await calendar()).map(e => e.uid)).toContain(HEARING_UID)
   })
 
+  it('are cancelled, never deleted, when central stops sending one while the state still has body events', async () => {
+    await sync()
+    central.events = [bodyEvent()]
+    await sync()
+    expect(await row('council-2405@lims.dccouncil.gov')).toMatchObject({ status: 'cancelled', sequence: 1 })
+    // Still the bill hearing's cover, so the cancellation shows once.
+    expect((await row(HEARING_UID))?.coveredBy).toBe('council-2405@lims.dccouncil.gov')
+    await sync()
+    expect(await row('council-2405@lims.dccouncil.gov')).toMatchObject({ status: 'cancelled', sequence: 1 })
+  })
+
+  it('stay as they are when central answers without its events or capabilities', async () => {
+    await sync()
+    for (const answer of [{ capabilities: CAPABLE }, { events: [bodyEvent()] }, { capabilities: CAPABLE, events: null }]) {
+      central = answer as typeof central
+      await expect(sync()).rejects.toThrow('no events or capabilities')
+    }
+    expect((await calendar()).map(e => e.uid)).toEqual(['council-2408@lims.dccouncil.gov', 'council-2405@lims.dccouncil.gov'])
+  })
+
   it('stay as they are when central fails', async () => {
     await sync()
     central.status = 503
