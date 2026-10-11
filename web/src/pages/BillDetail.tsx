@@ -1600,7 +1600,7 @@ export function BillDetail() {
           const typeExplainer = billTypeExplainer(stateLabels, bill.billType)
           if (bodyLabel) metaItems.push(typeExplainer
             ? <span key="body" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
-                <HoverTooltip text={typeExplainer} placement="bottom" maxWidth={320}><span aria-describedby="bill-type-explainer">{bodyLabel}</span></HoverTooltip>
+                <HoverTooltip text={typeExplainer} placement="bottom" maxWidth={320}><span>{bodyLabel}</span></HoverTooltip>
                 <span id="bill-type-explainer" style={SR_ONLY}>{typeExplainer}</span>
               </span>
             : <span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>)

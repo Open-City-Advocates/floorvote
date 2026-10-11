@@ -4,6 +4,9 @@ import { DEFAULT_PROVIDER_ID } from '../providers'
 import { firstFreeSlug, sessionToSlug } from '../../../shared/sessionSlug'
 import type { Db } from '../types'
 
+/** Claims per batch: a round trip each would pass D1's per-invocation query limit. */
+const CLAIM_BATCH = 50
+
 /**
  * Give every session without a slug one that is unique within its state: the
  * slug its name asks for (sessionToSlug, as tenants compute it), or, when
@@ -22,9 +25,6 @@ import type { Db } from '../types'
  * it at once: each write claims a slug only if no other session of the state
  * holds it, in one statement, so two sessions can never take the same one.
  */
-/** Claims per batch: each binds four parameters, well under D1's 100 per statement. */
-const CLAIM_BATCH = 50
-
 export async function assignSessionSlugs(db: Db): Promise<void> {
   const pending = await db.select({ sessionId: sessions.sessionId, state: sessions.state, sessionName: sessions.sessionName })
     .from(sessions)
@@ -75,15 +75,23 @@ export async function assignSessionSlugs(db: Db): Promise<void> {
     results.forEach((r, j) => { if (!(r.meta.changes > 0)) lost.push(chunk[j]) })
   }
 
+  // Another job got here first for each of these: it slugged the session, or
+  // took the slug. One query finds the sessions it slugged.
+  const slugged = lost.length === 0 ? [] : await db.select({ sessionId: sessions.sessionId }).from(sessions)
+    .where(and(
+      sql`${sessions.sessionId} IN (SELECT value FROM json_each(${JSON.stringify(lost.map(p => p.sessionId))}))`,
+      isNotNull(sessions.slug),
+    )).all()
+  const done = new Set(slugged.map(r => r.sessionId))
   for (const p of lost) {
+    if (done.has(p.sessionId)) continue
     const used = await takenIn(p.state)
     for (;;) {
-      // Another job got here first: it slugged this session, or took the slug.
-      const now = await db.select({ slug: sessions.slug }).from(sessions).where(eq(sessions.sessionId, p.sessionId)).get()
-      if (!now || now.slug !== null) break
       const slug = firstFreeSlug(p.wanted, used)
       used.add(slug)
       if ((await claim(p, slug).run()).meta.changes > 0) break
+      const now = await db.select({ slug: sessions.slug }).from(sessions).where(eq(sessions.sessionId, p.sessionId)).get()
+      if (!now || now.slug !== null) break
     }
   }
 }

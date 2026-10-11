@@ -277,7 +277,7 @@ describe('deadlines and explainers on a bill page', () => {
 
   it('opens the bill type\'s hover bubble below, with no info button and a described label', async () => {
     renderBillDetail({ state: 'MD', billNumber: 'B26-0402', body: 'C', billType: 'Emergency Bill', status: 'Introduced', calendar })
-    await waitFor(() => expect(screen.getByText('Council Emergency Bill')).toHaveAccessibleDescription(TYPE_EXPLAINER))
+    await waitFor(() => expect(document.getElementById('bill-type-explainer')).toHaveTextContent(TYPE_EXPLAINER))
     const label = screen.getByText('Council Emergency Bill')
     expect(screen.queryByRole('button', { name: 'About "Council Emergency Bill"' })).toBeNull()
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(RECT)

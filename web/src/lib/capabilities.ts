@@ -15,6 +15,7 @@ import { useConfig } from '../context/ConfigContext'
 export function useStageFilterUseful(): boolean {
   const { config } = useConfig()
   if (!config) return true
+  // /config names no provider per state, but `attribution.providers` lists exactly the providers that own a covered state.
   return (config.attribution?.providers ?? []).some(p => p.id !== 'legiscan')
 }
 

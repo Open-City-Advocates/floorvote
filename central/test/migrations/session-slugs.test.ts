@@ -103,6 +103,38 @@ describe('session slugs on an upgraded central', () => {
     expect(await slugsIn('MD')).toEqual({ 2200: '2026', 3000000005: '2026-2', 3000000006: '2026-s1' })
   })
 
+  it('plan a large central\'s claims in batches of at most 50', async () => {
+    await env.DB.batch(Array.from({ length: 120 }, (_, i) => env.DB.prepare(
+      `INSERT INTO sessions (session_id, state_id, state, year_start, year_end, session_tag, session_title, session_name)
+       VALUES (?, 43, 'TX', 2026, 2026, '', '2026 Regular Session', '2026 Regular Session')`).bind(80000 + i)))
+    const pending = (await env.DB.prepare('SELECT COUNT(*) AS n FROM sessions WHERE slug IS NULL').first<{ n: number }>())!.n
+    let batches = 0
+    const counting = { prepare: (q: string) => env.DB.prepare(q), batch: (s: any[]) => { batches++; return env.DB.batch(s) } }
+    await assignSessionSlugs(drizzle(counting as unknown as D1Database, { schema }))
+    expect(batches).toBeGreaterThan(0)
+    expect(batches).toBeLessThanOrEqual(Math.ceil(pending / 50))
+  })
+
+  it('retry claims lost to another job after reading their slugs in one query, with the same result', async () => {
+    const queries: string[] = []
+    let rival: Promise<void> | undefined
+    const racing = {
+      prepare: (q: string) => { queries.push(q); return env.DB.prepare(q) },
+      // Another job slugs everything just before this job's first claims land.
+      batch: async (s: any[]) => {
+        rival ??= assignSessionSlugs(drizzle(env.DB, { schema }))
+        await rival
+        return env.DB.batch(s)
+      },
+    }
+    await assignSessionSlugs(drizzle(racing as unknown as D1Database, { schema }))
+    expect(await slugsIn('MD')).toEqual({ 2200: '2026', 3000000005: '2026-2', 3000000006: '2026-s1' })
+    expect(await slugsIn('US')).toEqual({ 7001: 'special-joint-session', 7002: 'special-joint-session-2', 7003: 'special-joint-session-3' })
+    // One read covers every lost session: no per-session lookup remains.
+    expect(queries.filter(q => q.includes('json_each'))).toHaveLength(1)
+    expect(queries.filter(q => /^select .*from "sessions" where "sessions"."session_id" = \?/i.test(q))).toHaveLength(0)
+  })
+
   it('give the plain slug to the session of the provider that owns the state, ahead of an older one', async () => {
     // A fork's DC: LIMS owns it, and a leftover LegiScan Council Period 26
     // session has a lower id. /DC/cp26/... stays with LIMS.

@@ -30,17 +30,33 @@ export const LIMS_STATUS_BASE = 100
 
 const STATUS_CODE_BY_NAME = new Map(Object.entries(vocabulary.statuses).map(([code, s]) => [s.label.toLowerCase(), Number(code)]))
 
+/** Unlisted status names already reported, so one new status isn't one line per record per pass. */
+const warnedStatuses = new Set<string>()
+
+function warnUnrecognized(name: string | null | undefined): void {
+  const shown = clean(name)
+  if (warnedStatuses.has(shown)) return
+  warnedStatuses.add(shown)
+  console.warn(`[lims] unrecognized status "${shown}", read as Not Applicable; add it to providers/lims/vocabulary.ts`)
+}
+
+/** The code for a status name, or undefined when it is not blank and the vocabulary doesn't list it. */
+function listedStatusCode(name: string | null | undefined): number | undefined {
+  const key = clean(name).toLowerCase()
+  return key ? STATUS_CODE_BY_NAME.get(key) : LIMS_STATUS_BASE
+}
+
 /**
  * A blank status, and a name the vocabulary doesn't list, both read as "Not
  * Applicable" (100), which is terminal. An unlisted name is a status LIMS
- * started using after vocabulary.ts was written, so say so: otherwise its bills
- * drop out of the details refresh and the stage filter with no sign why.
+ * started using after vocabulary.ts was written, so say so, once per name:
+ * otherwise its bills drop out of the details refresh and the stage filter with
+ * no sign why.
  */
 export function limsStatusCode(name: string | null | undefined): number {
-  const key = clean(name).toLowerCase()
-  const code = key ? STATUS_CODE_BY_NAME.get(key) : LIMS_STATUS_BASE
+  const code = listedStatusCode(name)
   if (code !== undefined) return code
-  console.warn(`[lims] unrecognized status "${clean(name)}", read as Not Applicable; add it to providers/lims/vocabulary.ts`)
+  warnUnrecognized(name)
   return LIMS_STATUS_BASE
 }
 
@@ -48,19 +64,22 @@ export function limsStatusCode(name: string | null | undefined): number {
  * Status code for a measure. Earlier Council Periods leave `status` blank (every
  * CP25 bill does) or "Not Applicable", but still carry the law and act or
  * resolution numbers, so fall back to those: a law number means Official Law,
- * an act number (A25-...) Enacted, a resolution number (R25-...) Approved.
+ * an act number (A25-...) Enacted, a resolution number (R25-...) Approved. An
+ * unlisted status name is reported only when those don't resolve a status either.
  */
 export function limsMeasureStatus(
   rec: { status: string | null; lawNumber: string | null; actResNumber: string | null },
   detailsStatus?: string | null,
 ): number {
-  const code = limsStatusCode(clean(detailsStatus) || rec.status)
-  if (code !== LIMS_STATUS_BASE) return code
+  const name = clean(detailsStatus) || rec.status
+  const listed = listedStatusCode(name)
+  if (listed !== undefined && listed !== LIMS_STATUS_BASE) return listed
   if (clean(rec.lawNumber)) return limsStatusCode('Official Law')
   const actRes = clean(rec.actResNumber)
   if (/^A\d/i.test(actRes)) return limsStatusCode('Enacted')
   if (/^R\d/i.test(actRes)) return limsStatusCode('Approved')
-  return code
+  if (listed === undefined) warnUnrecognized(name)
+  return LIMS_STATUS_BASE
 }
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
