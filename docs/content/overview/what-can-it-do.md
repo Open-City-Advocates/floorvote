@@ -85,7 +85,7 @@ When a bill newly matches your keywords, it needs a quick decision: assign it a 
 
 Hearings on bills your team has prioritized are added to your team's calendar automatically as they're scheduled. You can add custom events of your own (like coalition calls) alongside them. Everyone on the team can subscribe to the calendar from their own calendar app.
 
-Where a state's data includes the legislature's own calendar (DC's Council calendar, for one), its hearings, roundtables, and meetings appear too, with or without a bill on the agenda. Admins choose which ones under Settings, by committee, kind of event, topic keywords, or bills the team tracks. Where a state's data includes deadlines, such as the end of the executive's time to sign or veto, each tracked bill's deadlines go on the calendar and show on its bill page.
+Where a state's data includes the legislature's own calendar (DC's Council calendar, for one), its hearings, roundtables, and meetings appear too, with or without a bill on the agenda. Admins choose which ones under Settings, by committee, kind of event, topic keywords, or bills the team tracks. An event with a prioritized bill on its agenda always shows, and an event the choices leave out drops out of the calendar subscription too. Where a state's data includes deadlines, such as the end of the executive's time to sign or veto, a prioritized bill's deadlines go on the calendar alongside its hearings, and every bill's next deadline shows on its bill page.
 
 You can also import a full spreadsheet or .ics file of events at once.
 
