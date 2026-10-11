@@ -2,11 +2,12 @@ import { useRouteError, isRouteErrorResponse, useRevalidator, Link } from 'react
 import { color, fontSize, fontWeight } from '../styles/tokens'
 import { ApiError } from '../lib/api'
 import { AcceptTerms } from '../components/AcceptTerms'
+import { BillChoiceLinks, billChoicesFrom } from '../components/BillChoices'
 
 /**
  * errorElement for the bill-detail routes. Renders three distinct outcomes
- * thrown by billDetailLoader — a 404 (this URL names no bill), the 409
- * ambiguous-legacy-bill guidance, or a generic load failure — instead of the
+ * thrown by billDetailLoader — a 404 (this URL names no bill), a 409 (more
+ * than one bill answers to it, each linked), or a generic load failure — instead of the
  * page crashing. Replaces the old in-component `setError` branch.
  *
  * The 404 case is deliberately not styled as an error. It is reachable from any
@@ -41,13 +42,28 @@ export function BillDetailError() {
     )
   }
 
-  const message =
-    status === 409
-      ? 'This bill number exists in multiple states. Please use a state-prefixed URL (e.g. /RI/2026/HB0209).'
-      : 'Failed to load bill.'
+  // More than one bill answers to this URL: an old link whose slug now
+  // belongs to several sessions, or a state-less link to a number several
+  // states use. The loader passes the candidates as the error's data.
+  if (status === 409) {
+    const choices = billChoicesFrom(isRouteErrorResponse(error) ? (error.data as { candidates?: unknown } | null)?.candidates : null)
+    return (
+      <div style={{ padding: 32 }}>
+        <div style={{ fontSize: fontSize.lg, fontWeight: fontWeight.semibold, color: color.textPrimary, marginBottom: 6 }}>
+          More than one bill answers to this link
+        </div>
+        <div style={{ fontSize: fontSize.sm, color: color.textSlate, marginBottom: 12 }}>
+          {choices.length > 0 ? 'Choose the one you meant:' : 'Find the bill on the bills page, or use a link with its state and session (e.g. /RI/2026/HB0209).'}
+        </div>
+        {choices.length > 0 && <div style={{ marginBottom: 12 }}><BillChoiceLinks choices={choices} /></div>}
+        <Link to="/bills" style={{ fontSize: fontSize.sm, color: color.linkBlue, textDecoration: 'none' }}>← Back to bills</Link>
+      </div>
+    )
+  }
+
   return (
     <div style={{ padding: 32, color: color.textErrorRed }}>
-      <div style={{ marginBottom: 12 }}>{message}</div>
+      <div style={{ marginBottom: 12 }}>Failed to load bill.</div>
       <Link to="/bills" style={{ fontSize: fontSize.sm, color: color.linkBlue, textDecoration: 'none' }}>← Back to bills</Link>
     </div>
   )

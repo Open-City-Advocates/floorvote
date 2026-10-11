@@ -42,14 +42,28 @@ export function firstFreeSlug(wanted: string, taken: ReadonlySet<string>): strin
 }
 
 /**
- * The slug an older URL may use for this session, or null. Before Council
- * Periods had their own slug, "2025-2026 Council Period 26" slugged to
- * "2025-2026", and links made then should keep working where they are
- * unambiguous.
+ * FROZEN: the slug rule releases before provider-model (#283) used, copied
+ * from main's shared/sessionSlug.ts. Links in old emails, bookmarks, and
+ * notes were made with it, so never change it to match sessionToSlug.
+ * "2026 Special Session 1" → "2026", "2025-2026 Council Period 26" →
+ * "2025-2026", "2026 1st Special Session" → "2026-s1".
+ */
+export function sessionToSlugBeforeProviders(sessionName: string): string {
+  const special = sessionName.match(/(\d{4}(?:-\d{4})?)\s+(\d+)(?:st|nd|rd|th)\s+special/i)
+  if (special) return `${special[1]}-s${special[2]}`
+  const m = sessionName.match(/^(\d{4}(?:-\d{4})?)/)
+  return m ? m[1] : sessionName.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+}
+
+/**
+ * The slug older URLs used for this session, when sessionToSlug now gives it
+ * another, or null. Numbered special sessions and Council Periods slugged to
+ * their year ("2026", "2025-2026") before they had their own slug, so links
+ * made then should keep working where they are unambiguous.
  */
 export function legacySessionSlug(sessionName: string): string | null {
-  if (!COUNCIL_PERIOD.test(sessionName)) return null
-  return sessionName.match(/^(\d{4}(?:-\d{4})?)/)?.[1] ?? null
+  const old = sessionToSlugBeforeProviders(sessionName)
+  return old === sessionToSlug(sessionName) ? null : old
 }
 
 /**

@@ -12,9 +12,11 @@ import type { Db } from '../types'
  * no state_providers row is LegiScan's), then lowest session id. On the first
  * run after migration 0031, the URLs instances already use keep meaning what
  * they meant: a LegiScan state's sessions keep the plain slug, and so do a
- * LIMS-owned DC's Council Periods beside older LegiScan DC sessions. Callers
- * load ownership first (loadStateOwners), so env-var ownership is seeded
- * before the first run. A slug, once assigned, never changes.
+ * LIMS-owned DC's Council Periods beside older LegiScan DC sessions. Numbered
+ * special sessions and Council Periods ask for a different slug than older
+ * releases gave them, and tenants still resolve the old one (legacySessionSlug).
+ * Callers load ownership first (loadStateOwners), so env-var ownership is
+ * seeded before the first run. A slug, once assigned, never changes.
  *
  * Runs on every cron tick and after every session write. Several jobs may run
  * it at once: each write claims a slug only if no other session of the state

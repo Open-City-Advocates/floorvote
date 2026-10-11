@@ -74,6 +74,16 @@ describe('billDetailLoader', () => {
     ).rejects.toMatchObject({ status: 409 })
   })
 
+  it("passes a 409's candidates on, so the error page can link to each", async () => {
+    const special1 = { state: 'MD', sessionSlug: '2026-s1', session: '2026 Special Session 1', billNumber: 'HB5' }
+    const special2 = { ...special1, sessionSlug: '2026-s2', session: '2026 Special Session 2' }
+    vi.spyOn(api, 'apiFetch').mockRejectedValue(new api.ApiError(409, 'ambiguous', undefined, { candidates: [special1, special2, { state: 'MD' }] }))
+    const thrown = await billDetailLoader(loaderArgs({ state: 'MD', sessionSlug: '2026', billNumber: 'HB5' }, 'http://localhost/MD/2026/HB5'))
+      .then(() => null, (e: unknown) => e)
+    expect(thrown).toBeInstanceOf(Response)
+    expect(await (thrown as Response).json()).toEqual({ candidates: [special1, special2] })
+  })
+
   // Before this branch existed, a 404 fell into the generic 500 alongside a dead
   // backend, so a URL naming no bill and a bill service that is down were reported
   // identically — and both as "Failed to load bill." The SPA's not-found handling

@@ -13,22 +13,42 @@ import { defaultDraftYear } from './draftRoutes'
 // billSlug lives in lib/sessionSlug so the draft-number collision check can
 // compare the same notion of "answers to this URL" that these routes do.
 
+type Candidate = { id: string; state: string; session: string; sessionSlug: string | null; isDraft: boolean; yearStart: number | null }
+
 /**
  * The bill a /STATE/SLUG/NUMBER URL names. An exact slug match wins: the slug
- * central assigned the bill's session, which is unique within the state.
- * Failing that, a slug the URL may have been made with before: the one the
- * session name asks for (which central gave another session of the state, so
- * gave this one "-2"), or the year span a Council Period used before it had its
- * own. More than one match is ambiguous, never a guess.
+ * central assigned the bill's session, which is unique within the state, so
+ * a bill's canonical URL always reaches it. Failing that, a slug the URL may
+ * have been made with before: the one the session name asks for (which central
+ * gave another session of the state, so gave this one "-2"), or the one an
+ * older release gave a session the current rule renames (legacySessionSlug:
+ * "2026" for "2026 Special Session 1"). More than one such match is ambiguous,
+ * never a guess.
+ *
+ * An exact match can also be a slug older links used for other bills:
+ * /MD/2026/HB5 is the 2026 Regular Session's HB5 today, and was the 2026
+ * Special Session 1's HB5 too. Those bills come back as `others`, so the page
+ * can point to them rather than land there silently.
  */
-function resolveSlug<T extends { session: string; sessionSlug: string | null; isDraft: boolean; yearStart: number | null }>(candidates: T[], slug: string):
-  { status: 200; match: T } | { status: 404 } | { status: 409; candidates: T[] } {
+function resolveSlug<T extends Candidate>(candidates: T[], slug: string):
+  { status: 200; match: T; others: T[] } | { status: 404 } | { status: 409; candidates: T[] } {
+  const olderLinkTo = (b: T) => !b.isDraft && (sessionToSlug(b.session) === slug || legacySessionSlug(b.session) === slug)
   const exact = candidates.filter(b => billSlug(b) === slug)
-  const matches = exact.length > 0 ? exact : candidates.filter(b =>
-    !b.isDraft && (sessionToSlug(b.session) === slug || legacySessionSlug(b.session) === slug))
+  if (exact.length === 1) return { status: 200, match: exact[0], others: candidates.filter(b => b !== exact[0] && olderLinkTo(b)) }
+  const matches = exact.length > 0 ? exact : candidates.filter(olderLinkTo)
   if (matches.length === 0) return { status: 404 }
   if (matches.length > 1) return { status: 409, candidates: matches }
-  return { status: 200, match: matches[0] }
+  return { status: 200, match: matches[0], others: [] }
+}
+
+/** How a bill is listed when a URL could mean more than one: enough for the
+ *  page to name its session and link to its canonical URL. */
+const billChoice = (b: Candidate, billNumber: string) => ({ state: b.state, sessionSlug: billSlug(b), session: b.session, billNumber })
+
+/** The bill detail, plus `otherSessionMatches` when an older link to this URL
+ *  may have meant another bill (resolveSlug). Absent otherwise. */
+function withOthers<D extends object>(detail: D, others: Candidate[], billNumber: string) {
+  return others.length === 0 ? detail : { ...detail, otherSessionMatches: others.map(b => billChoice(b, billNumber)) }
 }
 
 export function registerLookupRoutes(router: Hono<AppEnv>) {
@@ -45,10 +65,10 @@ export function registerLookupRoutes(router: Hono<AppEnv>) {
     const found = resolveSlug(candidates, slug)
     if (found.status === 404) return c.json({ error: 'Not found' }, 404)
     if (found.status === 409) {
-      return c.json({ error: 'Ambiguous bill: more than one session matches', candidates: found.candidates.map(m => ({ state: m.state, sessionSlug: billSlug(m), billNumber })) }, 409)
+      return c.json({ error: 'Ambiguous bill: more than one session matches', candidates: found.candidates.map(m => billChoice(m, billNumber)) }, 409)
     }
     const user = c.get('user')
-    return c.json(await buildBillDetail(db, found.match.id, user, c.env))
+    return c.json(withOthers(await buildBillDetail(db, found.match.id, user, c.env), found.others, billNumber))
   })
 
   // GET /bills/resolve/:sessionSlug/:billNumber — legacy lookup without state.
@@ -64,16 +84,18 @@ export function registerLookupRoutes(router: Hono<AppEnv>) {
     // legacy form (which would otherwise hand the client `state: ''`).
     const found = resolveSlug(candidates.filter(b => b.state !== ''), slug)
     if (found.status === 404) return c.json({ error: 'Not found' }, 404)
-    const matches = found.status === 409 ? found.candidates : [found.match]
-    if (matches.length > 1) {
+    // A bill in another state that an older link may have meant is ambiguous
+    // here, not a note: the page redirects to the match's state-prefixed URL,
+    // where only that state's bills are candidates, so the note would vanish.
+    if (found.status === 409 || found.others.some(b => b.state !== found.match.state)) {
+      const ambiguous = found.status === 409 ? found.candidates : [found.match, ...found.others]
       return c.json({
         error: 'Ambiguous bill — use state-prefixed URL',
-        candidates: matches.map(m => ({ state: m.state, sessionSlug: billSlug(m), billNumber })),
+        candidates: ambiguous.map(m => billChoice(m, billNumber)),
       }, 409)
     }
     const user = c.get('user')
-    const detail = await buildBillDetail(db, matches[0].id, user, c.env)
-    return c.json(detail)
+    return c.json(withOthers(await buildBillDetail(db, found.match.id, user, c.env), found.others, billNumber))
   })
 
   // GET /bills/drafts — list all draft bills (admin only). MUST be before /:id.

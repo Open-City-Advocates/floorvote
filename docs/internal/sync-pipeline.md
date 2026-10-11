@@ -126,6 +126,28 @@ The check and the write are one SQL statement, so a link or another claim landin
 
 **For one release, the old env var seeds rows.** Only `LIMS_STATES` ever ran, so Maryland and Virginia have no env var: they move only by a claim. On the first sync after the upgrade, each state named by `LIMS_STATES` (with `LIMS_API_KEY` set) that has no row gets one, under the claim's refusal rule (`Provider.statesEnvKey`). Whichever sync runs first writes it, and every sync agrees from then on. A seeded row is logged, and the env var can then be removed. A refused seed is logged once an hour, by the LegiScan sync, and the state stays on LegiScan. If the env var's provider also has tracked bills in that state, instances hold bills from both providers. That split state is logged as an error for an operator to settle, and the state still stays on LegiScan. The env var never changes a state that has a row. A later release removes the seeding. A fork moving onto upstream relies on this for DC: see `fork-upgrade.md`.
 
+### Session slugs and old links
+
+A bill's URL is `/STATE/SLUG/NUMBER`. Central gives each session a slug that is unique within its state (`central/src/lib/sessionSlugs.ts`, from migration 0031) and sends it with each bill: the slug the session's name asks for (`sessionToSlug` in `shared/sessionSlug.ts`), or `-2`, `-3`, and so on when another session of the state holds it. The owning provider's sessions go first, then lowest id. A slug never changes once assigned.
+
+The rule changed with the provider model. Numbered special sessions and Council Periods used to slug to their year, and now have their own slug:
+
+| Session | Before | Now |
+|---|---|---|
+| 2026 Special Session 1 (Maryland) | `2026` | `2026-s1` |
+| 2026 Special Session II (Virginia) | `2026` | `2026-s2` |
+| 2025-2026 Council Period 26 (DC) | `2025-2026` | `cp26` |
+| 2026 1st Special Session, 2026 Regular Session | unchanged | unchanged |
+
+The old rule is kept, frozen, as `sessionToSlugBeforeProviders`, so links in old digests and bookmarks keep working. The tenant's resolve routes (`api/src/routes/billsApi/lookupRoutes.ts`) try, in order:
+
+1. **The bill's own slug.** A canonical URL always reaches its bill.
+2. **A slug an older link may use:** the one the session's name asks for (when central gave it `-2`), or the one the old rule gave it (`legacySessionSlug`). One match resolves. More than one is a 409 that lists each bill, and the page links to each.
+
+When step 1 matches but another bill answers to the slug by step 2, as the 2026 Regular Session's HB5 does at `/MD/2026/HB5` beside a 2026 Special Session 1 HB5, the response adds `otherSessionMatches` and the page points to those bills. An old link to the special-session bill lands on the regular one, as it already did when both slugged to `2026`, but not silently.
+
+**Before merging a slug change,** run `scripts/session-slug-dry-run.ts` against the production central (the header has the commands). It prints renames (each session the current rule slugs differently from the old one, as old → new, and which session will hold the old slug, if any) and collisions (each session that won't get the slug its name asks for). Between them, they're every session whose URLs change. If the rule changes again, leave `sessionToSlugBeforeProviders` as it is and have `legacySessionSlug` also return the slug under the rule being replaced.
+
 ### Moving a state to another provider (cutover)
 
 A claim can't move a state whose provider has tracked bills there. A cutover does, without writing to any instance's database, and an undo puts it back (`central/src/lib/cutover.ts`, from #296). Both are operator-only and off the tenant surface allowlist, and both are dry runs unless `?confirm=true`:
@@ -180,7 +202,7 @@ Then the first ingest carries the calendar over (`carryCalendar` in `central/src
 
 So an entry that doesn't match is cancelled and recreated once, and the dry run lists it. LegiScan's hearings with the same type and description on different days share one identity, and instances hold one event for them, so only the row they hold (the latest) carries it on. The others are cancelled, and their new entries arrive as new events. An empty calendar counts, and cancels every old entry. A measure that comes with no calendar at all (LIMS sends none for a record with no history) says nothing, so the carry-over waits: the ingest sends instances no calendar, and `carried_from` stays until a later ingest brings one, which is quiet too. After three ingests with no calendar (`bills.carried_waits`), it stops waiting, logs the bill, and cancels the old entries.
 
-**Session slugs.** A moved bill moves to the new provider's session. When that session's name asks for the slug the old session holds, as LIMS's "2025-2026 Council Period 26" does beside LegiScan's, it gets `-2` (`cp26-2`), since slugs never change (#290). Instances store the new slug when the bill next reaches them, so its URL becomes `/DC/cp26-2/B26-0400`. Old links keep resolving through the tenant's computed-slug fallback while no other bill answers to them exactly.
+**Session slugs.** A moved bill moves to the new provider's session. When that session's name asks for the slug the old session holds, as LIMS's "2025-2026 Council Period 26" does beside LegiScan's, it gets `-2` (`cp26-2`), since slugs never change (#290). Instances store the new slug when the bill next reaches them, so its URL becomes `/DC/cp26-2/B26-0400`. Old links keep resolving through the tenant's fallback while no other bill answers to them exactly ("Session slugs and old links" above).
 
 **What stays behind.** The losing provider's unmatched bills keep their rows and links, frozen. Its committee rows stay, with no bill pointing at them, and unmatched legislators keep their rows. R2 copies of the cleared documents stay in the bucket.
 
