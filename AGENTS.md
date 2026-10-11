@@ -130,6 +130,12 @@ Tenant migrations: `api/migrations/`. Central migrations: `central/migrations-le
 
 **Always add new migration files — never edit existing ones.**
 
+**Numbers and names a downstream fork owns.** Open-City-Advocates' fork applied its own migrations in production, and moving it onto upstream depends on these staying free (`docs/internal/fork-upgrade.md`):
+
+- Central 0022, 0023, and 0024 and tenant 0071, 0072, and 0074 are reserved forever. Skip them.
+- Numbers 0900 and up, in both folders, are left for fork-only migrations (`0900_oca_*`). Upstream never uses them.
+- Upstream never creates, alters, or drops the fork's tables and columns, and never assumes they exist or don't. Central: `council_events`, `council_committees`, `council_directory`, `council_committee_history`, `council_changes`, and `people.term_start`, `people.term_end`, and `people.seated`. Tenant: `deep_analyses`, `team_links`, `crm_people`, `crm_contacts`, and `crm_followups`. Pick other names, and never `INSERT … SELECT` from a table that may not exist.
+
 ```bash
 # Tenant
 cd api && npm run migrate:local    # local D1

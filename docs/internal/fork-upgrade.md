@@ -71,26 +71,28 @@ When porting what you keep:
 
 Wrangler records each applied file by name in `d1_migrations` and applies every file in the folder it hasn't recorded, in order. Your production has applied your own files and upstream's under different names, so both sets apply and nothing runs twice. Your central's `0020_lims_records.sql` and upstream's `0020_legiscan_limit_10k.sql` are both recorded, and upstream's `0021_lims_records.sql` creates `lims_records` only if it doesn't exist, so it keeps yours, which has the same columns.
 
-- **Upstream keeps your numbers free.** Central 0022, 0023, and 0024 and tenant 0071, 0072, and 0074 are reserved upstream for good, and no upstream migration assumes your `council_*` tables exist or don't.
-- **Put future fork-only migrations in their own range:** `0900_oca_<what>.sql`, in `central/migrations-legiscan/` or `api/migrations/`. Upstream won't reach 0900 for years, and the `oca` in each name keeps it distinct even then. Use the next free number in the range for each one.
+- **Upstream keeps your numbers and names free.** Central 0022, 0023, and 0024 and tenant 0071, 0072, and 0074 are reserved upstream for good. `AGENTS.md` also lists your tables and columns (`council_*`, `people.term_start`, `people.term_end`, `people.seated`, `deep_analyses`, `team_links`, and `crm_*`), which upstream never creates, changes, or assumes exist or don't.
+- **Put future fork-only migrations in their own range:** `0900_oca_<what>.sql`, in `central/migrations-legiscan/` or `api/migrations/`. Upstream leaves 0900 and up to forks, and `AGENTS.md` records that, so your names never meet upstream's. Use the next free number in the range for each one.
 - **Never rename or edit a file production applied.** A renamed file runs again.
 - **Change only your own tables.** Never alter or drop an upstream table or column. A column you add to an upstream table (as `people.seated` is) is one upstream could someday add under the same name, so prefer a table of your own keyed to upstream's id.
 - **No `;` inside a comment** in a migration file. The tenant test helper splits on it before stripping comments, and the error it gives points elsewhere.
+- **Register each tenant migration of yours in the api tests.** `applyMigrations()` in `api/test/helpers.ts` lists tenant migrations by name, so add every one you keep (0071, 0072, 0074, and each future `0900_oca_*`) or the api tests run without your tables. Central's tests read the whole folder.
 - **Rehearse before each upstream upgrade.** The script below lists your tables and columns and names any upstream migration that would meet one.
 
 ## Before You Deploy
 
-1. **Configuration.** Your gitignored `central/wrangler.toml` already names `src/index-legiscan.ts` and `migrations-legiscan`. Keep the `LIMS_API_KEY` secret, `LIMS_STATES = "DC"` for now (it seeds DC's ownership row, below), the hourly cron, and `LIMS_INGESTOR_QUEUE` with its consumer at `max_concurrency = 1` (LIMS answers 429 above about two concurrent requests). Compare the rest with `central/wrangler.example.toml`. Each instance keeps `DATA_SOURCES = "lims"`. Its `PROVIDER` var is no longer read. Keep your deep analysis vars if you ported that feature.
+1. **Configuration.** Your gitignored `central/wrangler.toml` already names `src/index-legiscan.ts` and `migrations-legiscan`. Keep the `LIMS_API_KEY` secret (claiming DC for LIMS needs it), `LIMS_STATES = "DC"` for now (a safety net for DC's ownership row, below), the hourly cron, and `LIMS_INGESTOR_QUEUE` with its consumer at `max_concurrency = 1` (LIMS answers 429 above about two concurrent requests). Compare the rest with `central/wrangler.example.toml`. Each instance keeps `DATA_SOURCES = "lims"`. Its `PROVIDER` var is no longer read. Keep your deep analysis vars if you ported that feature.
 2. **Rehearse on copies.** Export each database, read-only, from your production checkout (so wrangler finds the bindings), then run the rehearsal from your upgrade branch:
 
    ```bash
    cd central && npx wrangler d1 export <central-db> --remote --env legiscan --output ../central.sql
    cd ../api && npx wrangler d1 export <tenant-db> --remote --env <tenant> --output ../tenant-<tenant>.sql
    # from the upgrade branch:
+   git fetch upstream
    npx tsx scripts/rehearse-fork-upgrade.ts --central central.sql --instance tenant-<tenant>.sql
    ```
 
-   Pass `--instance` once for each instance. Each copy takes every pending upstream migration in memory, and the script checks what this guide says comes through unchanged, then notes what to expect for your data. It writes nothing unless you pass `--save <dir>`. It exits 1 if any check fails, and each failure says what to look at. The exports hold your data, so delete them when you're done.
+   Pass `--instance` once for each instance. The script tells upstream's migration files from the ones you cherry-picked by reading `upstream/main`, so it checks your own tables and columns too. Pass `--upstream-ref upstream/provider-model` until #303 merges, or whatever ref you built the branch from. Each copy takes every pending upstream migration in memory, and the script checks what this guide says comes through unchanged, then notes what to expect for your data. It only reads the exports, and writes nothing unless you pass `--save <dir>`. It exits 1 if any check fails, and each failure says what to look at. The exports hold your data, so delete them when you're done.
 
 3. **The DC preflight.** The script runs it, and you can run it alone, read-only:
 
@@ -104,19 +106,28 @@ Wrangler records each applied file by name in `d1_migrations` and applies every 
 
 ## Deploy
 
-Deploy central, then every instance, in one sitting.
+Deploy central, claim DC, then deploy every instance, all before the next top of the hour. The first DC sync after the upgrade runs then and sends each instance its notifications, which each instance should take in on upstream's code.
 
 1. **Central.** `cd central && npm run deploy:legiscan`. It builds the dashboard, applies the migrations, and deploys, so the code follows the migrations within a minute or so. Start at least 15 minutes after the hour, once the LIMS ingestor queue shows no backlog in the Cloudflare dashboard, so the old code's hourly LIMS pass isn't running.
 
-   Between the migrations and the new code, the old LIMS sync and ingest fail (migration 0029 drops `lims_records`) and their messages retry. A message that runs out of retries before the new code deploys is lost. A tracked bill recovers at the re-ingest below, and any other bill at its next change. A bill the old code inserts in that window is labeled LegiScan's and blocks DC's ownership row (see "If Something Goes Wrong"). To rule both out, first deploy your current code with its cron trigger removed, then upgrade. The upgrade's configuration brings the cron back.
+   Between the migrations and the new code, the old LIMS sync and ingest fail (migration 0029 drops `lims_records`) and their messages retry. A message that runs out of retries before the new code deploys is lost. A tracked bill recovers at the re-ingest below, and any other bill at its next change. A bill the old code inserts in that window is labeled LegiScan's and blocks DC's ownership row (see "If Something Goes Wrong"). To rule both out, first deploy your current code with `crons = []` under `[env.legiscan.triggers]`, then upgrade. Deleting the triggers block wouldn't do it: wrangler changes a Worker's schedules only when the config defines `crons`, so without one the hourly cron keeps firing. The upgrade's configuration brings the hourly cron back.
 
    Central migration 0036 (cutovers) only adds tables and nullable columns, and 0037 (body events) only adds tables, so neither needs anything run.
 
-2. **Each instance.** `cd api && npm run deploy:tenant -- <tenant>`. Until an instance is upgraded, its old Council mirror calls `/bills/council-events`, which upstream central doesn't have, and fails without changing the rows it holds. Its directory pages fail the same way until your ported directory route is deployed.
+2. **Claim DC for LIMS,** as soon as central is deployed:
+
+   ```bash
+   curl -X POST "$CENTRAL/api/admin/state-providers/DC" -H "x-admin-secret: $ADMIN_SECRET" \
+     -H 'content-type: application/json' -d '{"provider":"lims"}'
+   ```
+
+   It answers 200 when no LegiScan DC bill is tracked, which the preflight checked. Claim before the next top of the hour. A state with no ownership row is LegiScan's, so without a claim, the next LegiScan sync could link LegiScan's copies of DC bills to instances, and the claim would then be refused (409). Upstream releases from #303 until #319 also seed DC's row from `LIMS_STATES` on that first sync, which covers a late claim. From #319 on, `LIMS_STATES` isn't read, and the claim is the only way DC moves to LIMS. `central/test/cron/fork-upgrade.test.ts` covers both paths.
+
+3. **Each instance.** `cd api && npm run deploy:tenant -- <tenant>`. Until an instance is upgraded, its old Council mirror calls `/bills/council-events`, which upstream central doesn't have, and fails without changing the rows it holds. Its directory pages fail the same way until your ported directory route is deployed.
 
 ## After You Deploy
 
-1. **Confirm DC's ownership row.** The first LIMS sync or Council calendar job after the deploy, within the hour, seeds it from `LIMS_STATES` and logs "DC now syncs from lims, seeded from LIMS_STATES."
+1. **Confirm DC's ownership row.** It's written by your claim, or, in a release that still reads `LIMS_STATES`, by the first LIMS sync or Council calendar job, which logs "DC now syncs from lims, seeded from LIMS_STATES."
 
    ```bash
    curl "$CENTRAL/api/admin/state-providers" -H "x-admin-secret: $ADMIN_SECRET"
@@ -135,7 +146,7 @@ Deploy central, then every instance, in one sitting.
 
 3. **Check each team's event rules** on its settings page (Calendar events) within the hour. They should match the team's #217 settings: committee names as committees, hearing types as event types, and the tracked-bills choice.
 4. **Check the LegiScan budget.** Central migration `0020_legiscan_limit_10k` lowers the dashboard's monthly budget from 30,000 to 10,000 calls (LegiScan's free tier since October 1, 2026) if you never changed it. Raise it on the dashboard if you pay for more.
-5. **Remove `LIMS_STATES`** from `central/wrangler.toml` at your next deploy, once step 1 shows DC's row. Removed earlier, DC stays on LegiScan. A later release stops reading it (#319), and from then on a state changes provider only by a claim or a cutover (`docs/internal/sync-pipeline.md`, "State ownership").
+5. **Remove `LIMS_STATES`** from `central/wrangler.toml` at your next deploy, once step 1 shows DC's row. The row decides from then on: `LIMS_STATES` never changes a state that has one, and #319, one release after #303, stops reading it. After that, a state changes provider only by a claim or a cutover (`docs/internal/sync-pipeline.md`, "State ownership").
 6. **Drop `council_events`** once every instance is upgraded and its Council rows are body events. Upstream's `body_events` replaced it.
 
    ```bash
@@ -146,7 +157,7 @@ Deploy central, then every instance, in one sitting.
 
 ## If Something Goes Wrong
 
-- **DC wasn't seeded,** and the LegiScan sync logs a refused seed each hour. Most likely a DC bill the old code wrote between the migrations and the deploy is labeled LegiScan's. Find it, give it back to LIMS, and the next sync seeds DC (`central/test/cron/fork-upgrade.test.ts` covers this):
+- **The claim answered 409, or DC wasn't seeded** and the LegiScan sync logs a refused seed each hour. The 409 names the instances tracking LegiScan DC bills. Most likely a DC bill the old code wrote between the migrations and the deploy is labeled LegiScan's. Find it, give it back to LIMS, then claim DC again (or, while `LIMS_STATES` is read, let the next sync seed it). `central/test/cron/fork-upgrade.test.ts` covers this:
 
   ```sql
   SELECT bill_id, bill_number FROM bills
