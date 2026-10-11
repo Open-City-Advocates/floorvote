@@ -10,6 +10,12 @@ export type AppEnv = {
 }
 
 export type Env = {
+  // The fork's deep-analysis queue (lib/deepAnalysis.ts).
+  DEEP_ANALYSIS_ENABLED?: string     // "true" turns on the deep-analysis queue
+  DEEP_ANALYSIS_PRIORITIES?: string  // priorities analysed automatically, comma-separated. Unset = "high,medium"
+  DEEP_WORKER_TOKEN?: string         // secret: bearer token the external deep-analysis worker presents
+  DEEP_WORKER_FIRE_URL?: string      // optional: POSTed when requests are waiting, e.g. a Claude Code routine's /fire URL
+  DEEP_WORKER_FIRE_TOKEN?: string    // secret: bearer token for DEEP_WORKER_FIRE_URL
   DB: D1Database
   BILLS_BUCKET?: R2Bucket
   BILL_QUEUE?: Queue

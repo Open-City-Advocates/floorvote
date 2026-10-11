@@ -22,6 +22,7 @@ import { EventRules } from './pages/admin/EventRules'
 import { DraftBills } from './pages/admin/DraftBills'
 import { Calendar, calendarLoader } from './pages/Calendar'
 import { People } from './pages/People'
+import { HearingBrief } from './pages/HearingBrief'
 import { PersonRecord } from './pages/PersonRecord'
 import { useAuth } from './hooks/useAuth'
 import { SidebarRefreshProvider } from './context/SidebarRefreshContext'
@@ -192,6 +193,7 @@ export const routes = createRoutesFromElements(
         <Route path="bills" element={<BillList />} loader={billListLoader} />
         <Route path="bills/:billId" element={<BillDetail />} loader={billDetailLoader} errorElement={<BillDetailError />} />
         <Route path="calendar" element={<Calendar />} loader={calendarLoader} />
+        <Route path="calendar/brief/:eventId" element={<HearingBrief />} />
         <Route path="people" element={<People />} />
         <Route path="people/record/:key" element={<PersonRecord />} />
         <Route path="profile" element={<Profile />} />

@@ -229,6 +229,14 @@ describe('demo write rate limit', () => {
 // classifies it, so neither failure mode — a dead additive route, a live
 // destructive one — can ship silently.
 const DENIED = new Set([
+  // The fork's deep-analysis queue is off on demo tenants and would hand work to an operator's worker.
+  'POST /api/deep/:kind/:subjectId/request',
+  'POST /api/deep/worker/requests/:id/claim',
+  'POST /api/deep/worker/requests/:id/release',
+  'POST /api/deep/worker/requests/:id/result',
+  // The fork's team links point at a team's own documents.
+  'POST /api/links/:kind/:subjectId',
+  'DELETE /api/links/:id',
   // The fork's Council CRM: a team's notes on real Council offices and staff, not demo material.
   'PUT /api/crm/people/:key',
   'POST /api/crm/people/:key/contacts',
@@ -333,8 +341,8 @@ describe('demo write categorisation', () => {
 
   it('pins the size of each category so a silent shift is visible', () => {
     expect(DEMO_WRITE_ALLOWLIST.size).toBe(18)
-    expect(DENIED.size).toBe(58)  // upstream's 51, and the fork's seven CRM writes
-    expect(registered().length).toBe(82)
+    expect(DENIED.size).toBe(64)  // upstream's 51, and the fork's 13 (CRM, deep analyses, team links)
+    expect(registered().length).toBe(88)
   })
 
   it('refuses every denied route with the read-only message', async () => {
