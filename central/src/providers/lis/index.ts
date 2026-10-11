@@ -18,6 +18,7 @@ export const lis: Provider<'LIS_STATES'> = {
   // The publisher, as members know it, like "Maryland General Assembly".
   // "LIS" is the name of the system, which members don't need to know.
   displayName: 'Virginia General Assembly',
+  coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: true, billText: false },
   envKeys: ['LIS_STATES'],
   states: [LIS_STATE],
   statesEnvKey: 'LIS_STATES',

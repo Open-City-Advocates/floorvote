@@ -90,13 +90,17 @@ export default withMermaid(
             },
           ],
         },
-        // Flat top-level links — each of these is a single page, so a section
-        // wrapper would add a heading with one child under it.
+        // Top-level links — single pages with no section wrapper, which would
+        // add a heading with one child under it. Contributing is a link with
+        // children, since the generated State coverage page hangs off it.
         { text: 'Architecture', link: '/architecture/' },
         {
           text: 'Contributing',
           link: '/contributing/',
-          items: [{ text: 'Adding a data provider', link: '/contributing/providers' }],
+          items: [
+            { text: 'Adding a data provider', link: '/contributing/providers' },
+            { text: 'State coverage', link: '/contributing/state-coverage' },
+          ],
         },
         { text: 'Security', link: '/security/' },
       ],

@@ -9,6 +9,7 @@
     "test:scripts": "vitest run --project scripts",
     "gen:email-icons": "tsx scripts/gen-email-icons.ts",
     "gen:brand-assets": "tsx scripts/gen-brand-assets.ts",
+    "gen:state-coverage": "tsx scripts/gen-state-coverage.ts",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",

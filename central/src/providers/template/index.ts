@@ -26,6 +26,10 @@ export const template: Provider = {
   id: 'template',
   // TEMPLATE: the publisher's name, such as "Maryland General Assembly". It titles the bill page's extras panel.
   displayName: 'Template Legislature',
+  // TEMPLATE: who maintains the provider (GitHub handles, no @), and `experimental` until it has run through a
+  // session. Say whether it supplies member votes and bill text. A test asserts both against your fixtures.
+  // Keep CODEOWNERS' line for this directory in step. The State coverage page lists only registered providers.
+  coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: false, billText: false },
   // TEMPLATE: the env keys the provider reads, such as its API key, declared in central's Env type.
   // `ctx.env` holds these and nothing else. Add `configured` when the provider can't run without one.
   envKeys: [],

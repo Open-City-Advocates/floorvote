@@ -6,7 +6,7 @@ description: "How to add a data provider to FloorVote: the provider model, the r
 
 LegiScan supplies FloorVote's bill data for every state. A **provider** is an adapter that reads a legislature's own feed instead, for a state where that feed is better: fresher, richer, or free of LegiScan's call budget. DC, Maryland, and Virginia have providers today. You can add one for your state by copying a template directory, following this page, and testing the way maintainers do. You won't touch tenant, web, or pipeline code.
 
-The State coverage page ([#313](https://github.com/floorvote/floorvote/issues/313)) will list the providers that exist and who maintains them. It lists what the code supports, not which provider a given deployment uses.
+The [State coverage](/contributing/state-coverage) page lists the providers that exist and who maintains them. It lists what the code supports, not which provider a given deployment uses.
 
 ## What a provider is
 
@@ -154,7 +154,7 @@ npm test
 Then check the following:
 
 - **Register it.** Add your provider to `PROVIDERS` in `central/src/providers/index.ts`, and delete the template's "stays out of the registry" test from your copy.
-- **CODEOWNERS.** Add a line for `/central/src/providers/<id>/` to [`.github/CODEOWNERS`](https://github.com/floorvote/floorvote/blob/main/.github/CODEOWNERS), below the `providers/` line, naming whoever maintains the adapter. A provider needs a maintainer who will answer when the feed changes.
+- **CODEOWNERS.** Add a line for `/central/src/providers/<id>/` to [`.github/CODEOWNERS`](https://github.com/floorvote/floorvote/blob/main/.github/CODEOWNERS), below the `providers/` line, naming whoever maintains the adapter. A provider needs a maintainer who will answer when the feed changes. The handles must match the `coverage.maintainers` your provider declares, and a test fails when they don't.
 - **LegiScan budget.** Don't bulk-queue central's ingestor in a test or a script without skipping the fetch. LegiScan's free tier is 10,000 calls a month, and your provider spends none of them.
 - **Sign-off.** Every commit needs the `Signed-off-by` line described in [Contributing](./#licensing-and-sign-off).
 - **Migrations.** Most providers need none. If yours does, add a new numbered file and never edit an existing one. Don't put a semicolon inside a comment in a migration, since the test helper splits statements on semicolons before it strips comments.

@@ -36,6 +36,13 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
   readonly displayName: string
 
   /**
+   * Who maintains the provider and how far to trust it, for the published
+   * State coverage page (scripts/gen-state-coverage.ts). A provider can't
+   * ship without it.
+   */
+  readonly coverage: ProviderCoverage
+
+  /**
    * The env keys this provider reads, such as its API key. `ctx.env` holds
    * these and nothing else.
    */
@@ -212,6 +219,46 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
    * SQLite datetime modifier, such as '-2 days'), at most `perPass` per pass.
    */
   readonly detailsRefresh?: { maxAge: string; perPass: number }
+}
+
+/** What a provider declares about itself for the State coverage page (`Provider.coverage`). */
+export interface ProviderCoverage {
+  /** GitHub handles, without the @. The same people CODEOWNERS names for the provider's directory. */
+  readonly maintainers: readonly string[]
+  /** `stable` once the provider has run in production for a legislative session. */
+  readonly status: 'experimental' | 'stable'
+  /**
+   * Whether the provider supplies how each member voted. Code can't show it,
+   * since a measure's roll calls carry it or a vote dataset does. Each
+   * provider's mapping test asserts it against its recorded fixtures (LegiScan
+   * has none, so a test checks it against `listVoteDatasets`).
+   */
+  readonly memberVotes: boolean
+  /**
+   * Whether bills have text core can fetch and show: stored text, or a
+   * document core downloads from the legislature's link (Maryland's PDFs). Not
+   * true of a provider that only links a bill to a page. Asserted like
+   * `memberVotes`.
+   */
+  readonly billText: boolean
+}
+
+/**
+ * What a provider supplies, as the State coverage page lists it. Everything
+ * but `memberVotes` and `billText` is read from the provider's code
+ * (`listedCapabilities`), and `bodyEvents` and `deadlines` are the very values
+ * tenants receive per state (`Capabilities` in lib/capabilities.ts).
+ */
+export interface ListedCapabilities {
+  /** Every provider supplies bills. */
+  bills: true
+  memberVotes: boolean
+  /** The legislature's own calendar, hearings without bills included. */
+  bodyEvents: boolean
+  billText: boolean
+  /** Fields only this provider publishes, shown on the bill page. */
+  extras: boolean
+  deadlines: boolean
 }
 
 /** A provider's vocabulary (`Provider.vocabulary`). */
