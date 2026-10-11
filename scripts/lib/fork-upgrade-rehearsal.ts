@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -38,8 +39,10 @@ export interface RehearsalReport {
   label: string
   /** Applied names no upstream file has: the fork's own migrations. */
   forkMigrations: string[]
-  /** Upstream migrations the rehearsal applied, in order. */
+  /** Every migration the rehearsal applied, in order. */
   applied: string[]
+  /** Of those, the ones that aren't upstream's: the fork's own, or a sign of a stale or wrong upstream ref. */
+  appliedOwn: string[]
   /** The upstream migration that failed, if one did. Nothing after it ran. */
   failed?: { name: string; error: string }
   /** Tables, and table.column, a database migrated from upstream alone doesn't have. */
@@ -64,6 +67,21 @@ export function compareMigrationNames(a: string, b: string): number {
   if (na !== nb && Number.isFinite(na)) return -1
   if (na !== nb && Number.isFinite(nb)) return 1
   return a < b ? -1 : a > b ? 1 : 0
+}
+
+/**
+ * The migration file names in `folder` (relative to the repo root) at a git
+ * ref: upstream's own files. Throws with git's error when the ref or folder
+ * can't be read.
+ */
+export function upstreamNamesAt(repoRoot: string, ref: string, folder: string): string[] {
+  try {
+    const out = execFileSync('git', ['-C', repoRoot, 'ls-tree', '--name-only', `${ref}:${folder}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return out.split('\n').filter(n => n.endsWith('.sql'))
+  } catch (err) {
+    const stderr = (err as { stderr?: string | Buffer }).stderr?.toString().trim()
+    throw new Error(`git can't read ${folder} at ${ref}${stderr ? `: ${stderr}` : err instanceof Error ? `: ${err.message}` : ''}`)
+  }
 }
 
 /** Every .sql file in a migrations folder, in the order wrangler applies them. */
@@ -306,7 +324,7 @@ export interface RehearsalOptions {
  * it can be saved after.
  */
 export function rehearse(db: DatabaseSync, kind: DbKind, label: string, migrations: MigrationFile[], opts: RehearsalOptions = {}): RehearsalReport {
-  const report: RehearsalReport = { kind, label, forkMigrations: [], applied: [], forkTables: [], forkColumns: [], checks: [], notes: [] }
+  const report: RehearsalReport = { kind, label, forkMigrations: [], applied: [], appliedOwn: [], forkTables: [], forkColumns: [], checks: [], notes: [] }
   const check = (ok: boolean, name: string, detail?: string) => { report.checks.push(detail && !ok ? { ok, name, detail } : { ok, name }) }
 
   if (!hasTable(db, 'd1_migrations')) {
@@ -317,6 +335,10 @@ export function rehearse(db: DatabaseSync, kind: DbKind, label: string, migratio
   const upstreamNames = new Set(opts.upstreamNames ?? migrations.map(m => m.name))
   report.forkMigrations = appliedNames.filter(n => !upstreamNames.has(n))
   const pending = migrations.filter(m => !appliedNames.includes(m.name))
+  report.appliedOwn = pending.filter(m => !upstreamNames.has(m.name)).map(m => m.name)
+  if (report.appliedOwn.length > 0) {
+    report.notes.push(`Pending files that aren't upstream's, applied as your own: ${report.appliedOwn.join(', ')}. If any isn't yours, the upstream ref is stale or wrong.`)
+  }
 
   const upstream = upstreamSchema(migrations.filter(m => upstreamNames.has(m.name)))
   report.forkTables = tables(db).filter(t => !upstream.has(t))
@@ -446,7 +468,9 @@ function instanceChecks(db: DatabaseSync, before: Snapshot, report: RehearsalRep
 export function formatReport(r: RehearsalReport): string {
   const lines = [`${r.kind === 'central' ? 'Central' : 'Instance'}: ${r.label}`]
   lines.push(`  The fork's own migrations: ${r.forkMigrations.length ? r.forkMigrations.join(', ') : 'none'}`)
-  lines.push(`  Upstream migrations applied: ${r.applied.length ? `${r.applied[0]} through ${r.applied[r.applied.length - 1]} (${r.applied.length})` : 'none'}`)
+  const upstreamApplied = r.applied.filter(n => !r.appliedOwn.includes(n))
+  lines.push(`  Upstream migrations applied: ${upstreamApplied.length ? `${upstreamApplied[0]} through ${upstreamApplied[upstreamApplied.length - 1]} (${upstreamApplied.length})` : 'none'}`)
+  if (r.appliedOwn.length) lines.push(`  Your own migrations applied: ${r.appliedOwn.join(', ')}`)
   for (const c of r.checks) {
     lines.push(`  ${c.ok ? 'PASS' : 'FAIL'}  ${c.name}`)
     if (c.detail) lines.push(`        ${c.detail}`)

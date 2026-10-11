@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { compareMigrationNames, formatReport, openCopy, passed, readMigrations, rehearse, type DbKind } from './fork-upgrade-rehearsal'
+import { compareMigrationNames, formatReport, openCopy, passed, readMigrations, rehearse, upstreamNamesAt, type DbKind } from './fork-upgrade-rehearsal'
 
 // The rehearsal script at its seam: a copy of a fork's database in (built
 // here from the fork fixtures the repo's rehearsal tests use, as its own
@@ -130,6 +130,15 @@ describe('the fork upgrade rehearsal', () => {
     expect(i.checks.filter(x => !x.ok)).toEqual([])
     expect(i.forkTables).toEqual(['crm_contacts', 'crm_followups', 'crm_people', 'deep_analyses', 'team_links'])
 
+    // A pending file that isn't upstream's is applied as the fork's own, and said so.
+    const withNew = [...instance, { name: '0900_oca_notes.sql', sql: 'CREATE TABLE oca_notes (id TEXT PRIMARY KEY)' }]
+    const own = rehearse(forkCopy('instance'), 'instance', 'instance', withNew, { upstreamNames: names('instance') })
+    expect(own.appliedOwn).toEqual(['0900_oca_notes.sql'])
+    expect(own.notes).toContain('Pending files that aren\'t upstream\'s, applied as your own: 0900_oca_notes.sql. If any isn\'t yours, the upstream ref is stale or wrong.')
+    const text = formatReport(own)
+    expect(text).toMatch(/Upstream migrations applied: 0075_auth_events_email_changed\.sql through 0083_calendar_event_rules\.sql \(7\)/)
+    expect(text).toMatch(/Your own migrations applied: 0900_oca_notes\.sql/)
+
     // Without upstream's names, the cherry-picked files pass for upstream's and their tables go unchecked.
     const blind = rehearse(forkCopy('instance'), 'instance', 'instance', instance)
     expect(blind.forkMigrations).toEqual([])
@@ -165,6 +174,12 @@ describe('the fork upgrade rehearsal', () => {
     const report = rehearse(db, 'central', 'central', upstreamMigrations('central'))
     expect(report.checks.find(c => c.name.startsWith('No pending upstream migration'))?.detail)
       .toMatch(/^0037_body_events\.sql creates table body_events if it doesn't exist, and the copy's body_events has other columns/)
+  })
+
+  it('reads upstream\'s migration names from a git ref, and says why when git can\'t', () => {
+    expect(upstreamNamesAt(ROOT, 'HEAD', 'api/migrations').sort()).toEqual(upstreamMigrations('instance').map(m => m.name).sort())
+    expect(() => upstreamNamesAt(ROOT, 'no-such-remote/main', 'api/migrations'))
+      .toThrow(/^git can't read api\/migrations at no-such-remote\/main: .+/)
   })
 
   it('needs a copy wrangler migrated', () => {
