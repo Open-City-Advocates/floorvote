@@ -375,10 +375,10 @@ export interface ProviderContext<K extends ProviderEnvKey = ProviderEnvKey> {
   /** The env keys the provider declared in `envKeys`, frozen. Nothing else. */
   env: Readonly<Pick<Env, K>>
   /**
-   * Record one outbound API call in `api_call_log`, for the dashboard's call
-   * history. Name it `<provider id>:<operation>`: the LegiScan monthly budget
-   * counts only rows with no colon in the name, so a provider's calls never
-   * count against it. Call it once per request actually sent (pass it as
+   * Record one outbound API call in `api_call_log`. Name it
+   * `<provider id>:<operation>`: the dashboard shows only rows with no colon in
+   * the name (LegiScan's), so a provider's calls are logged but never shown
+   * there or counted against the LegiScan monthly budget. Call it once per request actually sent (pass it as
    * `rateLimitedFetch`'s `onRequest`), not once per intent.
    */
   logCall(callType: string, params: Record<string, unknown>): void

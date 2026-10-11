@@ -104,8 +104,8 @@ EMAIL_PROVIDER = "cloudflare"
 # Maryland (mgaleg.maryland.gov, src/providers/mga) and Virginia
 # (lis.virginia.gov, src/providers/lis) need no key. Virginia bill text needs
 # the LIS API, which isn't used because its terms are non-commercial.
-# For one release only, these older vars still seed a state's claim on the
-# first sync, when the state has none. Remove them once the claim exists.
+# For one release only, this older var still seeds a state's claim on the
+# first sync, when the state has none. Remove it once the claim exists.
 # LIMS_STATES = "DC"
 
 [env.legiscan.triggers]
