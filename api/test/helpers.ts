@@ -75,6 +75,8 @@ import migrationSql78 from '../migrations/0078_expired_status_enacted.sql?raw'
 import migrationSql79 from '../migrations/0079_calendar_event_kind.sql?raw'
 import migrationSql82 from '../migrations/0082_calendar_event_covered_by.sql?raw'
 import migrationSql83 from '../migrations/0083_calendar_event_rules.sql?raw'
+// The fork's own tenant migrations (docs/internal/fork-upgrade.md).
+import migrationSql74 from '../migrations/0074_council_crm.sql?raw'
 
 export function parseMigration(sql: string, name: string) {
   const queries = sql
@@ -253,6 +255,7 @@ export async function applyMigrations(opts: { before?: string } = {}): Promise<v
     parseMigration(migrationSql79, '0079_calendar_event_kind'),
     parseMigration(migrationSql82, '0082_calendar_event_covered_by'),
     parseMigration(migrationSql83, '0083_calendar_event_rules'),
+    parseMigration(migrationSql74, '0074_council_crm'),
   ]
   const before = opts.before
   await applyD1Migrations(env.DB, before ? migrations.filter(m => m.name < before) : migrations)
