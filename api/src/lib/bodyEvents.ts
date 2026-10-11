@@ -27,7 +27,9 @@ import type { AppDb, Env } from '../types'
  * The same call brings the capabilities of the states the instance covers
  * (`state_capabilities`, which GET /config serves), so features gate on what a
  * state's data can do, not on its name. An instance whose states have no body
- * events asks once a day, in case one gains them.
+ * events asks every hour like any other, so a state claimed after the
+ * instance's first sync shows its events within the hour. That costs one
+ * central call an hour.
  */
 
 /** What a covered state's data can do (central/src/lib/capabilities.ts). A state left out has none. */
@@ -60,8 +62,13 @@ export interface CentralBodyEvent {
 }
 
 export const CAPABILITIES_KEY = 'state_capabilities'
-/** How long the capabilities stand when no covered state has body events. */
-const CAPABILITIES_MAX_AGE_MS = 24 * 60 * 60 * 1000
+/**
+ * How long the capabilities stand when no covered state has body events. Short
+ * of the hourly job's interval, so every run asks: a state claimed after the
+ * instance's first sync would otherwise wait out a long cache. The cost is one
+ * central call an hour per instance.
+ */
+const CAPABILITIES_MAX_AGE_MS = 30 * 60 * 1000
 
 /** The window mirrored: a month back and four ahead, around the months central reads (last month through three ahead). */
 const WINDOW_BACK_DAYS = 31
@@ -115,7 +122,7 @@ export interface BodyEventSyncResult {
 /**
  * Mirror the body events of the instance's covered states, and record the
  * capabilities central sends with them. Null when no covered state has body
- * events and the capabilities are less than a day old, so nothing was asked.
+ * events and the capabilities are less than half an hour old, so nothing was asked.
  * Throws when central doesn't answer, or answers without its events and
  * capabilities, leaving every event as it was.
  */
