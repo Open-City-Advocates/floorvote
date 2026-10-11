@@ -5,9 +5,9 @@ import { matchesUnion } from '../lib/keywords'
 import * as schema from '../db/schema'
 import { secretsMatch } from '../lib/auth'
 import { nowDb } from '../lib/dbTime'
-import type { Env } from '../types'
+import type { Db, Env } from '../types'
 import { calendarBlockEvents, calendarKind, type CalendarRow } from '../lib/billCalendar'
-import { bodyEventDetails, calendarCoverage, type BodyEventDetail } from '../lib/bodyEvents'
+import { bodyEventDetails, bodyEventOptions, calendarCoverage, type BodyEventDetail, type BodyEventOptions } from '../lib/bodyEvents'
 import { coverageCapabilities } from '../lib/capabilities'
 import { listStateOwnership } from '../lib/stateProviders'
 import { DEFAULT_PROVIDER_ID, findProvider, getProvider } from '../providers'
@@ -563,12 +563,7 @@ tenantsRoutes.get('/:tenantId/body-events', guardCallerTenantParam(), async (c) 
   if (span > 366 * 86400_000) return c.json({ error: 'at most a year from from to to' }, 400)
 
   const db = drizzle(c.env.DB, { schema })
-  const tenant = await db.select({ stateCoverage: schema.tenants.stateCoverage }).from(schema.tenants)
-    .where(eq(schema.tenants.tenantId, tenantId)).get()
-  let coverage: string[] = []
-  try { coverage = tenant ? JSON.parse(tenant.stateCoverage) as string[] : [] } catch { coverage = [] }
-  const owners = new Map((await listStateOwnership(db)).map(r => [r.state, r.provider]))
-  const capabilities = coverageCapabilities(owners, coverage)
+  const { owners, capabilities } = await tenantCapabilities(db, tenantId)
 
   const events: BodyEventDetail[] = []
   for (const [state, caps] of Object.entries(capabilities)) {
@@ -578,6 +573,31 @@ tenantsRoutes.get('/:tenantId/body-events', guardCallerTenantParam(), async (c) 
   }
   return c.json({ capabilities, events })
 })
+
+// What the instance's event rules can choose from (#298), for each state it
+// covers whose provider publishes the legislature's own calendar: the
+// committees in `committees` and the kinds of the state's body events, each
+// from the provider that owns the state. A state left out has no body events.
+tenantsRoutes.get('/:tenantId/body-event-options', guardCallerTenantParam(), async (c) => {
+  const db = drizzle(c.env.DB, { schema })
+  const { owners, capabilities } = await tenantCapabilities(db, c.req.param('tenantId'))
+  const states: Record<string, BodyEventOptions> = {}
+  for (const [state, caps] of Object.entries(capabilities)) {
+    const provider = caps.bodyEvents ? findProvider(owners.get(state)) : undefined
+    if (provider) states[state] = await bodyEventOptions(db, provider, state)
+  }
+  return c.json({ states })
+})
+
+/** The states a tenant covers that have capabilities, and each state's owner. */
+async function tenantCapabilities(db: Db, tenantId: string) {
+  const tenant = await db.select({ stateCoverage: schema.tenants.stateCoverage }).from(schema.tenants)
+    .where(eq(schema.tenants.tenantId, tenantId)).get()
+  let coverage: string[] = []
+  try { coverage = tenant ? JSON.parse(tenant.stateCoverage) as string[] : [] } catch { coverage = [] }
+  const owners = new Map((await listStateOwnership(db)).map(r => [r.state, r.provider]))
+  return { owners, capabilities: coverageCapabilities(owners, coverage) }
+}
 
 tenantsRoutes.post('/reprocess/:tenantId', guardCallerTenantParam(), async (c) => {
   const tenantId = c.req.param('tenantId')

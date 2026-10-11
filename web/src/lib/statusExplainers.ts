@@ -10,7 +10,7 @@ import { apiFetch } from './api'
 export interface StateLabels {
   statuses: { label: string; stage: string | null; rank: number; explainer: string }[]
   billTypes: { value: string; label: string; explainer: string | null }[]
-  eventTypes: { typeId: number; label: string; explainer: string | null }[]
+  eventTypes: { typeId: number; label: string; kind?: string; explainer: string | null }[]
   calendarName: string | null
   hasEvents: boolean
 }
@@ -31,21 +31,40 @@ export function loadStateLabels(state: string): Promise<StateLabels | null> {
   return labels
 }
 
+/** A state's labels, once they load. Null while loading, for no state, and when the request fails. */
+export function useStateLabels(state: string | null | undefined): StateLabels | null {
+  const [labels, setLabels] = useState<StateLabels | null>(null)
+  useEffect(() => {
+    setLabels(null)
+    if (!state) return
+    let live = true
+    void loadStateLabels(state).then(l => { if (live) setLabels(l) })
+    return () => { live = false }
+  }, [state])
+  return labels
+}
+
+/** The explainer for a bill's status label, from its state's labels. */
+export function statusExplainer(labels: StateLabels | null, status: string | null | undefined): string | null {
+  return (status && labels?.statuses?.find(s => s.label === status)?.explainer) || null
+}
+
+/** The explainer for a bill type, by the value central sends as the bill's type (compared without regard to case). */
+export function billTypeExplainer(labels: StateLabels | null, billType: string | null | undefined): string | null {
+  const value = billType?.trim().toLowerCase()
+  return (value && labels?.billTypes?.find(t => t.value.toLowerCase() === value)?.explainer) || null
+}
+
+/** The explainer for a calendar entry's event type, by its type id. */
+export function eventTypeExplainer(labels: StateLabels | null, typeId: number | null | undefined): string | null {
+  return (typeId != null && labels?.eventTypes?.find(t => t.typeId === typeId)?.explainer) || null
+}
+
 /**
  * The plain-language explainer for a bill's status label in its state, once
  * the state's labels load. Null while loading, and for a status with no
  * explainer.
  */
 export function useStatusExplainer(state: string | null | undefined, status: string | null | undefined): string | null {
-  const [explainer, setExplainer] = useState<string | null>(null)
-  useEffect(() => {
-    setExplainer(null)
-    if (!state || !status) return
-    let live = true
-    void loadStateLabels(state).then(labels => {
-      if (live) setExplainer(labels?.statuses?.find(s => s.label === status)?.explainer ?? null)
-    })
-    return () => { live = false }
-  }, [state, status])
-  return explainer
+  return statusExplainer(useStateLabels(state), status)
 }

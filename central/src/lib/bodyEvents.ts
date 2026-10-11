@@ -1,6 +1,6 @@
 import { and, asc, eq, gte, inArray, isNull, lte } from 'drizzle-orm'
 import { bills, billCalendar, bodyEventBills, bodyEvents, committees, sessions } from '../db/schema'
-import { isCalendarKind } from '../../../shared/calendarKinds'
+import { CALENDAR_KINDS, isCalendarKind } from '../../../shared/calendarKinds'
 import { calendarKind, MISSED_PULLS_TO_CANCEL, sentIdentity, type CalendarRow } from './billCalendar'
 import { upsertCommitteeRows } from './committees'
 import { toHandle } from './billHandle'
@@ -530,6 +530,43 @@ export async function bodyEventDetails(db: Db, provider: Provider, state: string
     bills: (links.get(r.id) ?? []).sort((a, b) => a - b).map(toHandle),
     covers: covered.get(r.id) ?? [],
   }))
+}
+
+/** What an instance's event rules can name in one state (GET /tenants/:tenantId/body-event-options). */
+export interface BodyEventOptions {
+  /** The committees the state's provider has written: those its referrals name, and those holding events. */
+  committees: { committeeId: string; name: string; chamber: string | null }[]
+  /** The kinds of the state's events, in CALENDAR_KINDS order, each with the provider's own type names under it. */
+  kinds: { kind: string; types: string[] }[]
+}
+
+/**
+ * The committees and kinds an instance's event rules can choose from in a
+ * state, from the provider that owns it: its rows in `committees`, and the
+ * kinds and types its events in `body_events` carry. A committee that has held
+ * no event yet is listed too, so a rule can wait for its first hearing.
+ */
+export async function bodyEventOptions(db: Db, provider: Provider, state: string): Promise<BodyEventOptions> {
+  const committeeRows = await db.select({ committeeId: committees.committeeId, name: committees.name, chamber: committees.chamber })
+    .from(committees).where(and(eq(committees.state, state), eq(committees.provider, provider.id)))
+    .orderBy(asc(committees.name), asc(committees.committeeId)).all()
+  const typeRows = await db.selectDistinct({ kind: bodyEvents.kind, type: bodyEvents.type }).from(bodyEvents)
+    .where(and(eq(bodyEvents.provider, provider.id), eq(bodyEvents.state, state))).all()
+  const kinds = new Map<string, Set<string>>()
+  for (const r of typeRows) {
+    const types = kinds.get(r.kind) ?? new Set<string>()
+    if (r.type) types.add(r.type)
+    kinds.set(r.kind, types)
+  }
+  const order = (k: string) => {
+    const i = (CALENDAR_KINDS as readonly string[]).indexOf(k)
+    return i < 0 ? CALENDAR_KINDS.length : i
+  }
+  return {
+    committees: committeeRows.map(c => ({ committeeId: String(c.committeeId), name: c.name, chamber: c.chamber || null })),
+    kinds: [...kinds].sort(([a], [b]) => order(a) - order(b) || a.localeCompare(b))
+      .map(([kind, types]) => ({ kind, types: [...types].sort((a, b) => a.localeCompare(b)) })),
+  }
 }
 
 async function committeeNamesById(db: Db, ids: number[]): Promise<Map<number, string>> {

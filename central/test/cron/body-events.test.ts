@@ -331,6 +331,28 @@ describe('the Council\'s calendar', () => {
     expect((await eventsFor('all')).capabilities).toEqual({ DC: { bodyEvents: true, deadlines: true } })
   })
 
+  it('lists the committees and kinds an instance\'s event rules can choose from, once DC is claimed', async () => {
+    expect(await getJson('/tenants/oca/body-event-options')).toEqual({ states: {} })
+    await claimDc()
+    await syncBills()
+    await syncCalendar()
+    const { states } = await getJson('/tenants/oca/body-event-options')
+    expect(Object.keys(states)).toEqual(['DC'])
+    const { committees, kinds } = states.DC
+    // Every committee LIMS wrote, from referrals and events alike, under the ids events carry.
+    const youth = committees.find((c: any) => c.name === 'Committee on Youth Affairs')
+    expect(youth).toEqual({ committeeId: expect.any(String), name: 'Committee on Youth Affairs', chamber: 'C' })
+    expect((await eventsFor()).byUid.get('council-2415@lims.dccouncil.gov').committee.committeeId).toBe(youth.committeeId)
+    expect(committees.map((c: any) => c.name)).toContain('Committee on Human Services')
+    // The kinds the Council's events carry, each with the Council's own type names.
+    expect(kinds.map((k: any) => k.kind)).toEqual(['hearing', 'meeting'])
+    expect(kinds[0].types).toEqual(['Hearing', 'Joint Hearing', 'Oversight Hearing', 'Roundtable'])
+    expect(kinds[1].types).toEqual(['Meeting'])
+
+    await db().insert(schema.tenants).values({ tenantId: 'md', name: 'MD', stateCoverage: '["MD"]', active: true })
+    expect(await getJson('/tenants/md/body-event-options')).toEqual({ states: {} })
+  })
+
   it('syncs nothing for a state no instance covers', async () => {
     await claimDc()
     await db().update(schema.tenants).set({ stateCoverage: '["MD"]' })

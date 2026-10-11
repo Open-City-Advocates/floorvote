@@ -22,6 +22,7 @@ import { healStalledAiBills } from '../lib/healStalledAi'
 import { exportApiRouter } from './exportApi'
 import { customFieldsApiRouter } from './customFieldsApi'
 import { adminSavedViewsRouter } from './savedViewsApi'
+import { eventRulesAdminRouter } from './eventRulesAdmin'
 import type { AppDb, AppEnv } from '../types'
 import { checkMemberAddresses, normalizeMemberAddress } from '../lib/memberAddress'
 import { isPendingInvite, pendingInviteWhere } from '../lib/pendingInvite'
@@ -35,6 +36,7 @@ adminApiRouter.use('*', requireAuth, requireAdmin)
 adminApiRouter.route('/export', exportApiRouter)
 adminApiRouter.route('/custom-fields', customFieldsApiRouter)
 adminApiRouter.route('/views', adminSavedViewsRouter)
+adminApiRouter.route('/event-rules', eventRulesAdminRouter)
 
 // GET /admin/members
 adminApiRouter.get('/members', async (c) => {
