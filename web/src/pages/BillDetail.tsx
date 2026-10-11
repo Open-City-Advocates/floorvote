@@ -1600,7 +1600,7 @@ export function BillDetail() {
           if (bodyLabel) metaItems.push(typeExplainer
             ? <span key="body" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                 <HoverTooltip text={typeExplainer} maxWidth={320}><span>{bodyLabel}</span></HoverTooltip>
-                <InfoTooltip text={typeExplainer} maxWidth={340} align="center" label={`About "${bodyLabel}"`} />
+                <InfoTooltip text={typeExplainer} maxWidth={320} align="center" label={`About "${bodyLabel}"`} />
               </span>
             : <span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>)
           // The bill's next deadline (an executive's time to act, a review
