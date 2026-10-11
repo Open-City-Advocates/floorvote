@@ -20,11 +20,11 @@ const LOADED = {
   kinds: [{ kind: 'hearing', types: ['Hearing', 'Roundtable'] }, { kind: 'meeting', types: ['Meeting'] }],
   events: [
     { id: 'e1', date: '2026-10-12', time: '10:00', description: 'Housing roundtable: Improving Housing Conditions', url: 'https://lims.dccouncil.gov/Hearings/hearings/2408',
-      facets: facets({ committeeId: HOUSING.committeeId, committee: HOUSING.name, type: 'Roundtable', title: 'Housing roundtable', topics: ['Improving Housing Conditions'] }), trackedOnAgenda: false },
+      facets: facets({ committeeId: HOUSING.committeeId, committee: HOUSING.name, type: 'Roundtable', title: 'Housing roundtable', topics: ['Improving Housing Conditions'] }), trackedOnAgenda: false, prioritizedOnAgenda: false },
     { id: 'e2', date: '2026-10-13', time: null, description: 'Legislative Meeting', url: null,
-      facets: facets({ kind: 'meeting', type: 'Meeting', title: 'Legislative Meeting' }), trackedOnAgenda: false },
+      facets: facets({ kind: 'meeting', type: 'Meeting', title: 'Legislative Meeting' }), trackedOnAgenda: false, prioritizedOnAgenda: false },
     { id: 'e3', date: '2026-10-14', time: '10:00', description: 'Committee of the Whole hearing: Soccer Stadium Act', url: null,
-      facets: facets({ committeeId: COW.committeeId, committee: COW.name, title: 'Committee of the Whole hearing', topics: ['Soccer Stadium Act'] }), trackedOnAgenda: true },
+      facets: facets({ committeeId: COW.committeeId, committee: COW.name, title: 'Committee of the Whole hearing', topics: ['Soccer Stadium Act'] }), trackedOnAgenda: true, prioritizedOnAgenda: false },
   ],
   optionsError: null,
 }
@@ -92,6 +92,16 @@ describe('Calendar events settings', () => {
     fireEvent.change(screen.getByLabelText('Topic 1 name'), { target: { value: 'Housing' } })
     fireEvent.change(screen.getByLabelText('Topic 1 keywords'), { target: { value: 'housing conditions' } })
     expect(within(preview()).getByText(/1 of 3 upcoming events matches/)).toBeInTheDocument()
+  })
+
+  it('keeps an event with a prioritized bill on its agenda, whatever the rules say', async () => {
+    mockApi({
+      rules: { committees: [HOUSING], kinds: [], topics: [], trackedBills: false },
+      events: LOADED.events.map(e => e.id === 'e3' ? { ...e, prioritizedOnAgenda: true } : e),
+    })
+    render(<MemoryRouter><EventRules /></MemoryRouter>)
+    expect(await screen.findByText(/2 of 3 upcoming events match/)).toBeInTheDocument()
+    expect(within(preview()).getByText(/a prioritized bill is on the agenda/)).toBeInTheDocument()
   })
 
   it('refuses a topic without keywords', async () => {

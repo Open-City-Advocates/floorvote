@@ -47,14 +47,13 @@ export async function runWeekAhead(env: Env, db: AppDb): Promise<void> {
   // Query non-cancelled events in the window.
   // Custom: all. Anything else: only with at least one linked bill with
   // priority. A body event (the legislature's own calendar) links its agenda
-  // bills, so one with a prioritized bill on the agenda is in, even one the
-  // instance's event rules hide from the calendar, since the email never
-  // lists the bill's own entry in its place. So is any body event the
-  // instance's event rules select (rule_match 1, lib/eventRules.ts). With no
-  // rules every body event shows on the calendar, but only those with a
-  // prioritized bill reach the email, so a state's whole calendar never
-  // floods it. Bill entries link their bill by bill_id, so they never match,
-  // as before.
+  // bills, so one with a prioritized bill on the agenda is in. The instance's
+  // event rules never hide those (lib/eventRules.ts), but a bill prioritized
+  // since the rules last ran would wait an hour without this. So is any body
+  // event the rules select (rule_match 1). With no rules every body event
+  // shows on the calendar, but only those with a prioritized bill reach the
+  // email, so a state's whole calendar never floods it. Bill entries link
+  // their bill by bill_id, so they never match, as before.
   const rows = await db
     .select({
       eventId: calendarEvents.id,

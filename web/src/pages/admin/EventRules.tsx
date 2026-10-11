@@ -14,7 +14,12 @@ import { eventMatchesRules, type EventFacets, type EventRules as Rules } from '.
 
 interface Committee { committeeId: string; name: string; chamber: string | null; state: string | null }
 interface Kind { kind: string; types: string[] }
-interface PreviewEvent { id: string; date: string; time: string | null; description: string | null; url: string | null; facets: EventFacets; trackedOnAgenda: boolean }
+interface PreviewEvent {
+  id: string; date: string; time: string | null; description: string | null; url: string | null; facets: EventFacets
+  trackedOnAgenda: boolean
+  /** A prioritized bill is on the agenda, so the event shows whatever the rules say. */
+  prioritizedOnAgenda: boolean
+}
 interface Loaded {
   rules: Rules | null
   hasBodyEvents: boolean
@@ -94,7 +99,7 @@ export function EventRules() {
   const rules = useMemo(() => loaded ? toRules(form, loaded.committees) : null, [form, loaded])
   const preview = useMemo(() => {
     if (!loaded || !rules) return []
-    return form.mode === 'all' ? loaded.events : loaded.events.filter(e => eventMatchesRules(e.facets, rules, e.trackedOnAgenda))
+    return form.mode === 'all' ? loaded.events : loaded.events.filter(e => eventMatchesRules(e.facets, rules, { tracked: e.trackedOnAgenda, prioritized: e.prioritizedOnAgenda }))
   }, [loaded, rules, form.mode])
 
   async function save() {
@@ -144,7 +149,7 @@ export function EventRules() {
       <div style={{ ...CARD, padding: 24 }}>
         <h1 style={CARD_TITLE}>Calendar events</h1>
         <div style={{ fontSize: fontSize.sm, color: color.textSecondary, lineHeight: 1.6, marginBottom: 20 }}>
-          Your calendar includes the legislature's own calendar for the states you cover: hearings, roundtables, and meetings, including the ones with no bill attached. Choose which of them reach your calendar. Events update hourly. Hearings for prioritized bills and deadlines for tracked bills appear on their own either way.
+          Your calendar includes the legislature's own calendar for the states you cover: hearings, roundtables, and meetings, including the ones with no bill attached. Choose which of them reach your calendar. Events update hourly. An event with a prioritized bill on its agenda always shows, and so do a prioritized bill's own hearings and deadlines.
         </div>
 
         {!configLoading && !hasBodyEvents && !loaded?.hasBodyEvents ? (
@@ -270,6 +275,7 @@ export function EventRules() {
                       <li key={e.id}>
                         <span style={{ color: color.textMuted }}>{safeDate(e.date) ?? e.date}{e.time ? ` ${e.time}` : ''}</span>{' '}
                         {e.url ? <a href={e.url} target="_blank" rel="noopener noreferrer" className="blue-link">{e.description}</a> : e.description}
+                        {form.mode === 'rules' && e.prioritizedOnAgenda && <span style={{ color: color.textMuted }}> (a prioritized bill is on the agenda)</span>}
                       </li>
                     ))}
                   </ul>

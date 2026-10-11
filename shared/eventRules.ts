@@ -13,6 +13,10 @@ import { matchesUnion } from './keywords'
  *   against the event's title and agenda;
  * - a bill the instance tracks on its agenda.
  *
+ * Rules never hide an event with a prioritized bill on its agenda: that is
+ * the bill's hearing, which the instance shows whatever the rules say, and
+ * the week-ahead email lists.
+ *
  * Committees, kinds, and event types are the ones central lists for the state
  * (GET /tenants/:tenantId/body-event-options), so rules never name one a
  * provider can't send. A kind is generic ('hearing', 'markup', 'meeting'), and
@@ -43,6 +47,12 @@ export interface EventRuleCommittee {
 export interface EventRuleTopic {
   name: string
   keywords: string[]
+}
+
+/** The instance's bills on an event's agenda: one it tracks, and one with a priority. */
+export interface AgendaBills {
+  tracked: boolean
+  prioritized: boolean
 }
 
 /** What the rules read of an event. The api keeps these with each body event. */
@@ -122,8 +132,12 @@ function isKind(event: EventFacets, value: string): boolean {
   return value === event.kind || (event.type !== null && value === event.type)
 }
 
-/** Whether `rules` select an event. `trackedOnAgenda`: a bill the instance tracks is on its agenda. */
-export function eventMatchesRules(event: EventFacets, rules: EventRules, trackedOnAgenda: boolean): boolean {
+/**
+ * Whether the instance shows an event under `rules`: a prioritized bill is on
+ * its agenda, or a rule selects it.
+ */
+export function eventMatchesRules(event: EventFacets, rules: EventRules, agenda: AgendaBills): boolean {
+  if (agenda.prioritized) return true
   for (const c of rules.committees) {
     const held = event.committeeId === c.committeeId
       || (!!event.jointWith && matchesUnion(event.jointWith, [shortCommitteeName(c.name)]).matched)
@@ -134,7 +148,7 @@ export function eventMatchesRules(event: EventFacets, rules: EventRules, tracked
     const texts = [event.title, ...event.topics].filter(Boolean)
     if (rules.topics.some(t => texts.some(s => matchesUnion(s, t.keywords).matched))) return true
   }
-  return rules.trackedBills && trackedOnAgenda
+  return rules.trackedBills && agenda.tracked
 }
 
 /** The topic a fork's DC Council calendar keywords become. */

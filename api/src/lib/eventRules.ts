@@ -1,7 +1,7 @@
 import { and, eq, inArray, isNotNull, or } from 'drizzle-orm'
 import { associationConfig, bills, calendarEventBills, calendarEvents } from '../db/schema'
 import {
-  eventMatchesRules, parseEventRules, rulesFromCouncilCalendar, type EventFacets, type EventRules,
+  eventMatchesRules, parseEventRules, rulesFromCouncilCalendar, type AgendaBills, type EventFacets, type EventRules,
 } from '../../../shared/eventRules'
 import { centralFetch } from './centralFetch'
 import type { AppDb, Env } from '../types'
@@ -20,8 +20,9 @@ import type { CentralBodyEvent } from './bodyEvents'
  * rule_match is 1. Saving or clearing rules rewrites rule_match locally, in
  * the same batch as the rules themselves, so nothing waits on central and no
  * event is left selected by rules that are gone. The hourly sync applies the
- * rules again, so events new since, and bills tracked since, are selected
- * within the hour.
+ * rules again, so events new since, and bills tracked or prioritized since,
+ * are selected within the hour. Rules never hide an event with a prioritized
+ * bill on its agenda, so the calendar and the week-ahead email agree.
  *
  * A fork's teams set their DC Council calendar rules in #217's
  * `council_calendar_rules`. While an instance has no `event_rules`, those are
@@ -135,6 +136,30 @@ export interface RuleCounts {
   hidden: number
 }
 
+const NO_AGENDA_BILLS: AgendaBills = { tracked: false, prioritized: false }
+
+/**
+ * Whether each body event has a bill the instance tracks, and one with a
+ * priority, on its agenda, by event id (`ids` limits it to those events).
+ */
+export async function agendaBills(db: AppDb, ids?: readonly string[]): Promise<Map<string, AgendaBills>> {
+  const out = new Map<string, AgendaBills>()
+  const read = async (only?: readonly string[]) => {
+    for (const r of await db.select({ eventId: calendarEventBills.eventId, matchType: bills.matchType, priority: bills.priority })
+      .from(calendarEventBills)
+      .innerJoin(calendarEvents, eq(calendarEvents.id, calendarEventBills.eventId))
+      .innerJoin(bills, eq(bills.id, calendarEventBills.billId))
+      .where(and(eq(calendarEvents.source, 'body'), or(isNotNull(bills.matchType), isNotNull(bills.priority)),
+        only ? inArray(calendarEventBills.eventId, [...only]) : undefined)).all()) {
+      const prior = out.get(r.eventId) ?? NO_AGENDA_BILLS
+      out.set(r.eventId, { tracked: true, prioritized: prior.prioritized || r.priority !== null })
+    }
+  }
+  if (!ids) await read()
+  else for (const chunk of chunks(ids)) await read(chunk)
+  return out
+}
+
 /**
  * The statements that set each body event's rule_match under `rules`, and
  * what they leave shown and hidden. Writes only rows whose value changes. An
@@ -147,14 +172,10 @@ async function ruleMatchStatements(db: AppDb, rules: EventRules | null) {
 
   const want = new Map<string, number | null>()
   if (rules) {
-    const tracked = new Set((await db.selectDistinct({ eventId: calendarEventBills.eventId }).from(calendarEventBills)
-      .innerJoin(calendarEvents, eq(calendarEvents.id, calendarEventBills.eventId))
-      .innerJoin(bills, eq(bills.id, calendarEventBills.billId))
-      .where(and(eq(calendarEvents.source, 'body'), or(isNotNull(bills.matchType), isNotNull(bills.priority)))).all())
-      .map(r => r.eventId))
+    const agenda = await agendaBills(db)
     for (const r of rows) {
       const facets = parseFacets(r.ruleFacets)
-      want.set(r.id, facets ? (eventMatchesRules(facets, rules, tracked.has(r.id)) ? 1 : 0) : null)
+      want.set(r.id, facets ? (eventMatchesRules(facets, rules, agenda.get(r.id) ?? NO_AGENDA_BILLS) ? 1 : 0) : null)
     }
   } else {
     for (const r of rows) want.set(r.id, null)

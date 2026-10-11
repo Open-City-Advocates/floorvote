@@ -3,7 +3,7 @@ import { env, SELF } from 'cloudflare:test'
 import { eq } from 'drizzle-orm'
 import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedCalendarEvent } from '../helpers'
 import { getDb } from '../../src/db/client'
-import { associationConfig, calendarEvents } from '../../src/db/schema'
+import { associationConfig, bills, calendarEvents } from '../../src/db/schema'
 import { syncBodyEvents, type CentralBodyEvent } from '../../src/lib/bodyEvents'
 import { hearingUid } from '../../src/lib/hearingUid'
 import { runWeekAhead } from '../../src/lib/weekAhead'
@@ -110,6 +110,9 @@ async function feed() {
 
 const RULES = { committees: [HOUSING], kinds: [], topics: [], trackedBills: false }
 
+/** Take the bill's priority away, leaving it tracked by keyword, so rules alone decide the stadium hearing. */
+const unprioritize = () => getDb(env.DB).update(bills).set({ priority: null, matchType: 'keyword' }).where(eq(bills.id, billId))
+
 describe('event rules', () => {
   it('show every body event until an admin saves rules', async () => {
     await sync()
@@ -121,36 +124,49 @@ describe('event rules', () => {
     expect(body.committees.map((c: any) => c.name)).toEqual(['Committee of the Whole', 'Committee on Housing', 'Committee on Health'])
     expect(body.kinds).toEqual([{ kind: 'hearing', types: ['Hearing', 'Roundtable'] }, { kind: 'meeting', types: ['Meeting'] }])
     expect(body.events.map((e: any) => e.facets.title)).toEqual(['Housing roundtable', 'Legislative Meeting', 'Committee of the Whole hearing'])
-    expect(body.events[2]).toMatchObject({ trackedOnAgenda: true, facets: { committeeId: COW.committeeId, kind: 'hearing', type: 'Hearing' } })
+    expect(body.events[2]).toMatchObject({ trackedOnAgenda: true, prioritizedOnAgenda: true, facets: { committeeId: COW.committeeId, kind: 'hearing', type: 'Hearing' } })
   })
 
-  it('hide what saved rules don\'t select, at once and without asking central, and show the hearing a hidden event covered', async () => {
+  it('hide what saved rules don\'t select, at once and without asking central, but never an event with a prioritized bill on its agenda', async () => {
     await sync()
     fetchMock.mockClear()
     const res = await saveRules(RULES)
     expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({ rules: RULES, shown: 1, hidden: 2 })
+    expect(await res.json()).toMatchObject({ rules: RULES, shown: 2, hidden: 1 })
     expect(fetchMock).not.toHaveBeenCalled()
 
-    // The stadium hearing is hidden, so the prioritized bill's own entry shows in its place.
-    expect(await calendarUids()).toEqual([ROUNDTABLE, HEARING_UID].sort())
+    // The stadium hearing has the prioritized bill on its agenda, so it shows, in place of the bill's own entry.
+    expect(await calendarUids()).toEqual([ROUNDTABLE, STADIUM].sort())
     const ics = await feed()
     expect(ics).toContain(`UID:${ROUNDTABLE}`)
-    expect(ics).toContain(`UID:${HEARING_UID}`)
-    expect(ics).not.toContain(`UID:${STADIUM}`)
+    expect(ics).toContain(`UID:${STADIUM}`)
+    expect(ics).not.toContain(`UID:${HEARING_UID}`)
     expect(ics).not.toContain(`UID:${MEETING}`)
   })
 
+  it('show a bill prioritized since the rules ran: its own entry at once, then the event on the hourly sync', async () => {
+    await unprioritize()
+    await sync()
+    await saveRules(RULES)
+    expect(await calendarUids()).toEqual([ROUNDTABLE])
+    await getDb(env.DB).update(bills).set({ priority: 'high' }).where(eq(bills.id, billId))
+    // The event that covers it is still hidden, so the bill's own entry shows.
+    expect(await calendarUids()).toEqual([ROUNDTABLE, HEARING_UID].sort())
+    await sync()
+    expect(await calendarUids()).toEqual([ROUNDTABLE, STADIUM].sort())
+  })
+
   it('select by kind or event type, topic, and tracked bills', async () => {
+    await unprioritize()
     await sync()
     await saveRules({ committees: [], kinds: ['Meeting'], topics: [], trackedBills: false })
-    expect(await calendarUids()).toEqual([MEETING, HEARING_UID].sort())
+    expect(await calendarUids()).toEqual([MEETING])
     await saveRules({ committees: [], kinds: [], topics: [{ name: 'Housing agencies', keywords: ['housing authority'] }], trackedBills: false })
-    expect(await calendarUids()).toEqual([ROUNDTABLE, HEARING_UID].sort())
+    expect(await calendarUids()).toEqual([ROUNDTABLE])
     await saveRules({ committees: [], kinds: [], topics: [], trackedBills: true })
-    expect(await calendarUids()).toEqual([STADIUM].sort())
+    expect(await calendarUids()).toEqual([STADIUM])
     await saveRules({ committees: [{ ...COW, kind: 'meeting' }], kinds: [], topics: [], trackedBills: false })
-    expect(await calendarUids()).toEqual([HEARING_UID].sort())
+    expect(await calendarUids()).toEqual([])
   })
 
   it('apply to events that arrive later, on the hourly sync', async () => {
@@ -159,7 +175,7 @@ describe('event rules', () => {
     central.events = [...central.events, bodyEvent({ uid: 'council-2500@lims.dccouncil.gov', date: isoDay(6), eventHash: 'e4' }),
       bodyEvent({ uid: 'council-2501@lims.dccouncil.gov', committee: COW, date: isoDay(6), eventHash: 'e5' })]
     await sync()
-    expect(await calendarUids()).toEqual([ROUNDTABLE, HEARING_UID, 'council-2500@lims.dccouncil.gov'].sort())
+    expect(await calendarUids()).toEqual([ROUNDTABLE, STADIUM, 'council-2500@lims.dccouncil.gov'].sort())
   })
 
   it('leave no event hidden once cleared, even while central is down', async () => {
@@ -183,7 +199,7 @@ describe('event rules', () => {
       include: [{ committee: 'Housing' }, { committee: 'Legislative Meeting' }], types: [], topicKeywords: [], trackedBills: false,
     }) })
     await sync()
-    expect(await calendarUids()).toEqual([ROUNDTABLE, MEETING, HEARING_UID].sort())
+    expect(await calendarUids()).toEqual([ROUNDTABLE, MEETING, STADIUM].sort())
     const saved = await getDb(env.DB).select().from(associationConfig).where(eq(associationConfig.key, 'event_rules')).get()
     expect(JSON.parse(saved!.value)).toEqual({
       committees: [HOUSING], kinds: [], topics: [{ name: COUNCIL_CALENDAR_TOPIC, keywords: ['legislative meeting'] }], trackedBills: false,

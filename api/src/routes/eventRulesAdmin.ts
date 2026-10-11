@@ -1,10 +1,10 @@
 import { Hono } from 'hono'
-import { and, asc, eq, gte, inArray, isNotNull, lte, or } from 'drizzle-orm'
+import { and, asc, eq, gte, isNotNull, lte } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { bills, calendarEventBills, calendarEvents } from '../db/schema'
+import { calendarEvents } from '../db/schema'
 import { centralFetch } from '../lib/centralFetch'
 import { readStateCapabilities } from '../lib/bodyEvents'
-import { loadEventRules, saveEventRules } from '../lib/eventRules'
+import { agendaBills, loadEventRules, saveEventRules } from '../lib/eventRules'
 import { parseEventRules, type EventFacets } from '../../../shared/eventRules'
 import type { AppEnv } from '../types'
 
@@ -56,16 +56,11 @@ eventRulesAdminRouter.get('/', async (c) => {
     .where(and(eq(calendarEvents.source, 'body'), eq(calendarEvents.status, 'confirmed'), isNotNull(calendarEvents.ruleFacets),
       gte(calendarEvents.date, today), lte(calendarEvents.date, until)))
     .orderBy(asc(calendarEvents.date), asc(calendarEvents.time)).all()
-  const tracked = new Set<string>()
-  for (let i = 0; i < rows.length; i += 80) {
-    const found = await db.selectDistinct({ eventId: calendarEventBills.eventId }).from(calendarEventBills)
-      .innerJoin(bills, eq(bills.id, calendarEventBills.billId))
-      .where(and(inArray(calendarEventBills.eventId, rows.slice(i, i + 80).map(r => r.id)), or(isNotNull(bills.matchType), isNotNull(bills.priority)))).all()
-    for (const f of found) tracked.add(f.eventId)
-  }
+  const agenda = await agendaBills(db, rows.map(r => r.id))
   const events = rows.map(r => ({
     id: r.id, date: r.date, time: r.time, description: r.description, url: r.url,
-    facets: JSON.parse(r.ruleFacets!) as EventFacets, trackedOnAgenda: tracked.has(r.id),
+    facets: JSON.parse(r.ruleFacets!) as EventFacets,
+    trackedOnAgenda: agenda.get(r.id)?.tracked ?? false, prioritizedOnAgenda: agenda.get(r.id)?.prioritized ?? false,
   }))
 
   // Committees: central's, then any the events or saved rules name that central didn't list.
