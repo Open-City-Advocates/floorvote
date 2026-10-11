@@ -159,7 +159,7 @@ Deploy central, claim DC, then deploy every instance, all before the next top of
 
 ## If Something Goes Wrong
 
-- **The claim answered 409, or DC wasn't seeded** and the LegiScan sync logs a refused seed each hour. The 409 names the instances tracking LegiScan DC bills. Most likely a DC bill the old code wrote between the migrations and the deploy is labeled LegiScan's. Find it, give it back to LIMS, then claim DC again (or, while `LIMS_STATES` is read, let the next sync seed it). `central/test/cron/fork-upgrade.test.ts` covers this:
+- **The claim answered 409, or DC wasn't seeded** and the LegiScan sync logs a refused seed each hour. The 409 names the instances tracking LegiScan DC bills. Most likely a DC bill the old code wrote between the migrations and the deploy is labeled LegiScan's. Find it, give it back to LIMS, then claim DC again (or, while `LIMS_STATES` is read, let the next sync seed it). The statements below relabel bills, sessions, and people. `central/test/cron/fork-upgrade.test.ts` covers only the `bills` one:
 
   ```sql
   SELECT bill_id, bill_number FROM bills
@@ -174,13 +174,13 @@ Deploy central, claim DC, then deploy every instance, all before the next top of
 
   The old code writes sessions and people in that window too, so give those back as well.
 
-  If instances really track LegiScan DC bills outside LIMS's ranges (the preflight wasn't 0), move DC with a cutover instead, starting with its dry run (`docs/internal/sync-pipeline.md`, "Moving a state to another provider (cutover)"). A cutover can't move a LegiScan bill whose LIMS copy an instance already holds: the dry run lists it as a conflict, and with nothing else to move the cutover is refused. Check in each instance named that it holds the LIMS copy (its handle is `legiscan:` plus an id from 1000000000), then unlink the LegiScan copy in central, and claim DC:
+  If instances really track LegiScan DC bills outside LIMS's ranges (the preflight wasn't 0), move DC with a cutover instead, starting with its dry run (`docs/internal/sync-pipeline.md`, "Moving a state to another provider (cutover)"). A cutover can't move a LegiScan bill whose LIMS copy an instance already holds: the dry run lists it as a conflict, and with nothing else to move the cutover is refused. Check in each instance named that it holds the LIMS copy (its bill id is in LIMS's range, 1000000000 up to 2000000000), then unlink the LegiScan copy in central, and claim DC:
 
   ```sql
   DELETE FROM bill_tenants WHERE tenant_id = '<tenant>' AND bill_id IN (<the conflicting LegiScan bill ids>);
   ```
 
-  The instance keeps its row for the LegiScan copy, which stops updating.
+  The instance keeps its row for the LegiScan copy, which stops updating. Untrack that bill on the instance too: otherwise it tracks a LegiScan row that no longer updates, beside the LIMS copy.
 
 - **Every Council event shows** after an hour. The carry-over is waiting for central's committee list. The instance logs "[event-rules] central options unavailable" when `GET /api/tenants/<tenant>/body-event-options` fails. An admin can save the carried-over rules by hand from the settings page.
 - **Hearing briefs find no events.** Code selecting `source = 'council'` wasn't ported (see "Build Your Upgrade Branch From Upstream").

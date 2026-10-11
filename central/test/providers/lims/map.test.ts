@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { getProvider } from '../../../src/providers'
 import bulkRaw from '../../fixtures/lims/bulk-records.json?raw'
 import details0400Raw from '../../fixtures/lims/details-B26-0400.json?raw'
@@ -532,5 +532,16 @@ describe('limsMeasureStatus', () => {
     expect(limsMeasureStatus({ ...base, actResNumber: 'A25-0400' }, 'Not Applicable')).toBe(limsStatusCode('Enacted'))
     expect(limsMeasureStatus({ ...base, actResNumber: 'R25-0100' })).toBe(limsStatusCode('Approved'))
     expect(limsMeasureStatus(base)).toBe(100)
+  })
+  it('warns once per unlisted status name, and not when law, act, or resolution numbers resolve the status', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (let i = 0; i < 5; i++) expect(limsMeasureStatus({ ...base, status: 'Newly Invented' })).toBe(100)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Newly Invented'))
+    expect(limsMeasureStatus({ ...base, status: 'Invented Too', lawNumber: 'L25-0001' })).toBe(limsStatusCode('Official Law'))
+    expect(warn).toHaveBeenCalledTimes(1)
+    limsMeasureStatus({ ...base, status: 'Another One' })
+    expect(warn).toHaveBeenCalledTimes(2)
+    warn.mockRestore()
   })
 })

@@ -75,8 +75,8 @@ describe('the codes each provider writes', () => {
 
   it('warns when it meets a status name it doesn\'t list', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    limsStatusCode('Something LIMS added later')
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Something LIMS added later'))
+    limsStatusCode('Brand New Status')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Brand New Status'))
     warn.mockClear()
     limsStatusCode('')
     limsStatusCode('Not Applicable')
