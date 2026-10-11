@@ -308,7 +308,7 @@ export function rehearse(db: DatabaseSync, kind: DbKind, label: string, migratio
       const legiscan = hasColumn(db, 'bills', 'provider') ? `b.provider = 'legiscan'` : hasColumn(db, 'bills', 'source') ? `b.source = 'legiscan'` : `(b.bill_id < ${LIMS_ID_MIN} OR b.bill_id >= ${LIMS_ID_MAX})`
       const n = count(db, `SELECT COUNT(DISTINCT b.bill_id) AS n FROM bills b JOIN bill_tenants bt ON bt.bill_id = b.bill_id WHERE b.state = ? AND ${legiscan}`, state)
       check(n === 0, `No LegiScan bill in ${state} is linked to an instance, so ${state}'s ownership row can be seeded`,
-        `${n} are. Upstream won't seed ${state} for LIMS while LegiScan has tracked bills there. ${state} would stay on LegiScan. See "Before you upgrade" in docs/internal/fork-upgrade.md.`)
+        `${n} are. Upstream won't seed ${state} for LIMS while LegiScan has tracked bills there. ${state} would stay on LegiScan. See "If Something Goes Wrong" in docs/internal/fork-upgrade.md.`)
     }
   }
 
