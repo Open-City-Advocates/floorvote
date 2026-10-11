@@ -122,6 +122,12 @@ async function central(method: string, path: string, run: Run) {
   const { app } = await import('../../src/index-legiscan')
   return app.fetch(new Request(`http://central/api${path}`, { method, headers: { 'x-admin-secret': 'test-secret' } }), run.env)
 }
+async function app(run: Run, method: string, path: string, body: unknown) {
+  const { app } = await import('../../src/index-legiscan')
+  return app.fetch(new Request(`http://central/api${path}`, {
+    method, headers: { 'x-admin-secret': 'test-secret', 'content-type': 'application/json' }, body: JSON.stringify(body),
+  }), run.env)
+}
 async function getJson(path: string, run = makeEnv()) {
   const res = await central('GET', path, run)
   expect(res.status).toBe(200)
@@ -143,6 +149,21 @@ const sentToTenant = (run: Run) => [
 
 async function rows(sql: string): Promise<Row[]> {
   return (await env.DB.prepare(sql).all<Row>()).results
+}
+/** What instances and their members hold through central, in the fork's own columns. */
+const HELD: Record<string, string> = {
+  bill_tenants: 'SELECT bill_id, tenant_id, match_type FROM bill_tenants ORDER BY bill_id, tenant_id',
+  roll_calls: 'SELECT roll_call_id, bill_id, date, description, yea, nay, nv, absent, total, passed FROM roll_calls ORDER BY roll_call_id',
+  roll_call_votes: 'SELECT roll_call_id, people_id, vote_id, vote_text FROM roll_call_votes ORDER BY roll_call_id, people_id',
+  bill_history: 'SELECT bill_id, date, action, chamber, seq FROM bill_history ORDER BY bill_id, seq, date, action',
+}
+async function heldState() {
+  return Object.fromEntries(await Promise.all(Object.entries(HELD).map(async ([t, sql]) => [t, await rows(sql)])))
+}
+/** Every table's row count. */
+async function tableCounts() {
+  const names = (await rows(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'd1_migrations'`)).map(r => r.name as string)
+  return Object.fromEntries(await Promise.all(names.map(async t => [t, Number((await rows(`SELECT COUNT(*) AS n FROM ${t}`))[0].n)])))
 }
 async function forkState() {
   const tables: Record<string, Row[]> = {}
@@ -199,8 +220,16 @@ describe('a fork\'s production central, moved onto upstream', () => {
     const dcBills = await rows(`SELECT bill_id, bill_number, session_id FROM bills WHERE state = 'DC' ORDER BY bill_id`)
     const calendar = await rows('SELECT id, bill_id, type_id, date, description, event_hash FROM bill_calendar ORDER BY id')
     expect(dcBills).toHaveLength(7)
+    const held = await heldState()
+    const counts = await tableCounts()
 
     await applyD1Migrations(env.DB, parseMigrations(legiscanMigrations))
+
+    // No table loses a row but lims_records, which is copied into provider_records and dropped.
+    const after = await tableCounts()
+    expect(Object.entries(counts).filter(([t, n]) => t !== 'lims_records' && !((after[t] ?? -1) >= n))).toEqual([])
+    // Instances' links, and the votes and history members see, as they were.
+    expect(await heldState()).toEqual(held)
 
     // Wrangler applies only the names it hasn't: upstream's own files.
     const applied = (await rows('SELECT name FROM d1_migrations ORDER BY id')).map(r => r.name as string)
@@ -247,6 +276,21 @@ describe('a fork\'s production central, moved onto upstream', () => {
     expect(await forkState()).toEqual(before)
   })
 
+  it('syncs DC once an operator claims it for LIMS, with LIMS_STATES gone, as the guide\'s first step after deploying', async () => {
+    await applyD1Migrations(env.DB, parseMigrations(legiscanMigrations))
+    const run = makeEnv()
+    delete (run.env as Record<string, unknown>).LIMS_STATES
+    const res = await app(run, 'POST', '/admin/state-providers/DC', { provider: 'lims' })
+    expect(res.status).toBe(200)
+    expect((await getJson('/admin/state-providers', run)).states).toEqual([expect.objectContaining({ state: 'DC', provider: 'lims' })])
+
+    await runSnapshotSync(lims, run.env, db())
+    await ingestQueued(run)
+    expect(await rows(`SELECT bill_id FROM bills WHERE state = 'DC' ORDER BY bill_id`))
+      .toEqual(forkRows.rows.bills.map(b => ({ bill_id: b.bill_id })).sort((a, b) => Number(a.bill_id) - Number(b.bill_id)))
+    expect(sentToTenant(run).map(m => m.billId)).toEqual(expect.arrayContaining(['legiscan:1012600769']))
+  })
+
   it('keeps DC on LegiScan if the old code wrote a DC bill after the migrations, until the guide\'s fix relabels it', async () => {
     await applyD1Migrations(env.DB, parseMigrations(legiscanMigrations))
     // The fork's old LIMS sync, still deployed, writes a new bill without a
@@ -267,6 +311,7 @@ describe('a fork\'s production central, moved onto upstream', () => {
   })
 
   it('keeps the identity of every bill calendar entry instances hold, through the LIMS re-ingest', async () => {
+    const held = await heldState()
     await applyD1Migrations(env.DB, parseMigrations(legiscanMigrations))
     const first = makeEnv()
     await runSnapshotSync(lims, first.env, db())
@@ -294,6 +339,10 @@ describe('a fork\'s production central, moved onto upstream', () => {
     }
     // The fork's deadline is a deadline now, under the identity it had.
     expect(calendars.get('legiscan:1012600400').events.find((e: any) => e.identityKey === '10|mayor\'s response due')).toMatchObject({ kind: 'deadline' })
+    // Instances keep their links, and the re-ingest keeps every roll call, vote, and history line.
+    const now = await heldState()
+    expect(now.bill_tenants).toEqual(held.bill_tenants)
+    for (const t of ['roll_calls', 'roll_call_votes', 'bill_history']) expect(now[t]).toEqual(expect.arrayContaining(held[t]))
     // One row per entry, each now holding the identity instances know it by.
     expect(await rows('SELECT identity_key FROM bill_calendar WHERE cancelled_at IS NULL ORDER BY identity_key'))
       .toEqual(Object.values(forkRows.calendarIdentities).flat().sort().map(identity_key => ({ identity_key })))

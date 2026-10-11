@@ -61,6 +61,22 @@ async function forkTables() {
   return Object.fromEntries(await Promise.all(FORK_TABLES.map(async t => [t, await rows(`SELECT * FROM ${t} ORDER BY rowid`)])))
 }
 const calendarIds = () => rows('SELECT id, uid, sequence, status FROM calendar_events ORDER BY id')
+/** What the team itself holds: priorities, tracking, votes, positions, comments, and notes. */
+async function teamState() {
+  return {
+    bills: await rows('SELECT id, priority, match_type FROM bills ORDER BY id'),
+    users: await rows('SELECT id, email, role FROM users ORDER BY id'),
+    member_votes: await rows('SELECT id, user_id, bill_id, position FROM member_votes ORDER BY id'),
+    official_positions: await rows('SELECT id, bill_id, position, notes FROM official_positions ORDER BY id'),
+    comments: await rows('SELECT id, bill_id, user_id, content, deleted_at FROM comments ORDER BY id'),
+    notes: await rows('SELECT id, bill_id, user_id, content FROM notes ORDER BY id'),
+  }
+}
+/** Every table's row count. */
+async function tableCounts() {
+  const names = (await rows(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'd1_migrations'`)).map(r => r.name as string)
+  return Object.fromEntries(await Promise.all(names.map(async t => [t, Number((await rows(`SELECT COUNT(*) AS n FROM ${t}`))[0].n)])))
+}
 
 /** The fork's instance: its migrations, its rows, and synthetic rows in its own tables. */
 async function buildForkInstance() {
@@ -86,6 +102,12 @@ async function buildForkInstance() {
   insert(`INSERT INTO crm_people (person_key, name, office) VALUES ('staff:staffer@example.org', 'Example Staffer', 'Committee on Youth Affairs')`)
   insert(`INSERT INTO crm_contacts (id, person_key, contact_date, kind, summary, bill_id) VALUES ('cc-1', 'cm:Zachary Parker', '2026-09-20', 'meeting', 'Talked through the stadium bill.', ?)`, B0769)
   insert(`INSERT INTO crm_followups (id, person_key, due_date, text) VALUES ('cf-1', 'staff:staffer@example.org', '2026-10-01', 'Send our testimony.')`)
+  // What the team itself holds, which upstream's code must leave alone.
+  insert(`INSERT INTO users (id, email, name, role) VALUES ('u-1', 'member@example.org', 'A Member', 'admin'), ('u-2', 'other@example.org', 'Another Member', 'member')`)
+  insert(`INSERT INTO member_votes (id, user_id, bill_id, position) VALUES ('mv-1', 'u-1', ?, 'support'), ('mv-2', 'u-2', ?, 'oppose')`, B0769, B0769)
+  insert(`INSERT INTO official_positions (id, bill_id, position, notes, set_by) VALUES ('op-1', ?, 'Support', 'Testified in favor.', 'u-1')`, B0769)
+  insert(`INSERT INTO comments (id, bill_id, user_id, content) VALUES ('c-1', ?, 'u-2', 'The hearing moved.')`, B0400)
+  insert(`INSERT INTO notes (id, bill_id, user_id, content) VALUES ('n-1', ?, 'u-1', 'Ask about the fiscal note.')`, B0400)
   await env.DB.batch(statements)
 }
 
@@ -123,8 +145,16 @@ describe('a fork\'s instance, moved onto upstream', () => {
     const before = await forkTables()
     const calendar = await calendarIds()
     const billIds = await rows('SELECT id, external_id FROM bills ORDER BY id')
+    const team = await teamState()
+    const counts = await tableCounts()
+    expect(team.member_votes).toHaveLength(2)
 
     await applyD1Migrations(env.DB, migrationsFromFiles(upstreamMigrations))
+
+    // No table loses a row, and what the team holds is as it was.
+    const after = await tableCounts()
+    expect(Object.entries(counts).filter(([t, n]) => !((after[t] ?? -1) >= n))).toEqual([])
+    expect(await teamState()).toEqual(team)
 
     const applied = (await rows('SELECT name FROM d1_migrations ORDER BY id')).map(r => r.name)
     expect(applied.slice(0, forkManifest.files.length)).toEqual(forkManifest.files.map(f => f.replace(/\.sql$/, '')))
@@ -150,6 +180,7 @@ describe('a fork\'s instance, moved onto upstream', () => {
   it('keeps every calendar UID and the fork\'s features\' links through what upstream\'s central sends next', async () => {
     await applyD1Migrations(env.DB, migrationsFromFiles(upstreamMigrations))
     const before = await forkTables()
+    const team = await teamState()
     const calendar = new Map((await calendarIds()).map(r => [r.uid, r]))
     const db = getDb(env.DB)
 
@@ -190,8 +221,9 @@ describe('a fork\'s instance, moved onto upstream', () => {
     expect(after.get(hearingUid('legiscan:1082600171', '1|public oversight roundtable on department of behavioral health’s financial challenges', 'oca')))
       .toMatchObject({ covered_by: 'council-2428@lims.dccouncil.gov' })
 
-    // The fork's own rows are untouched, and every bill and event they point at is still there.
+    // The fork's own rows and the team's are untouched, and every bill and event they point at is still there.
     expect(await forkTables()).toEqual(before)
+    expect(await teamState()).toEqual(team)
     expect(await rows(`
       SELECT 'deep_analyses' AS t, id FROM deep_analyses WHERE subject_id NOT IN (SELECT id FROM bills UNION SELECT id FROM calendar_events)
       UNION ALL SELECT 'team_links', id FROM team_links WHERE subject_id NOT IN (SELECT id FROM bills UNION SELECT id FROM calendar_events)
