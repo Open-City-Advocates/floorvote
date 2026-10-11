@@ -783,8 +783,11 @@ describe('a moved bill no instance tracks', () => {
   it('gets a quiet first LIMS ingest too, which replaces its documents and votes and leaves it a monitored bill', async () => {
     const run = makeEnv()
     expect((await cutover(run, '?confirm=true')).status).toBe(200)
-    // Queued on LIMS's own queue, for its first ingest, though nothing tracks it.
-    expect(queued(run.limsQueue)).toContainEqual({ billId: B0001, firstIngestFor: 'lims' })
+    // Queued on LIMS's own queue, for its first ingest, though nothing tracks
+    // it, and after the tracked bill, so that one doesn't wait behind it.
+    const order = queued(run.limsQueue)
+    expect(order).toContainEqual({ billId: B0001, firstIngestFor: 'lims' })
+    expect(order.findIndex(b => b.billId === B0400)).toBeLessThan(order.findIndex(b => b.billId === B0001))
     expect(run.ingestor.sendBatch).not.toHaveBeenCalled()
     const before = await getJson(`/bills/${toHandle(B0001)}`)
     expect(before.texts).toEqual([])
@@ -822,21 +825,18 @@ describe('a moved bill no instance tracks', () => {
     expect(queued(next.limsQueue).map(b => b.billId)).not.toContain(B0001)
   })
 
-  it('re-sends the instance\'s monitor stubs once LIMS has synced, with LIMS\'s statuses', async () => {
+  it('reaches the instance as one stub from LIMS\'s first pass, which already shows LIMS\'s status', async () => {
     const run = makeEnv()
-    const res = await cutover(run, '?confirm=true')
-    const body = await res.json() as any
-    // Every monitor link the instance has in DC, and no more.
-    const links = await row<{ n: number }>(`SELECT COUNT(*) AS n FROM bill_tenants bt JOIN bills b ON b.bill_id = bt.bill_id
-      WHERE bt.tenant_id = 'oca' AND bt.match_type IS NULL AND b.state = 'DC'`)
-    expect(body.stubs).toEqual([{ tenantId: 'oca', queued: links.n, via: 'binding' }])
-    const stubs = sentToTenant(run).filter((m: any) => m.stubOnly)
-    expect(stubs.filter((m: any) => m.billId === toHandle(B0001)).length).toBeGreaterThanOrEqual(1)
-    expect(stubs.map((m: any) => m.billId)).not.toContain(toHandle(B0400))
-
-    // What an instance reads for the stub, before any ingest: LIMS's status already.
-    const stub = await getJson(`/bills/${toHandle(B0001)}`)
-    expect(stub).toMatchObject({ status: 'Enacted', statusStage: 'enacted' })
+    // What the instance reads for each stub, at the moment it is sent.
+    const readAtSend: string[] = []
+    run.tenantQueue.sendBatch.mockImplementation(async (msgs: { body: any }[]) => {
+      for (const { body } of msgs) {
+        if (body.stubOnly && body.billId === toHandle(B0001)) readAtSend.push((await getJson(`/bills/${toHandle(B0001)}`)).status)
+      }
+    })
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    expect(readAtSend).toEqual(['Enacted'])
+    expect(sentToTenant(run).filter((m: any) => m.stubOnly).map((m: any) => m.billId)).not.toContain(toHandle(B0400))
   })
 
   it('is queued again by a forced sync while its first ingest waits, at no second LIMS call', async () => {
@@ -856,20 +856,20 @@ describe('a moved bill no instance tracks', () => {
     const run = makeEnv()
     expect((await cutover(run, '?confirm=true')).status).toBe(200)
     // The undo lands while LIMS's first ingests still wait in its queue.
-    const res = await undo(run, '?confirm=true')
-    expect(res.status).toBe(200)
-    // LegiScan syncs on its own schedule, so nothing is re-sent yet.
-    expect((await res.json() as any).stubs).toBeUndefined()
+    expect((await undo(run, '?confirm=true')).status).toBe(200)
+    // Both waiting messages are skipped, the tracked bill's too: LIMS's
+    // consumer spends no LegiScan call.
     const waiting = await drain(run.limsQueue, run)
-    expect(waiting.find(m => m.body.billId === B0001)!.ack).toHaveBeenCalled()
-    expect(calls.filter(u => u.endsWith('LegislationDetails/B26-0001'))).toEqual([])
-    expect(legiscanCalls('getBill').filter(u => !u.includes(`id=${B0400}`))).toEqual([])
+    for (const m of waiting.filter(m => m.body.billId === B0001 || m.body.billId === B0400)) expect(m.ack).toHaveBeenCalled()
+    expect(calls.filter(u => u.includes('LegislationDetails/B26-0'))).toEqual([])
+    expect(legiscanCalls('getBill')).toEqual([])
 
-    // LegiScan's next full pass queues only the tracked bill, and gives the
-    // monitored one LegiScan's status, with a stub.
+    // LegiScan's next full pass queues only the tracked bill, on its own
+    // queue, and gives the monitored one LegiScan's status, with a stub.
     vi.mocked(getCurrentEtHour).mockReturnValue(13)
     const again = makeEnv()
     await runSync(again.env, drizzle(env.DB, { schema }))
+    expect(queued(again.ingestor).map(b => b.billId)).toContain(B0400)
     expect(queued(again.ingestor).map(b => b.billId)).not.toContain(B0001)
     await drain(again.ingestor, again)
     expect(legiscanCalls('getBill').filter(u => !u.includes(`id=${B0400}`))).toEqual([])
