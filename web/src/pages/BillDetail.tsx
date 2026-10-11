@@ -24,6 +24,9 @@ import { SentimentBars } from '../components/SentimentBars'
 import { LegislativeHistory, syntheticLatestAction } from '../components/LegislativeHistory'
 import { TabularRow } from '../components/TabularRow'
 import { BillTextPanel } from '../components/BillTextPanel'
+import { DeepAnalysisPanel } from '../components/DeepAnalysisPanel'
+import { TeamLinks } from '../components/TeamLinks'
+import { BillHearingBriefs } from '../components/BillHearingBriefs'
 import { BillTextChip } from '../components/BillTextChip'
 import { PersonalNote } from '../components/PersonalNote'
 import { InfoTooltip } from '../components/InfoTooltip'
@@ -2419,6 +2422,11 @@ export function BillDetail() {
             )}
           </AnalysisBox>
         )}
+
+        {/* The fork's deep analysis, team links, and hearing briefs, filled by the operator's worker */}
+        {!bill.isDraft && <DeepAnalysisPanel key={bill.id} kind="bill" subjectId={bill.id} isAdmin={isAdmin} />}
+        {!bill.isDraft && <TeamLinks key={`links-${bill.id}`} kind="bill" subjectId={bill.id} isAdmin={isAdmin} />}
+        {!bill.isDraft && <BillHearingBriefs key={`hearings-${bill.id}`} billId={bill.id} isAdmin={isAdmin} />}
 
         {/* Draft summary + bill text — draft-only blocks replacing AI section */}
         {bill.isDraft && (

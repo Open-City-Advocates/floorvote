@@ -16,6 +16,8 @@ export interface OperatorConfig {
 }
 
 export interface AppConfig {
+  /** The fork's deep-analysis queue (deep analyses and hearing briefs) is on. */
+  deepAnalysis?: boolean
   associationName?: string
   states: string[]
   multiState?: boolean

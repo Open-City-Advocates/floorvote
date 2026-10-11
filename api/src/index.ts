@@ -1,6 +1,9 @@
 import { Hono } from 'hono'
 import { directoryRouter } from './routes/directoryApi'
 import { crmRouter } from './routes/crmApi'
+import { deepRouter } from './routes/deepApi'
+import { linksRouter } from './routes/linksApi'
+import { fireDeepWorker, reconcileDeepRequests } from './lib/deepAnalysis'
 import { cors } from 'hono/cors'
 import { getCookie } from 'hono/cookie'
 import { bodyLimit } from 'hono/body-limit'
@@ -146,6 +149,9 @@ app.route('/api/calendar', calendarRouter)
 app.route('/api/directory', directoryRouter)
 // The fork's Council CRM (src/routes/crmApi.ts, tables in db/schema-oca.ts).
 app.route('/api/crm', crmRouter)
+// The fork's deep analyses, hearing briefs, and team links (lib/deepAnalysis.ts).
+app.route('/api/deep', deepRouter)
+app.route('/api/links', linksRouter)
 
 app.get('/api/health', (c) => c.json({ ok: true, build: BUILD_SHA }))
 
@@ -361,6 +367,15 @@ export default {
           }
         } catch (err) {
           console.error(`[body-events] sync failed, skipping this run: ${describeErrorCauseChain(err)}`)
+        }
+        // The fork's deep analyses: after the calendar sync, so a new Council
+        // event gets its hearing brief request this hour.
+        try {
+          const d = await reconcileDeepRequests(env, db)
+          if (d && (d.bills || d.hearings || d.withdrawn)) console.log(`[deep] requested bills=${d.bills} hearings=${d.hearings} withdrawn=${d.withdrawn}`)
+          if (await fireDeepWorker(env, db)) console.log('[deep] started the worker')
+        } catch (err) {
+          console.error(`[deep] request sweep failed, skipping this run: ${describeErrorCauseChain(err)}`)
         }
       }))
       return
