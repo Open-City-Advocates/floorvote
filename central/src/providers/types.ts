@@ -2,6 +2,7 @@ import type { Env } from '../types'
 import type { StatusStage } from '../../../shared/statusStages'
 import type { ExtraDisplay } from '../../../shared/providerExtras'
 import type { CalendarKind } from '../../../shared/calendarKinds'
+import type { DataAttribution } from '../../../shared/dataAttribution'
 
 /**
  * The provider interface, and every shape that crosses the boundary between
@@ -34,6 +35,16 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
    * rather than the system.
    */
   readonly displayName: string
+
+  /**
+   * The credit instances show for this provider's data, in the footer of
+   * every instance covering one of its states: the publisher's name and link,
+   * one plain sentence on where the data comes from and its terms, and the
+   * license when it has one that asks for credit. Central sends it to an
+   * instance with the states the provider owns for it (lib/attribution.ts),
+   * so a provider needs no web code and no instance setting.
+   */
+  readonly attribution: DataAttribution
 
   /**
    * Who maintains the provider and how far to trust it, for the published

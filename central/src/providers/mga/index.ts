@@ -6,7 +6,7 @@ import { vocabulary } from './vocabulary'
 import type { Provider, ProviderRecord, SyncSession } from '../sdk'
 
 /**
- * The Maryland General Assembly's open data (client.ts, map.ts): one JSON file
+ * The Maryland General Assembly's public data (client.ts, map.ts): one JSON file
  * per session with every bill, so a pass is one request and a bill is built
  * from its stored record with no further calls. The request carries the ETag
  * of the last file read, so an unchanged file costs a 304 and no download,
@@ -17,6 +17,11 @@ import type { Provider, ProviderRecord, SyncSession } from '../sdk'
 export const mga: Provider = {
   id: 'mga',
   displayName: 'Maryland General Assembly',
+  attribution: {
+    name: 'Maryland General Assembly',
+    url: 'https://mgaleg.maryland.gov',
+    note: 'Legislative data comes from the Maryland General Assembly\'s public data.',
+  },
   coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: false, billText: true },
   envKeys: [],
   states: [MGA_STATE],

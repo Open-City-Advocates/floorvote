@@ -7,9 +7,10 @@ import { ensureAssociationName } from '../lib/associationName'
 import { getAccountDeletionEnabled } from '../lib/accountDeletion'
 import { loadEffectiveTaxonomy } from '../lib/taxonomy'
 import { centralFetch } from '../lib/centralFetch'
-import { readStateCapabilities } from '../lib/bodyEvents'
+import { readStateAttribution, readStateCapabilities } from '../lib/bodyEvents'
 import { resolveOrgNoun } from '../../../shared/orgNoun'
 import { PRODUCT_NAME } from '../../../shared/brand'
+import { LEGISCAN_ATTRIBUTION } from '../../../shared/dataAttribution'
 import { parseEmailList } from '../../../shared/operator'
 import type { AppEnv } from '../types'
 
@@ -47,7 +48,7 @@ configRouter.get('/', async (c) => {
   await ensureAssociationName(c.env, db)
   const accountDeletionEnabled = await getAccountDeletionEnabled(db)
 
-  const [nameRow, sessionsRow, posLabelRow, coverageRow, posVocabRow, modulesRow, orgNounRow, demoBannerRow, demoResetAtRow, taxonomyItems, knownCapabilities] = await Promise.all([
+  const [nameRow, sessionsRow, posLabelRow, coverageRow, posVocabRow, modulesRow, orgNounRow, demoBannerRow, demoResetAtRow, taxonomyItems, knownCapabilities, knownAttribution] = await Promise.all([
     db.select().from(associationConfig).where(eq(associationConfig.key, 'association_name')).get(),
     db.select().from(associationConfig).where(eq(associationConfig.key, 'sessions')).get(),
     db.select().from(associationConfig).where(eq(associationConfig.key, 'position_label')).get(),
@@ -59,6 +60,7 @@ configRouter.get('/', async (c) => {
     db.select().from(associationConfig).where(eq(associationConfig.key, 'demo_reset_at')).get(),
     loadEffectiveTaxonomy(db),
     readStateCapabilities(db),
+    readStateAttribution(db),
   ])
 
   let associationName: string
@@ -197,10 +199,13 @@ configRouter.get('/', async (c) => {
   }
 
   // Which data providers the footer credits. Central decides the source per
-  // state (a DC team fed from the DC Council's LIMS sees no LegiScan data), so
-  // the tenant is told. Unset means LegiScan, the default provider.
-  const dataSources = (c.env.DATA_SOURCES ?? '')
-    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+  // state (lib/stateProviders.ts) and each provider declares its own credit, so
+  // the instance is told (lib/bodyEvents.ts keeps it fresh). Until central has
+  // answered, or when it names no provider, it is LegiScan's, the default
+  // provider's: the CC BY credit never lapses on an upgrade.
+  const attribution = knownAttribution && knownAttribution.providers.length > 0
+    ? knownAttribution
+    : { providers: [{ id: 'legiscan', ...LEGISCAN_ATTRIBUTION }] }
 
   const tagTaxonomy = taxonomyItems.map(t => t.name)
 
@@ -220,7 +225,7 @@ configRouter.get('/', async (c) => {
   // reset, and on every non-demo tenant.
   const demoResetAt = demoResetAtRow?.value
 
-  return c.json({ associationName, positionVocabulary, state: c.env.STATE ?? '', states, multiState, sessions, orgNoun, instanceDomains, demoMode, demoLocked, demoResetAt, modules, operator, dataSources: dataSources.length > 0 ? dataSources : ['legiscan'], accountDeletionEnabled, tagTaxonomy, demoBanner, capabilities })
+  return c.json({ associationName, positionVocabulary, state: c.env.STATE ?? '', states, multiState, sessions, orgNoun, instanceDomains, demoMode, demoLocked, demoResetAt, modules, operator, attribution, accountDeletionEnabled, tagTaxonomy, demoBanner, capabilities })
 })
 
 // GET /config/sessions?state=NJ — per-state session list, proxied from central

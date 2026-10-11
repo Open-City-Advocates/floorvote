@@ -148,11 +148,11 @@ describe('GET /config', () => {
     })
   })
 
-  it('credits LegiScan by default and the configured providers when DATA_SOURCES is set', async () => {
-    const plain = await app.request('/api/config', { headers: { Cookie: cookie } }, env)
-    expect(((await plain.json()) as { dataSources: string[] }).dataSources).toEqual(['legiscan'])
-    const lims = await app.request('/api/config', { headers: { Cookie: cookie } }, { ...env, DATA_SOURCES: ' LIMS ' })
-    expect(((await lims.json()) as { dataSources: string[] }).dataSources).toEqual(['lims'])
+  it('credits LegiScan, with its CC BY license, until central has said which providers the states come from', async () => {
+    const res = await app.request('/api/config', { headers: { Cookie: cookie } }, env)
+    const body = await res.json() as { attribution: { providers: { id: string; name: string; license?: { name: string } }[] }; dataSources?: unknown }
+    expect(body.attribution.providers).toEqual([expect.objectContaining({ id: 'legiscan', name: 'LegiScan', license: expect.objectContaining({ name: 'CC BY 4.0' }) })])
+    expect(body.dataSources).toBeUndefined()
   })
 
   it('reports demoLocked even for a superadmin request', async () => {

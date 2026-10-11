@@ -26,6 +26,14 @@ export const template: Provider = {
   id: 'template',
   // TEMPLATE: the publisher's name, such as "Maryland General Assembly". It titles the bill page's extras panel.
   displayName: 'Template Legislature',
+  // TEMPLATE: the credit every instance covering your state shows in its footer, "Data: <name>". Name the publisher,
+  // link its data page, and say in one sentence where the data comes from and on what terms. Add `license` (name and
+  // URL) only when the publisher's license asks for credit. Instances need no setting and no web code for it.
+  attribution: {
+    name: 'Template Legislature',
+    url: 'https://legislature.example.gov',
+    note: 'Legislative data comes from the Template Legislature\'s public data feed.',
+  },
   // TEMPLATE: who maintains the provider (GitHub handles, no @), and `experimental` until it has run through a
   // session. Say whether it supplies member votes and bill text. A test asserts both against your fixtures.
   // Keep CODEOWNERS' line for this directory in step. The State coverage page lists only registered providers.

@@ -319,6 +319,24 @@ describe('the Council\'s calendar', () => {
     expect(event.eventHash).not.toBe('78a22f7cd5a0a207615d710558b8f192')
   })
 
+  it('tells an instance which providers its states come from, with the credit each declares', async () => {
+    const legiscan = expect.objectContaining({ id: 'legiscan', name: 'LegiScan', license: expect.objectContaining({ name: 'CC BY 4.0' }) })
+    const limsCredit = { id: 'lims', name: 'DC Council LIMS', url: 'https://lims.dccouncil.gov', note: expect.stringContaining('Legislative Information Management System') }
+    await db().insert(schema.tenants).values([
+      { tenantId: 'md', name: 'MD', stateCoverage: '["MD"]', active: true },
+      { tenantId: 'all', name: 'All', stateCoverage: '["*"]', active: true },
+      { tenantId: 'dcmd', name: 'DC and MD', stateCoverage: '["DC","MD"]', active: true },
+    ])
+    // Before DC is claimed, LegiScan is the source of every state.
+    expect((await eventsFor()).attribution).toEqual({ providers: [legiscan] })
+
+    await claimDc()
+    expect((await eventsFor()).attribution).toEqual({ providers: [limsCredit] })
+    expect((await eventsFor('md')).attribution).toEqual({ providers: [legiscan] })
+    expect((await eventsFor('dcmd')).attribution).toEqual({ providers: [legiscan, limsCredit] })
+    expect((await eventsFor('all')).attribution).toEqual({ providers: [legiscan, limsCredit] })
+  })
+
   it('serves an instance only the states it covers', async () => {
     await claimDc()
     await syncCalendar()

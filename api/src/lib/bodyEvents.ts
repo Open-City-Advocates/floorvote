@@ -4,6 +4,8 @@ import { centralFetch } from './centralFetch'
 import { hearingUid } from './hearingUid'
 import { nowDb } from './dbTime'
 import { applyEventRules, bodyEventFacets, centralOptions, loadEventRules, optionCommittees } from './eventRules'
+import { httpUrl } from '../../../shared/httpUrl'
+import type { Attribution, ProviderCredit } from '../../../shared/dataAttribution'
 import type { AppDb, Env } from '../types'
 
 /**
@@ -30,6 +32,10 @@ import type { AppDb, Env } from '../types'
  * events asks every hour like any other, so a state claimed after the
  * instance's first sync shows its events within the hour. That costs one
  * central call an hour.
+ *
+ * It also brings the attribution of the providers those states come from
+ * (`data_attribution`, which GET /config serves for the footer's data credit),
+ * so a claim reaches the footer within the hour too.
  */
 
 /** What a covered state's data can do (central/src/lib/capabilities.ts). A state left out has none. */
@@ -62,6 +68,7 @@ export interface CentralBodyEvent {
 }
 
 export const CAPABILITIES_KEY = 'state_capabilities'
+export const ATTRIBUTION_KEY = 'data_attribution'
 /**
  * How long the capabilities stand when no covered state has body events. Short
  * of the hourly job's interval, so every run asks: a state claimed after the
@@ -87,6 +94,47 @@ export async function readStateCapabilities(db: AppDb): Promise<{ data: Record<s
   } catch {
     return null
   }
+}
+
+/** The longest name and note an instance shows, so a bad answer can't fill the footer. */
+const CREDIT_NAME_MAX = 200
+const CREDIT_NOTE_MAX = 500
+
+/** The attribution central last sent, or null before it has (see `cleanAttribution`). */
+export async function readStateAttribution(db: AppDb): Promise<Attribution | null> {
+  const row = await db.select().from(associationConfig).where(eq(associationConfig.key, ATTRIBUTION_KEY)).get()
+  if (!row) return null
+  try {
+    return cleanAttribution((JSON.parse(row.value) as { data?: unknown }).data)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * What an instance accepts as attribution: credits that have an id, a name, a
+ * note, and an http(s) link, since the footer renders them as links. Names
+ * and notes are cut to a sensible length. A credit whose license is present
+ * but has no name or http(s) link is dropped whole, not shown without it: the
+ * license link is the credit CC BY asks for. Null when the value isn't a list
+ * of providers.
+ */
+function cleanAttribution(value: unknown): Attribution | null {
+  const raw = value as { providers?: unknown } | null
+  if (!raw || !Array.isArray(raw.providers)) return null
+  const text = (v: unknown, max: number) => typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null
+  const providers: ProviderCredit[] = []
+  for (const p of raw.providers as Record<string, any>[]) {
+    const id = text(p?.id, 64), name = text(p?.name, CREDIT_NAME_MAX), note = text(p?.note, CREDIT_NOTE_MAX), url = httpUrl(p?.url)
+    if (!id || !name || !note || !url) continue
+    if (p.license == null) {
+      providers.push({ id, name, url, note })
+      continue
+    }
+    const licenseName = text(p.license.name, CREDIT_NAME_MAX), licenseUrl = httpUrl(p.license.url)
+    if (licenseName && licenseUrl) providers.push({ id, name, url, note, license: { name: licenseName, url: licenseUrl } })
+  }
+  return { providers }
 }
 
 /**
@@ -135,7 +183,7 @@ export async function syncBodyEvents(env: Env, db: AppDb): Promise<BodyEventSync
   const to = isoDay(WINDOW_AHEAD_DAYS)
   const res = await centralFetch(env, `/tenants/${env.TENANT_ID}/body-events?from=${from}&to=${to}`)
   if (!res.ok) throw new Error(`central body-events HTTP ${res.status}`)
-  const body = await res.json() as { capabilities?: unknown; events?: unknown }
+  const body = await res.json() as { capabilities?: unknown; attribution?: unknown; events?: unknown }
   // An answer without both is a bad one, not an empty calendar: it changes nothing.
   if (!Array.isArray(body.events) || !body.capabilities || typeof body.capabilities !== 'object' || Array.isArray(body.capabilities)) {
     throw new Error('central body-events: the answer has no events or capabilities')
@@ -145,6 +193,14 @@ export async function syncBodyEvents(env: Env, db: AppDb): Promise<BodyEventSync
   const cache = JSON.stringify({ data: capabilities, cachedAt: new Date().toISOString() }) // ts-write-ok: cache metadata inside a JSON config blob, never SQL-sorted
   await db.insert(associationConfig).values({ key: CAPABILITIES_KEY, value: cache })
     .onConflictDoUpdate({ target: associationConfig.key, set: { value: cache } })
+
+  // A central that predates attribution sends none: keep what we have.
+  const attribution = cleanAttribution(body.attribution)
+  if (attribution) {
+    const credit = JSON.stringify({ data: attribution, cachedAt: new Date().toISOString() }) // ts-write-ok: cache metadata inside a JSON config blob, never SQL-sorted
+    await db.insert(associationConfig).values({ key: ATTRIBUTION_KEY, value: credit })
+      .onConflictDoUpdate({ target: associationConfig.key, set: { value: credit } })
+  }
 
   return reconcileBodyEvents(env, db, body.events as CentralBodyEvent[], from, to, anyBodyEvents(capabilities))
 }
