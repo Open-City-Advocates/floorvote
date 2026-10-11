@@ -182,6 +182,9 @@ const MD_LABELS = {
 const bubbleWith = (text: string) => screen.getAllByText(text).find(el => el.style.position === 'fixed')
 const RECT = { top: 10, bottom: 30, left: 100, right: 200, width: 100, height: 20, x: 100, y: 10, toJSON: () => ({}) } as DOMRect
 
+// A state whose labels list no bill types.
+const NJ_LABELS = { ...DC_LABELS, state: 'NJ', calendarName: null, statuses: [] }
+
 function renderBillDetail(overrides: Record<string, unknown>) {
   const bill = { ...BILL, ...overrides }
   routerMock.loaderData = bill
@@ -191,6 +194,7 @@ function renderBillDetail(overrides: Record<string, unknown>) {
     if (path === '/bills/labels?state=DC') return DC_LABELS as never
     if (path === '/bills/labels?state=VA') return VA_LABELS as never
     if (path === '/bills/labels?state=MD') return MD_LABELS as never
+    if (path === '/bills/labels?state=NJ') return NJ_LABELS as never
     if (path === '/config/custom-fields') return [] as never
     return {} as never
   })
@@ -279,6 +283,16 @@ describe('deadlines and explainers on a bill page', () => {
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(RECT)
     fireEvent.pointerEnter(label, { pointerType: 'mouse' })
     expect(bubbleWith(TYPE_EXPLAINER)!.style.top).toBe('36px')
+  })
+
+  it('renders a bill type with no explainer as plain text: no hover bubble, no description', async () => {
+    const spy = renderBillDetail({ state: 'NJ', billNumber: 'HB 2', body: 'C', billType: 'B', status: 'Introduced' })
+    await waitFor(() => expect(spy).toHaveBeenCalledWith('/bills/labels?state=NJ'))
+    const label = await screen.findByText('Council bill')
+    expect(label).not.toHaveAttribute('aria-describedby')
+    expect(document.getElementById('bill-type-explainer')).toBeNull()
+    fireEvent.pointerEnter(label, { pointerType: 'mouse' })
+    expect(Array.from(document.body.querySelectorAll('span')).some(el => el.style.position === 'fixed')).toBe(false)
   })
 
   it('shows no deadline chip for a bill without upcoming deadlines', async () => {

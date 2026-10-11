@@ -27,6 +27,7 @@ import { useBulkActions } from '../../hooks/useBulkActions'
 import { billsApiParams, billsFilterValuesFromSearch } from './billsQuery'
 import { searchWarnings } from '../../../../shared/searchLimits'
 import { filterDimensionLabel, isFilterDimensionVisible } from '../../lib/filterDimensions'
+import { useStageFilterUseful } from '../../lib/capabilities'
 import { filterableCustomFields } from '../../lib/customFieldFilters'
 import { ViewSwitcher, type SavedView } from './ViewSwitcher'
 import { SaveViewButton } from './SaveViewButton'
@@ -177,7 +178,8 @@ export function BillList() {
   // Shared with the mobile FilterSheet — see lib/filterDimensions.ts. Both
   // surfaces gate State (multi-state) and New matches (admin-only) through
   // this same context so they can't drift on which dimensions appear.
-  const filterDimensionCtx = { uniqueStates: f.uniqueStates, isAdmin, isMultiState: f.isMultiState, hasDrafts: facetCounts.hasDrafts, draftsActive: f.drafts }
+  const stageUseful = useStageFilterUseful()
+  const filterDimensionCtx = { uniqueStates: f.uniqueStates, isAdmin, isMultiState: f.isMultiState, hasDrafts: facetCounts.hasDrafts, draftsActive: f.drafts, stageUseful, stageActive: f.filterStages.length > 0 }
 
   // Relevance slider: track the thumb locally so it moves instantly while
   // dragging, but only commit the value (which drives the URL + bill query) on
@@ -842,16 +844,18 @@ export function BillList() {
               counts={filterCounts.status}
             />
           </HoverTooltip>
-          <HoverTooltip text="Filter by common stage, which compares bills across states whose statuses differ">
-            <FilterDropdown
-              placeholder={filterDimensionLabel('stage')}
-              options={f.stageOptions}
-              selected={f.filterStages}
-              onChange={f.setFilterStages}
-              multi
-              counts={filterCounts.stage ?? {}}
-            />
-          </HoverTooltip>
+          {isFilterDimensionVisible('stage', filterDimensionCtx) && (
+            <HoverTooltip text="Filter by common stage, which compares bills across states whose statuses differ">
+              <FilterDropdown
+                placeholder={filterDimensionLabel('stage')}
+                options={f.stageOptions}
+                selected={f.filterStages}
+                onChange={f.setFilterStages}
+                multi
+                counts={filterCounts.stage ?? {}}
+              />
+            </HoverTooltip>
+          )}
           {f.yearFacetKeys.length > 0 && (
             <HoverTooltip text="Filter by legislative session year">
               <FilterDropdown
