@@ -37,11 +37,14 @@ import type { Db, Env } from '../types'
  *   cleared, since the ingest upserts those by their own ids and the two
  *   providers' would otherwise mix.
  * - **The first ingest** of each moved bill (queue/processor.ts, flagged by
- *   `bills.carried_from`) sends instances no changes, and carries the bill's
- *   calendar entries over (`carryCalendar`): an entry on the same date and of
- *   the same kind keeps the identity, and so the calendar UID, instances
- *   already have. The rest of the old entries are cancelled once, and the new
- *   provider's other entries arrive as new.
+ *   `bills.carried_from`) is queued by the new provider's sync, for every
+ *   moved bill, tracked or not, on the queue `ingestQueueFor` gives it: its
+ *   own when it declares one and it is bound, and otherwise the shared
+ *   ingestor queue LegiScan's bills use. It sends instances no changes, and
+ *   carries the bill's calendar entries over (`carryCalendar`): an entry
+ *   on the same date and of the same kind keeps the identity, and so the
+ *   calendar UID, instances already have. The rest of the old entries are
+ *   cancelled once, and the new provider's other entries arrive as new.
  * - **Legislators** are matched on name, chamber, and district, and keep
  *   their person ids (`cutover_people`, applied by lib/carriedIds.ts).
  * - **The losing provider's sessions** in the state are marked ended, since
@@ -51,9 +54,10 @@ import type { Db, Env } from '../types'
  *   bills. If anything fails, nothing is written and the state stays on its
  *   provider.
  *
- * `undoCutover` flips the state back and puts each moved bill back where it
+ * `applyUndo` flips the state back and puts each moved bill back where it
  * was. The previous provider's sync then rewrites the rows, with the same
- * quiet first ingest.
+ * quiet first ingest. LegiScan's gives it only to tracked bills, since each
+ * costs a getBill (cron/sync.ts).
  */
 
 /** A refused or impossible cutover, with the HTTP status the admin route answers. */

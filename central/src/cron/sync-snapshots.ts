@@ -252,8 +252,9 @@ async function runSnapshotPass(
 
   const entries = await storeRecords(provider, session, records, db, ctx)
   const queue = ingestQueueFor(provider, env)
+  // Every bill a cutover moved here gets its first ingest, tracked or not.
   const queued = new Set(await applyMasterList(session, entries, covering, env, db, queue,
-    { deferQueuedUpdates: true }))
+    { deferQueuedUpdates: true, ingestMovedBills: true }))
   const newEtag = snapshot.unchanged ? session.snapshotEtag ?? null : snapshot.etag ?? null
   if (newEtag !== (session.snapshotEtag ?? null) && await ownerOfState(db, session.state) === provider.id) {
     await db.update(sessions).set({ snapshotEtag: newEtag }).where(eq(sessions.sessionId, session.sessionId))

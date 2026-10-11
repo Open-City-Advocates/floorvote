@@ -76,9 +76,21 @@ async function processBill(msg: BillMessage, env: Env, db: Db): Promise<void> {
   const interactive = msg.interactive ?? false
   // The provider that wrote the bill, by its row's `provider` column, and its
   // session, in one read. A bill central has no row for is the default's.
-  const known = await db.select({ provider: bills.provider, sessionId: bills.sessionId })
+  const known = await db.select({ provider: bills.provider, sessionId: bills.sessionId, carriedFrom: bills.carriedFrom })
     .from(bills).where(eq(bills.billId, msg.billId)).get()
   const provider = getProvider(known?.provider ?? DEFAULT_PROVIDER_ID)
+
+  // A moved bill's message from a provider it has since moved off, or an
+  // untracked bill's first ingest that has already happened (types.ts).
+  const queuedBy = msg.firstIngestFor ?? msg.queuedBy
+  if (queuedBy && known?.provider !== queuedBy) {
+    console.log(`[processor-ls] bill ${msg.billId} now syncs from ${known?.provider ?? 'nowhere'}; skipping its ${queuedBy} ingest`)
+    return
+  }
+  if (msg.firstIngestFor && !known?.carriedFrom) {
+    console.log(`[processor-ls] bill ${msg.billId} already had its first ${msg.firstIngestFor} ingest; skipped`)
+    return
+  }
 
   if (msg.calendarRecheck !== undefined) {
     await recheckCalendar(msg.billId, msg.calendarRecheck, provider, env, db)

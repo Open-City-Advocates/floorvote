@@ -205,6 +205,15 @@ export async function applyMasterList(
      * because every one of its passes is a full pass.
      */
     deferQueuedUpdates?: boolean
+    /**
+     * Queue every bill a cutover moved here for its first ingest, tracked or
+     * not, so none is left with its documents and votes cleared
+     * (lib/cutover.ts). The snapshot sync sets this, since its providers'
+     * ingests spend no metered budget. LegiScan's sync doesn't: a getBill per
+     * untracked bill would spend its monthly budget, so there only tracked
+     * moved bills are ingested.
+     */
+    ingestMovedBills?: boolean
   } = {},
 ): Promise<number[]> {
   if (list.length === 0) {
@@ -255,6 +264,10 @@ export async function applyMasterList(
   const billStmts: any[] = []
   const billTenantStmts: any[] = []
   const toQueue = new Set<number>()
+  /** Bills a cutover moved here that are still waiting for their first ingest. */
+  const carried = new Set<number>()
+  /** Of those, the untracked ones, queued only for that ingest. */
+  const untrackedFirst = new Set<number>()
   const stubMessagesByTenant = new Map<string, NotificationMessage[]>()
   const queueIdByTenant = new Map(coveringTenants.map(t => [t.tenantId, t.queueId]))
   /** Bills listed with the change hash central holds, by that hash, for calendar rechecks. */
@@ -365,7 +378,22 @@ export async function applyMasterList(
       }
     }
 
-    if (changedUpdate && opts.deferQueuedUpdates && toQueue.has(entry.bill_id)) {
+    // With `ingestMovedBills`, an untracked bill a cutover moved here gets its
+    // first ingest too, queued each pass until that ingest clears
+    // carried_from. That ingest is quiet and sends instances no changes, so
+    // the bill's row takes the list's status and change hash now rather than
+    // waiting for it: the stubs this pass sends show the new provider's
+    // status, and the previous provider's full pass after an undo sees the
+    // bill changed.
+    if (stored?.carriedFrom) {
+      carried.add(entry.bill_id)
+      if (opts.ingestMovedBills && !toQueue.has(entry.bill_id)) {
+        toQueue.add(entry.bill_id)
+        untrackedFirst.add(entry.bill_id)
+      }
+    }
+
+    if (changedUpdate && opts.deferQueuedUpdates && toQueue.has(entry.bill_id) && !untrackedFirst.has(entry.bill_id)) {
       // Still record the latest action: the ingestor's getBill-shaped record has
       // none, and detectChanges does not diff it. change_hash stays behind so a
       // failed ingest is re-queued on the next pass.
@@ -396,10 +424,18 @@ export async function applyMasterList(
     return []
   }
 
-  const queueIds = Array.from(toQueue)
+  // Untracked first ingests go last, so the bills instances track don't wait
+  // behind them. A moved bill's message names this provider, so one left over
+  // after an undo is skipped without a provider call (queue/processor.ts), and
+  // the provider the bill has then queues its own. An untracked one's is also
+  // skipped once the bill has had its first ingest, so a copy queued while an
+  // earlier one waits costs nothing.
+  const queueIds = [...toQueue].sort((a, b) => Number(untrackedFirst.has(a)) - Number(untrackedFirst.has(b)))
   for (let i = 0; i < queueIds.length; i += 100) {
     await ingestorQueue.sendBatch(
-      queueIds.slice(i, i + 100).map<IngestorMessage>(billId => ({ billId }))
+      queueIds.slice(i, i + 100)
+        .map<IngestorMessage>(billId => (untrackedFirst.has(billId) ? { billId, firstIngestFor: session.provider }
+          : carried.has(billId) ? { billId, queuedBy: session.provider } : { billId }))
         .map(body => ({ body }))
     )
   }

@@ -30,6 +30,8 @@ vi.mock('../../src/lib/sync-schedule', async () => {
 const hooks = vi.hoisted(() => ({
   beforeRead: null as null | (() => Promise<void>),
   beforeLog: null as null | (() => Promise<void>),
+  /** When set, the hooks above wait for this bill's ingest. */
+  bill: null as null | number,
   failWrite: false,
   failVotes: false,
 }))
@@ -49,7 +51,8 @@ vi.mock('../../src/lib/rollCallVotes', async () => {
 })
 vi.mock('../../src/lib/billCalendar', async () => {
   const actual = await vi.importActual<typeof import('../../src/lib/billCalendar')>('../../src/lib/billCalendar')
-  const once = async (key: 'beforeRead' | 'beforeLog') => {
+  const once = async (key: 'beforeRead' | 'beforeLog', billId: number) => {
+    if (hooks.bill !== null && hooks.bill !== billId) return
     const hook = hooks[key]
     hooks[key] = null
     if (hook) await hook()
@@ -57,11 +60,11 @@ vi.mock('../../src/lib/billCalendar', async () => {
   return {
     ...actual,
     readCalendarRows: async (...args: Parameters<typeof actual.readCalendarRows>) => {
-      await once('beforeRead')
+      await once('beforeRead', args[1])
       return actual.readCalendarRows(...args)
     },
     logCalendarChanges: async (...args: Parameters<typeof actual.logCalendarChanges>) => {
-      await once('beforeLog')
+      await once('beforeLog', args[1])
       return actual.logCalendarChanges(...args)
     },
     writeCalendarRows: async (...args: Parameters<typeof actual.writeCalendarRows>) => {
@@ -107,11 +110,22 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 let feed: Record<string, () => Response>
 let calls: string[]
 
+/**
+ * B26-0001's details, which weren't recorded: B26-0400's, renumbered, with
+ * B26-0001's title and status, no summary, and document ids of its own.
+ */
+const details0001 = () => ({
+  ...JSON.parse(details0400Raw.replaceAll('B26-0400', 'B26-0001').replace(/Id=(\d+)/g, 'Id=9$1')),
+  legislationId: 56820, status: 'Enacted', additionalInformation: null,
+  title: 'Rent Stabilized Housing Inflation Protection Continuation Emergency Amendment Act of 2025',
+})
+
 function recordedFeed(): Record<string, () => Response> {
   const routes: Record<string, () => Response> = {
     'CouncilPeriods': () => json([CP26]),
     'Members/26': () => json(JSON.parse(membersRaw)),
     'LegislationDetails/B26-0400': () => json(JSON.parse(details0400Raw)),
+    'LegislationDetails/B26-0001': () => json(details0001()),
     'LegislationDetails/HN26-0171': () => json(JSON.parse(detailsHnRaw)),
     'LegislationDetails/REPROG26-0153': () => json(JSON.parse(detailsReprogRaw)),
   }
@@ -276,7 +290,7 @@ beforeEach(async () => {
   vi.setSystemTime(new Date('2026-09-28T09:00:00Z'))   // 5 ET
   await setupLsDb()
   vi.clearAllMocks()
-  Object.assign(hooks, { beforeRead: null, beforeLog: null, failWrite: false, failVotes: false })
+  Object.assign(hooks, { beforeRead: null, beforeLog: null, bill: null, failWrite: false, failVotes: false })
   vi.mocked(getCurrentEtHour).mockReturnValue(5)
   feed = recordedFeed()
   calls = []
@@ -449,8 +463,8 @@ describe('a cutover', () => {
     const { run } = await cutOver()
     await drain(run.limsQueue, run)
     expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: null })
-    // The monitored bill hasn't been ingested yet, so its first ingest is still to come.
-    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0001)).toEqual({ carried_from: 'legiscan' })
+    // So did the monitored bill.
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0001)).toEqual({ carried_from: null })
 
     // LIMS records a new action on B26-0400.
     const rec = bulk['B26-0400']
@@ -630,6 +644,7 @@ describe('a cutover beside other work', () => {
     const run = makeEnv()
     expect((await cutover(run, '?confirm=true')).status).toBe(200)
     // The undo lands after LIMS's ingest wrote the bill row, and LIMS goes on writing its documents.
+    hooks.bill = B0400
     hooks.beforeLog = async () => { expect((await undo(run, '?confirm=true')).status).toBe(200) }
     await drain(run.limsQueue, run)
     // The bill is LegiScan's again, and holds LIMS's data, so it's carried from LIMS.
@@ -753,6 +768,143 @@ describe('a cutover beside other work', () => {
     expect(third.changes).toBeUndefined()
     expect(await row('SELECT carried_from, carried_waits FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: null, carried_waits: null })
     expect(await row('SELECT COUNT(*) AS n FROM bill_calendar WHERE bill_id = ? AND cancelled_at IS NULL', B0400)).toEqual({ n: 0 })
+  })
+})
+
+describe('a moved bill no instance tracks', () => {
+  beforeEach(async () => {
+    // What LegiScan's bulk seed left on the monitored B26-0001.
+    await env.DB.prepare(`INSERT INTO bill_texts (doc_id, bill_id, date, type, mime, state_link) VALUES (5003, ?, '2025-01-06', 'Introduced', 'application/pdf', 'https://lims.dccouncil.gov/downloads/LIMS/5003.pdf')`).bind(B0001).run()
+    await env.DB.prepare(`INSERT INTO roll_calls (roll_call_id, bill_id, date, description, yea, nay) VALUES (8003, ?, '2025-01-07', 'Final Reading', 13, 0)`).bind(B0001).run()
+  })
+
+  const legiscanCalls = (op: string) => calls.filter(u => u.includes('api.legiscan.com') && u.includes(`op=${op}`))
+
+  it('gets a quiet first LIMS ingest too, which replaces its documents and votes and leaves it a monitored bill', async () => {
+    const run = makeEnv()
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    // Queued on LIMS's own queue, for its first ingest, though nothing tracks
+    // it, and after the tracked bill, so that one doesn't wait behind it.
+    const order = queued(run.limsQueue)
+    expect(order).toContainEqual({ billId: B0001, firstIngestFor: 'lims' })
+    expect(order.findIndex(b => b.billId === B0400)).toBeLessThan(order.findIndex(b => b.billId === B0001))
+    expect(run.ingestor.sendBatch).not.toHaveBeenCalled()
+    const before = await getJson(`/bills/${toHandle(B0001)}`)
+    expect(before.texts).toEqual([])
+    expect(before.votes).toEqual([])
+
+    await drain(run.limsQueue, run)
+    const bill = await getJson(`/bills/${toHandle(B0001)}`)
+    expect(bill).toMatchObject({ number: 'B26-0001', status: 'Enacted', sessionSlug: 'cp26-2' })
+    // LIMS's documents and votes, with none of LegiScan's left.
+    expect(bill.texts.length).toBeGreaterThan(0)
+    expect(bill.texts.map((t: any) => t.docId)).not.toContain('5003')
+    expect(bill.votes.map((v: any) => v.id)).not.toContain('8003')
+    expect(bill.votes.find((v: any) => v.date === '2026-03-03').legislatorVotes)
+      .toContainEqual({ personId: String(PARKER), name: 'Zachary Parker', vote: 'Yes' })
+    expect(bill.actions.map((a: any) => a.description)).toContain('Retained by the Council')
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0001)).toEqual({ carried_from: null })
+
+    // Instances are told of no change, and nothing became tracked.
+    const sent = sentToTenant(run).filter((m: any) => m.billId === toHandle(B0001))
+    expect(sent.length).toBeGreaterThan(0)
+    for (const m of sent) {
+      expect(m.changes).toBeUndefined()
+      expect(m.calendar?.changes ?? []).toEqual([])
+      expect(m.forceAI).toBeFalsy()
+      expect(m.matchType ?? null).toBeNull()
+    }
+    expect(await row('SELECT match_type FROM bill_tenants WHERE bill_id = ?', B0001)).toEqual({ match_type: null })
+    expect(await row('SELECT COUNT(*) AS n FROM bill_change_log WHERE bill_id = ?', B0001)).toEqual({ n: 0 })
+
+    // Ingested once, it isn't queued again until LIMS changes it.
+    const next = makeEnv()
+    const { runSnapshotSync } = await import('../../src/cron/sync-snapshots')
+    const { lims } = await import('../../src/providers/lims')
+    await runSnapshotSync(lims, next.env, drizzle(env.DB, { schema }), { force: true })
+    expect(queued(next.limsQueue).map(b => b.billId)).not.toContain(B0001)
+  })
+
+  it('reaches the instance as one stub from LIMS\'s first pass, which already shows LIMS\'s status', async () => {
+    const run = makeEnv()
+    // What the instance reads for each stub, at the moment it is sent.
+    const readAtSend: string[] = []
+    run.tenantQueue.sendBatch.mockImplementation(async (msgs: { body: any }[]) => {
+      for (const { body } of msgs) {
+        if (body.stubOnly && body.billId === toHandle(B0001)) readAtSend.push((await getJson(`/bills/${toHandle(B0001)}`)).status)
+      }
+    })
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    expect(readAtSend).toEqual(['Enacted'])
+    expect(sentToTenant(run).filter((m: any) => m.stubOnly).map((m: any) => m.billId)).not.toContain(toHandle(B0400))
+  })
+
+  it('is queued again by a forced sync while its first ingest waits, at no second LIMS call', async () => {
+    const run = makeEnv()
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    const { runSnapshotSync } = await import('../../src/cron/sync-snapshots')
+    const { lims } = await import('../../src/providers/lims')
+    await runSnapshotSync(lims, run.env, drizzle(env.DB, { schema }), { force: true })
+    expect(queued(run.limsQueue).filter(b => b.billId === B0001)).toHaveLength(2)
+
+    await drain(run.limsQueue, run)
+    expect(calls.filter(u => u.endsWith('LegislationDetails/B26-0001'))).toHaveLength(1)
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0001)).toEqual({ carried_from: null })
+  })
+
+  it('is still ingested for a new keyword match queued before its first ingest ran', async () => {
+    const run = makeEnv()
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    const first = queued(run.limsQueue).find(b => b.billId === B0001)
+    // While the queue drains, the instance adds a keyword the bill matches,
+    // and the next pass queues it as tracked.
+    await env.DB.prepare(`INSERT INTO keyword_registry (tenant_id, keyword) VALUES ('oca', 'rent stabilized')`).run()
+    const next = makeEnv()
+    const { runSnapshotSync } = await import('../../src/cron/sync-snapshots')
+    const { lims } = await import('../../src/providers/lims')
+    await runSnapshotSync(lims, next.env, drizzle(env.DB, { schema }), { force: true })
+    const matched = queued(next.limsQueue).find(b => b.billId === B0001)
+    expect(matched).toEqual({ billId: B0001, queuedBy: 'lims' })
+
+    // The earlier first ingest runs, and clears carried_from.
+    const ingest = async (body: unknown, r: Run) => {
+      const m = { body, ack: vi.fn(), retry: vi.fn() }
+      await processIngestorQueue({ messages: [m] } as any, r.env, drizzle(env.DB, { schema }))
+      expect(m.ack).toHaveBeenCalled()
+    }
+    await ingest(first, run)
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0001)).toEqual({ carried_from: null })
+
+    // The match's message still runs, so the instance hears of the match.
+    const after = makeEnv()
+    await ingest(matched, after)
+    expect(calls.filter(u => u.endsWith('LegislationDetails/B26-0001'))).toHaveLength(2)
+    expect(sentToTenant(after)).toContainEqual(expect.objectContaining({ billId: toHandle(B0001), matchType: 'keyword' }))
+  })
+
+  it('isn\'t queued by LegiScan after an undo, so it costs no getBill', async () => {
+    const run = makeEnv()
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    // The undo lands while LIMS's first ingests still wait in its queue.
+    expect((await undo(run, '?confirm=true')).status).toBe(200)
+    // Both waiting messages are skipped, the tracked bill's too: LIMS's
+    // consumer spends no LegiScan call.
+    const waiting = await drain(run.limsQueue, run)
+    for (const m of waiting.filter(m => m.body.billId === B0001 || m.body.billId === B0400)) expect(m.ack).toHaveBeenCalled()
+    expect(calls.filter(u => u.includes('LegislationDetails/B26-0'))).toEqual([])
+    expect(legiscanCalls('getBill')).toEqual([])
+
+    // LegiScan's next full pass queues only the tracked bill, on its own
+    // queue, and gives the monitored one LegiScan's status, with a stub.
+    vi.mocked(getCurrentEtHour).mockReturnValue(13)
+    const again = makeEnv()
+    await runSync(again.env, drizzle(env.DB, { schema }))
+    expect(queued(again.ingestor).map(b => b.billId)).toContain(B0400)
+    expect(queued(again.ingestor).map(b => b.billId)).not.toContain(B0001)
+    await drain(again.ingestor, again)
+    expect(legiscanCalls('getBill').filter(u => !u.includes(`id=${B0400}`))).toEqual([])
+    expect(sentToTenant(again)).toContainEqual(expect.objectContaining({ billId: toHandle(B0001), stubOnly: true }))
+    expect(await getJson(`/bills/${toHandle(B0001)}`)).toMatchObject({ status: 'Introduced' })
   })
 })
 
