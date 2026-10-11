@@ -13,67 +13,67 @@ export const vocabulary: ProviderVocabulary = {
   statuses: {
     12: {
       label: 'Draft', stage: 'introduced', rank: 101, terminal: false,
-      explainer: 'A draft that hasn\'t been formally filed yet.',
+      explainer: 'Written but not yet formally filed.',
     },
     0: {
       label: 'Pre-filed', stage: 'introduced', rank: 102, terminal: false,
-      explainer: 'Filed ahead of the session. It is formally introduced once the session begins.',
+      explainer: 'Filed before the session began.',
     },
     1: {
       label: 'Introduced', stage: 'introduced', rank: 103, terminal: false,
-      explainer: 'Introduced in its first chamber. Most bills go to a committee next, and many get no further.',
+      explainer: 'Formally introduced in its first chamber.',
     },
     9: {
       label: 'Referred', stage: 'in_committee', rank: 201, terminal: false,
-      explainer: 'Sent to a committee, which decides whether it goes to the floor.',
+      explainer: 'Sent to a committee.',
     },
     11: {
       label: 'Report DNP', stage: 'in_committee', rank: 202, terminal: false,
-      explainer: 'Reported by a committee with a recommendation that it not pass.',
+      explainer: 'A committee reported it with a recommendation that it not pass.',
     },
     10: {
       label: 'Report Pass', stage: 'in_committee', rank: 203, terminal: false,
-      explainer: 'Reported favorably by a committee, which sends it on toward a floor vote.',
+      explainer: 'A committee reported it with a recommendation that it pass.',
     },
     2: {
       label: 'Engrossed', stage: 'passed_one_chamber', rank: 301, terminal: false,
-      explainer: 'Passed its first chamber, with any amendments made there, and sent to the second chamber.',
+      explainer: 'Passed the chamber where it was introduced.',
     },
     3: {
       label: 'Enrolled', stage: 'passed', rank: 401, terminal: false,
-      explainer: 'Passed by both chambers in the same form and sent to the governor, or on to its final step.',
+      explainer: 'Passed both chambers in the same form.',
     },
     6: {
       label: 'Failed', stage: 'failed', rank: 501, terminal: true, changeLabel: 'Failed/Dead',
-      explainer: 'Defeated in a vote or otherwise stopped. Only some states report this, so a bill that quietly died may still show an earlier status.',
+      explainer: 'Defeated or otherwise stopped. LegiScan reports this for only some states.',
     },
     5: {
       label: 'Vetoed', stage: 'vetoed', rank: 601, terminal: false,
-      explainer: 'Vetoed by the governor. The legislature can still override the veto.',
+      explainer: 'Vetoed by the governor.',
     },
     // Not terminal: Chaptered can follow.
     4: {
       label: 'Passed', stage: 'enacted', rank: 701, terminal: false,
-      explainer: 'Signed by the governor or otherwise enacted. For a resolution, adopted.',
+      explainer: 'Signed into law, enacted without a signature, or, for a resolution, adopted.',
     },
     7: {
       label: 'Override', stage: 'enacted', rank: 702, terminal: true,
-      explainer: 'Enacted after the legislature overrode the governor\'s veto.',
+      explainer: "Enacted over the governor's veto.",
     },
     8: {
       label: 'Chaptered', stage: 'enacted', rank: 703, terminal: true,
-      explainer: 'Enacted and given a chapter number in the state\'s session laws.',
+      explainer: "Enacted and assigned a chapter number in the state's session laws.",
     },
   },
 
   billTypes: {
-    B: { label: 'Bill', explainer: 'A proposed law. It becomes law only if both chambers pass it and the governor signs it or the legislature overrides a veto.' },
-    R: { label: 'Resolution', explainer: 'A decision or statement of one chamber. It doesn\'t make law.' },
-    CR: { label: 'Concurrent Resolution', explainer: 'A resolution both chambers adopt, usually about their own operations or a shared statement. It doesn\'t go to the governor.' },
-    JR: { label: 'Joint Resolution', explainer: 'A resolution both chambers pass. Depending on the state and subject, it can have the force of law or propose a constitutional amendment.' },
-    JRCA: { label: 'Joint Resolution Constitutional Amendment', explainer: 'A joint resolution proposing a change to the state constitution, which voters usually have to approve.' },
+    B: { label: 'Bill' },
+    R: { label: 'Resolution' },
+    CR: { label: 'Concurrent Resolution' },
+    JR: { label: 'Joint Resolution' },
+    JRCA: { label: 'Joint Resolution Constitutional Amendment' },
     EO: { label: 'Executive Order' },
-    CA: { label: 'Constitutional Amendment', explainer: 'A proposed change to the state constitution, which voters usually have to approve.' },
+    CA: { label: 'Constitutional Amendment' },
     M: { label: 'Memorial' },
     CL: { label: 'Claim' },
     C: { label: 'Commendation' },
