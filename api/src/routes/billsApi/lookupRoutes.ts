@@ -84,10 +84,14 @@ export function registerLookupRoutes(router: Hono<AppEnv>) {
     // legacy form (which would otherwise hand the client `state: ''`).
     const found = resolveSlug(candidates.filter(b => b.state !== ''), slug)
     if (found.status === 404) return c.json({ error: 'Not found' }, 404)
-    if (found.status === 409) {
+    // A bill in another state that an older link may have meant is ambiguous
+    // here, not a note: the page redirects to the match's state-prefixed URL,
+    // where only that state's bills are candidates, so the note would vanish.
+    if (found.status === 409 || found.others.some(b => b.state !== found.match.state)) {
+      const ambiguous = found.status === 409 ? found.candidates : [found.match, ...found.others]
       return c.json({
         error: 'Ambiguous bill — use state-prefixed URL',
-        candidates: found.candidates.map(m => billChoice(m, billNumber)),
+        candidates: ambiguous.map(m => billChoice(m, billNumber)),
       }, 409)
     }
     const user = c.get('user')

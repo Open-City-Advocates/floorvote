@@ -61,6 +61,23 @@ describe('resolving a link made before a session got its own slug', () => {
     expect(atOld.otherSessionMatches).toEqual([{ state: 'MD', sessionSlug: '2026-2', session: '2026 Special Session', billNumber: 'HB5' }])
   })
 
+  it('refuses to guess when a link without a state matches a bill another state holds by an old slug', async () => {
+    // /2026/HB5 is VA's regular-session HB5 today, and was MD's special-session
+    // HB5 too. The page would redirect to /VA/2026/HB5, where MD's bill isn't a
+    // candidate, so a note there would vanish: name both instead, as main did.
+    await seedBill({ billNumber: 'HB5', state: 'VA', session: REGULAR, sessionSlug: '2026', externalId: 'legiscan:5009' })
+    await seedBill({ billNumber: 'HB5', state: 'MD', session: SPECIAL_1, sessionSlug: '2026-s1', externalId: 'legiscan:5005' })
+    const res = await get('2026/HB5')
+    expect(res.status).toBe(409)
+    const body = await res.json() as { candidates: unknown[] }
+    expect(body.candidates).toEqual([
+      { state: 'VA', sessionSlug: '2026', session: REGULAR, billNumber: 'HB5' },
+      { state: 'MD', sessionSlug: '2026-s1', session: SPECIAL_1, billNumber: 'HB5' },
+    ])
+    // With the state, VA's bill is the only candidate.
+    expect((await ok('VA/2026/HB5')).otherSessionMatches).toBeUndefined()
+  })
+
   it('sends no other matches for an ordinary link', async () => {
     await seedBill({ billNumber: 'HB5', state: 'MD', session: REGULAR, sessionSlug: '2026', externalId: 'legiscan:5004' })
     expect((await ok('MD/2026/HB5')).otherSessionMatches).toBeUndefined()
