@@ -31,7 +31,22 @@ const hooks = vi.hoisted(() => ({
   beforeRead: null as null | (() => Promise<void>),
   beforeLog: null as null | (() => Promise<void>),
   failWrite: false,
+  failVotes: false,
 }))
+// Fails the member-vote write, which comes after the calendar's.
+vi.mock('../../src/lib/rollCallVotes', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/rollCallVotes')>('../../src/lib/rollCallVotes')
+  return {
+    ...actual,
+    writeMemberVotes: async (...args: Parameters<typeof actual.writeMemberVotes>) => {
+      if (hooks.failVotes) {
+        hooks.failVotes = false
+        throw new Error('D1_ERROR: a write failed')
+      }
+      return actual.writeMemberVotes(...args)
+    },
+  }
+})
 vi.mock('../../src/lib/billCalendar', async () => {
   const actual = await vi.importActual<typeof import('../../src/lib/billCalendar')>('../../src/lib/billCalendar')
   const once = async (key: 'beforeRead' | 'beforeLog') => {
@@ -261,7 +276,7 @@ beforeEach(async () => {
   vi.setSystemTime(new Date('2026-09-28T09:00:00Z'))   // 5 ET
   await setupLsDb()
   vi.clearAllMocks()
-  Object.assign(hooks, { beforeRead: null, beforeLog: null, failWrite: false })
+  Object.assign(hooks, { beforeRead: null, beforeLog: null, failWrite: false, failVotes: false })
   vi.mocked(getCurrentEtHour).mockReturnValue(5)
   feed = recordedFeed()
   calls = []
@@ -594,12 +609,73 @@ describe('a cutover beside other work', () => {
     expect(first.retry).toHaveBeenCalled()
     expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: 'legiscan' })
 
+    // The next try fails later, after the calendar carried over, so the one
+    // after carries over a calendar that already has LIMS's details.
+    hooks.failVotes = true
+    const second = { body, ack: vi.fn(), retry: vi.fn() }
+    await processIngestorQueue({ messages: [second] } as any, run.env, drizzle(env.DB, { schema }))
+    expect(second.retry).toHaveBeenCalled()
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: 'legiscan' })
+    expect(await row(`SELECT COUNT(*) AS n FROM bill_calendar WHERE bill_id = ? AND identity_key = '1|committee on youth affairs' AND description LIKE 'Public Hearing%'`, B0400)).toEqual({ n: 1 })
+
     const again = { body, ack: vi.fn(), retry: vi.fn() }
     await processIngestorQueue({ messages: [again] } as any, run.env, drizzle(env.DB, { schema }))
     expect(again.ack).toHaveBeenCalled()
     quietFirstIngest(run)
     expect(await row('SELECT COUNT(*) AS n FROM bill_change_log WHERE bill_id = ?', B0400)).toEqual({ n: 0 })
     expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: null })
+  })
+
+  it('leaves an undo that lands during the first LIMS ingest to LegiScan\'s quiet ingest', async () => {
+    const run = makeEnv()
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    // The undo lands after LIMS's ingest wrote the bill row, and LIMS goes on writing its documents.
+    hooks.beforeLog = async () => { expect((await undo(run, '?confirm=true')).status).toBe(200) }
+    await drain(run.limsQueue, run)
+    // The bill is LegiScan's again, and holds LIMS's data, so it's carried from LIMS.
+    expect(await row('SELECT provider, carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ provider: 'legiscan', carried_from: 'lims' })
+
+    vi.mocked(getCurrentEtHour).mockReturnValue(13)
+    const again = makeEnv()
+    await runSync(again.env, drizzle(env.DB, { schema }))
+    await drain(again.ingestor, again)
+    const bill = await getJson(`/bills/${toHandle(B0400)}`)
+    // Only LegiScan's documents and votes, with nothing of LIMS's left behind.
+    expect(bill.texts.map((t: any) => t.docId)).toEqual(['5002'])
+    expect(bill.votes).toEqual([])
+    const msg = sentToTenant(again).find((m: any) => m.billId === toHandle(B0400) && !m.stubOnly)
+    expect(msg.changes).toBeUndefined()
+    expect(msg.calendar.changes).toEqual([])
+    expect(await row('SELECT COUNT(*) AS n FROM bill_change_log WHERE bill_id = ?', B0400)).toEqual({ n: 0 })
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: null })
+  })
+
+  it('has LegiScan ingest a tracked bill an undo moved back before LIMS ingested it', async () => {
+    const run = makeEnv()
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    // LIMS never gets to B26-0400, so its change hash is still the one LegiScan last ingested.
+    expect((await undo(run, '?confirm=true')).status).toBe(200)
+    expect(await row('SELECT provider, carried_from, change_hash FROM bills WHERE bill_id = ?', B0400))
+      .toEqual({ provider: 'legiscan', carried_from: 'legiscan', change_hash: 'ls-v1' })
+    // And LegiScan's copy hasn't changed since.
+    await env.DB.prepare(`UPDATE bills SET change_hash = 'ls-v2' WHERE bill_id = ?`).bind(B0400).run()
+
+    vi.mocked(getCurrentEtHour).mockReturnValue(13)
+    const again = makeEnv()
+    await runSync(again.env, drizzle(env.DB, { schema }))
+    expect(queued(again.ingestor).map(b => b.billId)).toContain(B0400)
+    await drain(again.ingestor, again)
+    expect((await getJson(`/bills/${toHandle(B0400)}`)).texts.map((t: any) => t.docId)).toEqual(['5002'])
+    const msg = sentToTenant(again).find((m: any) => m.billId === toHandle(B0400) && !m.stubOnly)
+    expect(msg.changes).toBeUndefined()
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0400)).toEqual({ carried_from: null })
+
+    // Once ingested, an unchanged bill isn't queued again.
+    const later = makeEnv()
+    const before = calls.length
+    await runSync(later.env, drizzle(env.DB, { schema }))
+    expect(calls.slice(before).some(u => u.includes('op=getMasterList'))).toBe(true)
+    expect(queued(later.ingestor).map(b => b.billId)).not.toContain(B0400)
   })
 
   it('keeps sponsors and votes when LIMS\'s first sync fails and the next hourly pass ingests', async () => {

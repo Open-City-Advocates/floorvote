@@ -287,8 +287,11 @@ export async function ingestMeasure(
   // --- End change detection ---
 
   // Upsert core bill row. It writes only while the row is still this
-  // provider's: a cutover (or its undo) that landed while this ingest ran
-  // gave the bill to another provider, and this ingest then writes nothing.
+  // provider's: a cutover (or its undo) that landed before this point gave
+  // the bill to another provider, and this ingest then writes nothing. One
+  // that lands after it leaves the rest of this ingest writing, which the
+  // other provider's quiet first ingest clears up (see the carried_from
+  // update below).
   const written = await db.insert(bills).values({
     billId:             bill.bill_id,
     changeHash:         bill.change_hash,
@@ -585,9 +588,19 @@ export async function ingestMeasure(
 
   // Only once everything above is written does a cutover's first ingest stop
   // being one, so an ingest that fails partway is retried as quiet as it began.
+  // An undo that landed after this ingest's upsert gave the bill back to its
+  // previous provider while this one kept writing: the bill now holds this
+  // provider's data, so it is carried from this provider, and the previous
+  // one's next ingest is the quiet one that replaces it.
   if (carriedFrom) {
+    const stillOurs = sql`${bills.provider} = ${provider.id}`
     await db.update(bills)
-      .set(carryWaits ? { carriedWaits: sql`COALESCE(${bills.carriedWaits}, 0) + 1` } : { carriedFrom: null, carriedWaits: null })
+      .set(carryWaits
+        ? {
+            carriedFrom: sql`CASE WHEN ${stillOurs} THEN ${bills.carriedFrom} ELSE ${provider.id} END`,
+            carriedWaits: sql`CASE WHEN ${stillOurs} THEN COALESCE(${bills.carriedWaits}, 0) + 1 ELSE NULL END`,
+          }
+        : { carriedFrom: sql`CASE WHEN ${stillOurs} THEN NULL ELSE ${provider.id} END`, carriedWaits: null })
       .where(and(eq(bills.billId, bill.bill_id), eq(bills.carriedFrom, existingBillRow!.carriedFrom!)))
   }
 

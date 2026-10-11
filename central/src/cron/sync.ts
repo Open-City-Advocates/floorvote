@@ -338,11 +338,14 @@ export async function applyMasterList(
 
       const justMatched = newMatchType !== null && (prevMatchType ?? null) !== newMatchType
       const alreadyMatchedAndChanged = newMatchType !== null && billChanged
-      // A bill a cutover moved here that no longer matches under the new
-      // provider's title still gets its first ingest, which replaces the
-      // documents the cutover cleared (lib/cutover.ts).
-      const carriedAndUnmatched = (prevMatchType ?? null) !== null && newMatchType === null && !!stored?.carriedFrom
-      if (justMatched || alreadyMatchedAndChanged || carriedAndUnmatched) {
+      // A tracked bill a cutover (or an undo) moved here gets its first ingest
+      // from this provider whatever its change hash says, which replaces the
+      // documents the move cleared (lib/cutover.ts). That covers a bill whose
+      // keyword match the new title loses, and a bill an undo moved back
+      // before the other provider ingested it, whose change hash is still this
+      // provider's. It's queued each pass until that ingest clears carried_from.
+      const carriedAndTracked = ((prevMatchType ?? null) !== null || newMatchType !== null) && !!stored?.carriedFrom
+      if (justMatched || alreadyMatchedAndChanged || carriedAndTracked) {
         toQueue.add(entry.bill_id)
       }
 
