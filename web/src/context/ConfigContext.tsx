@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { apiFetch } from '../lib/api'
+import type { DataAttribution } from '../../../shared/dataAttribution'
 
 export interface OperatorConfig {
   name: string
@@ -26,8 +27,12 @@ export interface AppConfig {
   demoLocked?: boolean
   demoBanner?: string
   operator?: OperatorConfig
-  /** Data providers the footer credits, e.g. ["legiscan"] or ["lims"]. Absent = LegiScan. */
-  dataSources?: string[]
+  /**
+   * The providers the covered states' data comes from, each with the credit it
+   * declares, and each covered state's provider. The footer credits every one.
+   * Absent = LegiScan's.
+   */
+  attribution?: StateAttribution
   accountDeletionEnabled?: boolean
   /**
    * What each covered state's data can do, by state, from the provider central
@@ -35,6 +40,11 @@ export interface AppConfig {
    * a state's name.
    */
   capabilities?: Record<string, StateCapabilities>
+}
+
+export interface StateAttribution {
+  providers: (DataAttribution & { id: string })[]
+  states: Record<string, string>
 }
 
 export interface StateCapabilities {

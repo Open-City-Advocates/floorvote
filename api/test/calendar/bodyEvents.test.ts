@@ -6,6 +6,7 @@ import { getDb } from '../../src/db/client'
 import { associationConfig, calendarEvents, calendarEventBills } from '../../src/db/schema'
 import { syncBodyEvents, type CentralBodyEvent } from '../../src/lib/bodyEvents'
 import { hearingUid } from '../../src/lib/hearingUid'
+import { app } from '../../src/index'
 
 // Body events on an instance (#297): central's answer to
 // GET /tenants/:id/body-events in (fetch stubbed), and the instance's
@@ -16,6 +17,9 @@ const HANDLE = 'legiscan:1012600769'
 const IDENTITY = 'hearing|2026-10-23|public hearing on b26-0769'
 const HEARING_UID = hearingUid(HANDLE, IDENTITY, 'bpc-test')
 const CAPABLE = { DC: { bodyEvents: true, deadlines: true } }
+const LIMS_CREDIT = { id: 'lims', name: 'DC Council LIMS', url: 'https://lims.dccouncil.gov', note: 'Legislative data comes from the Council of the District of Columbia\'s LIMS.' }
+const LEGISCAN_CREDIT = { id: 'legiscan', name: 'LegiScan', url: 'https://legiscan.com', note: 'From LegiScan.', license: { name: 'CC BY 4.0', url: 'https://creativecommons.org/licenses/by/4.0/' } }
+const DC_ATTRIBUTION = { providers: [LIMS_CREDIT], states: { DC: 'lims' } }
 
 function bodyEvent(o: Partial<CentralBodyEvent> = {}): CentralBodyEvent {
   return {
@@ -40,7 +44,7 @@ const stadiumHearing = (o: Partial<CentralBodyEvent> = {}) => bodyEvent({
 })
 
 /** What central answers next. */
-let central: { status?: number; capabilities?: Record<string, unknown>; events?: CentralBodyEvent[] }
+let central: { status?: number; capabilities?: Record<string, unknown>; attribution?: unknown; events?: CentralBodyEvent[] }
 const fetchMock = vi.fn()
 
 let token: string
@@ -55,12 +59,12 @@ beforeEach(async () => {
   billId = await seedBill({ billNumber: 'B26-0769', state: 'DC', session: '2025-2026 Council Period 26', priority: 'high', externalId: HANDLE })
   // The bill's own hearing, as a notification from central left it.
   await seedCalendarEvent(billId, { uid: HEARING_UID, date: isoDay(10), time: '', location: '', description: 'Public Hearing on B26-0769' })
-  central = { capabilities: CAPABLE, events: [bodyEvent(), stadiumHearing()] }
+  central = { capabilities: CAPABLE, attribution: DC_ATTRIBUTION, events: [bodyEvent(), stadiumHearing()] }
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (url: string) => {
     expect(String(url)).toMatch(/^https:\/\/central\.test\/api\/tenants\/bpc-test\/body-events\?from=\d{4}-\d{2}-\d{2}&to=\d{4}-\d{2}-\d{2}$/)
     if (central.status) return new Response('down', { status: central.status })
-    return new Response(JSON.stringify({ capabilities: central.capabilities, events: central.events }), { headers: { 'content-type': 'application/json' } })
+    return new Response(JSON.stringify({ capabilities: central.capabilities, attribution: central.attribution, events: central.events }), { headers: { 'content-type': 'application/json' } })
   })
   vi.stubGlobal('fetch', fetchMock)
 })
@@ -222,12 +226,72 @@ describe('state capabilities', () => {
   it('are asked for once a day while no covered state has body events', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-10-10T12:00:00Z'))
-    central = { capabilities: {}, events: [] }
+    central = { capabilities: {}, attribution: DC_ATTRIBUTION, events: [] }
     expect(await sync()).not.toBeNull()
     expect(await sync()).toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     vi.setSystemTime(new Date('2026-10-11T12:30:00Z'))
     expect(await sync()).not.toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('data attribution', () => {
+  const configAttribution = async () => (await (await SELF.fetch('http://localhost/api/config', { headers: { Cookie: `session=${token}` } })).json() as any).attribution
+
+  it('credits LegiScan on GET /config until central has answered', async () => {
+    expect(await configAttribution()).toMatchObject({ providers: [{ id: 'legiscan', name: 'LegiScan', url: 'https://legiscan.com', license: { name: 'CC BY 4.0' } }], states: {} })
+  })
+
+  it('reaches GET /config from the body-event sync, as central declares it', async () => {
+    await sync()
+    expect(await configAttribution()).toEqual(DC_ATTRIBUTION)
+    // A claim moves a state to another provider, and the next answer says so.
+    central.attribution = { providers: [LEGISCAN_CREDIT, LIMS_CREDIT], states: { DC: 'lims', MD: 'legiscan' } }
+    await sync()
+    expect(await configAttribution()).toEqual({ providers: [LEGISCAN_CREDIT, LIMS_CREDIT], states: { DC: 'lims', MD: 'legiscan' } })
+  })
+
+  it('keeps what it has when central sends none', async () => {
+    await sync()
+    central = { capabilities: {}, events: [] }
+    await sync()
+    expect(await configAttribution()).toEqual(DC_ATTRIBUTION)
+  })
+
+  it('asks again at the next sync, not the next day, while central has sent none', async () => {
+    central = { capabilities: {}, events: [] }
+    await sync()
+    expect(await sync()).not.toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    central.attribution = DC_ATTRIBUTION
+    await sync()
+    expect(await sync()).toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('drops a credit that is not a name, note, and http(s) link, and falls back to LegiScan when none is left', async () => {
+    central.attribution = {
+      providers: [
+        { ...LIMS_CREDIT, url: 'javascript:alert(1)' },
+        { ...LEGISCAN_CREDIT, license: { name: 'CC BY 4.0', url: 'javascript:alert(1)' } },
+        { id: 'x', name: 'No note', url: 'https://example.test' },
+      ],
+      states: {},
+    }
+    await sync()
+    const credits = (await configAttribution()).providers
+    expect(credits).toEqual([{ id: 'legiscan', name: 'LegiScan', url: 'https://legiscan.com', note: 'From LegiScan.' }])
+    central.attribution = { providers: [{ ...LIMS_CREDIT, url: '/relative' }], states: {} }
+    await sync()
+    expect((await configAttribution()).providers[0]).toMatchObject({ id: 'legiscan', license: { name: 'CC BY 4.0' } })
+  })
+
+  it('ignores DATA_SOURCES, which an earlier release read from the instance\'s own settings', async () => {
+    await sync()
+    const res = await app.request('/api/config', { headers: { Cookie: `session=${token}` } }, { ...env, DATA_SOURCES: 'legiscan' })
+    const body = await res.json() as any
+    expect(body.attribution).toEqual(DC_ATTRIBUTION)
+    expect(body.dataSources).toBeUndefined()
   })
 })

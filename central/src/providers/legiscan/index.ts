@@ -1,6 +1,6 @@
 import { getBill, getBillText, getDatasetList, getDatasetRaw, getMasterListBySession, getMasterListRaw, getSessionList } from './client'
 import { vocabulary } from './vocabulary'
-import type { Provider } from '../sdk'
+import { LEGISCAN_ATTRIBUTION, type Provider } from '../sdk'
 
 /**
  * LegiScan, the default provider: one API for every state, paid for out of a
@@ -10,6 +10,8 @@ import type { Provider } from '../sdk'
 export const legiscan: Provider<'LEGISCAN_API_KEY'> = {
   id: 'legiscan',
   displayName: 'LegiScan',
+  // Shared with the tenant API, which shows it until central has answered.
+  attribution: LEGISCAN_ATTRIBUTION,
   coverage: { maintainers: ['wtadler'], status: 'stable', memberVotes: true, billText: true },
   envKeys: ['LEGISCAN_API_KEY'],
 

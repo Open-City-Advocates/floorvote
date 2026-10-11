@@ -29,6 +29,12 @@ const CATEGORY_BY_PREFIX: Record<string, number> = {
 export const lims: Provider<'LIMS_API_KEY' | 'LIMS_STATES' | 'LIMS_CATEGORIES'> = {
   id: 'lims',
   displayName: 'DC Council',
+  // The Council publishes no license for LIMS, so it is credited without one.
+  attribution: {
+    name: 'DC Council LIMS',
+    url: 'https://lims.dccouncil.gov',
+    note: 'Legislative data comes from the Council of the District of Columbia\'s Legislative Information Management System (LIMS).',
+  },
   coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: true, billText: true },
   envKeys: ['LIMS_API_KEY', 'LIMS_STATES', 'LIMS_CATEGORIES'],
   states: [LIMS_STATE],

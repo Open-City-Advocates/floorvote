@@ -17,6 +17,11 @@ import type { Provider, ProviderRecord, SyncSession } from '../sdk'
 export const mga: Provider<'MGA_STATES'> = {
   id: 'mga',
   displayName: 'Maryland General Assembly',
+  attribution: {
+    name: 'Maryland General Assembly',
+    url: 'https://mgaleg.maryland.gov',
+    note: 'Legislative data comes from the Maryland General Assembly\'s open data.',
+  },
   coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: false, billText: true },
   envKeys: ['MGA_STATES'],
   states: [MGA_STATE],

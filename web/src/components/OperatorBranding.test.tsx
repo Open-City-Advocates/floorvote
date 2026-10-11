@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { OperatorBranding } from './OperatorBranding'
+import { ConfigContext, type AppConfig } from '../context/ConfigContext'
 import { SOURCE_URL, LICENSE_URL } from '../../../shared/brand'
+import type { DataAttribution } from '../../../shared/dataAttribution'
 
 const full = { name: 'Example Org', url: 'https://example.org/elections', contactEmails: ['ops@example.org'] }
 
@@ -175,22 +177,51 @@ describe('OperatorBranding', () => {
   })
 })
 
-describe('OperatorBranding data credit by source', () => {
-  it('credits the DC Council LIMS, and not LegiScan, for a LIMS-fed tenant', () => {
-    render(<MemoryRouter><OperatorBranding operator={{ name: '', url: '', contactEmails: [] }} dataSources={['lims']} /></MemoryRouter>)
+describe('OperatorBranding data credit by provider', () => {
+  const legiscan = { id: 'legiscan', name: 'LegiScan', url: 'https://legiscan.com', note: 'From LegiScan, CC BY.', license: { name: 'CC BY 4.0', url: 'https://creativecommons.org/licenses/by/4.0/' } }
+  const dc = { id: 'lims', name: 'DC Council LIMS', url: 'https://lims.dccouncil.gov', note: 'From the Council.' }
+  // A provider no web code knows about: its credit is rendered from what config declares.
+  const md = { id: 'mga', name: 'Maryland General Assembly', url: 'https://mgaleg.maryland.gov', note: 'From the General Assembly.' }
+
+  // Through ConfigContext, as GET /config feeds it.
+  function renderWithConfig(providers: (DataAttribution & { id: string })[] | undefined) {
+    const config = { associationName: '', state: '', states: [], sessions: [], attribution: providers && { providers, states: {} } } as unknown as AppConfig
+    return render(
+      <MemoryRouter>
+        <ConfigContext.Provider value={{ config, multiState: false, loading: false }}>
+          <OperatorBranding operator={{ name: '', url: '', contactEmails: [] }} />
+        </ConfigContext.Provider>
+      </MemoryRouter>,
+    )
+  }
+
+  it('credits the DC Council LIMS, and not LegiScan, when central names only it', () => {
+    renderWithConfig([dc])
     expect(screen.getByRole('link', { name: 'DC Council LIMS' })).toHaveAttribute('href', 'https://lims.dccouncil.gov')
     expect(screen.queryByRole('link', { name: 'LegiScan' })).toBeNull()
     expect(screen.queryByRole('link', { name: 'CC BY 4.0' })).toBeNull()
   })
 
-  it('credits both for a tenant fed from both', () => {
-    render(<MemoryRouter><OperatorBranding operator={{ name: '', url: '', contactEmails: [] }} dataSources={['legiscan', 'lims']} /></MemoryRouter>)
-    expect(screen.getByRole('link', { name: 'LegiScan' })).toBeInTheDocument()
+  it('credits every provider central names, with the license where a provider has one', () => {
+    renderWithConfig([legiscan, dc])
+    expect(screen.getByRole('link', { name: 'LegiScan' })).toHaveAttribute('href', 'https://legiscan.com')
+    expect(screen.getByRole('link', { name: 'CC BY 4.0' })).toHaveAttribute('href', 'https://creativecommons.org/licenses/by/4.0/')
     expect(screen.getByRole('link', { name: 'DC Council LIMS' })).toBeInTheDocument()
   })
 
-  it('falls back to LegiScan for an unrecognised source list', () => {
-    render(<MemoryRouter><OperatorBranding operator={{ name: '', url: '', contactEmails: [] }} dataSources={['other']} /></MemoryRouter>)
+  it('credits a provider the web app has never heard of from its declaration alone', () => {
+    renderWithConfig([md])
+    expect(screen.getByRole('link', { name: 'Maryland General Assembly' })).toHaveAttribute('href', 'https://mgaleg.maryland.gov')
+    expect(screen.getByText('From the General Assembly.')).toBeInTheDocument() // the screen-reader copy of the note
+    expect(screen.queryByRole('link', { name: 'LegiScan' })).toBeNull()
+  })
+
+  it('credits LegiScan when the config carries no attribution, or none that names a provider', () => {
+    const { unmount } = renderWithConfig(undefined)
+    expect(screen.getByRole('link', { name: 'LegiScan' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'CC BY 4.0' })).toBeInTheDocument()
+    unmount()
+    renderWithConfig([])
     expect(screen.getByRole('link', { name: 'LegiScan' })).toBeInTheDocument()
   })
 })

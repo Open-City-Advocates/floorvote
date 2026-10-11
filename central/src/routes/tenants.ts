@@ -9,6 +9,7 @@ import type { Db, Env } from '../types'
 import { calendarBlockEvents, calendarKind, type CalendarRow } from '../lib/billCalendar'
 import { bodyEventDetails, bodyEventOptions, calendarCoverage, type BodyEventDetail, type BodyEventOptions } from '../lib/bodyEvents'
 import { coverageCapabilities } from '../lib/capabilities'
+import { coverageAttribution } from '../lib/attribution'
 import { listStateOwnership } from '../lib/stateProviders'
 import { DEFAULT_PROVIDER_ID, findProvider, getProvider } from '../providers'
 import { ownerOfState } from '../lib/stateProviders'
@@ -569,9 +570,10 @@ tenantsRoutes.get('/:tenantId/upcoming-hearings', guardCallerTenantParam(), asyn
 // provider publishes one (lib/bodyEvents.ts), dated from `from` to `to`, with
 // each event's calendar UID, agenda bills, and the bill calendar entries it
 // covers. Also the capabilities of the states the tenant covers (a state left
-// out has none), so the instance can gate features on them. Each state's
-// events come from the provider that owns it. Cancelled events come too,
-// marked, so the instance cancels its copy.
+// out has none), so the instance can gate features on them, and the
+// attribution of the providers those states come from (lib/attribution.ts),
+// so its footer credits them. Each state's events come from the provider that
+// owns it. Cancelled events come too, marked, so the instance cancels its copy.
 tenantsRoutes.get('/:tenantId/body-events', guardCallerTenantParam(), async (c) => {
   const tenantId = c.req.param('tenantId')
   const from = c.req.query('from') ?? ''
@@ -584,7 +586,7 @@ tenantsRoutes.get('/:tenantId/body-events', guardCallerTenantParam(), async (c) 
   if (span > 366 * 86400_000) return c.json({ error: 'at most a year from from to to' }, 400)
 
   const db = drizzle(c.env.DB, { schema })
-  const { owners, capabilities } = await tenantCapabilities(db, tenantId)
+  const { owners, capabilities, coverage } = await tenantCapabilities(db, tenantId)
 
   const events: BodyEventDetail[] = []
   for (const [state, caps] of Object.entries(capabilities)) {
@@ -592,7 +594,7 @@ tenantsRoutes.get('/:tenantId/body-events', guardCallerTenantParam(), async (c) 
     const provider = findProvider(owners.get(state))
     if (provider) events.push(...await bodyEventDetails(db, provider, state, from, to))
   }
-  return c.json({ capabilities, events })
+  return c.json({ capabilities, attribution: coverageAttribution(owners, coverage), events })
 })
 
 // What the instance's event rules can choose from (#298), for each state it
@@ -610,14 +612,14 @@ tenantsRoutes.get('/:tenantId/body-event-options', guardCallerTenantParam(), asy
   return c.json({ states })
 })
 
-/** The states a tenant covers that have capabilities, and each state's owner. */
+/** The states a tenant covers that have capabilities, each state's owner, and the coverage list itself. */
 async function tenantCapabilities(db: Db, tenantId: string) {
   const tenant = await db.select({ stateCoverage: schema.tenants.stateCoverage }).from(schema.tenants)
     .where(eq(schema.tenants.tenantId, tenantId)).get()
   let coverage: string[] = []
   try { coverage = tenant ? JSON.parse(tenant.stateCoverage) as string[] : [] } catch { coverage = [] }
   const owners = new Map((await listStateOwnership(db)).map(r => [r.state, r.provider]))
-  return { owners, capabilities: coverageCapabilities(owners, coverage) }
+  return { owners, coverage, capabilities: coverageCapabilities(owners, coverage) }
 }
 
 tenantsRoutes.post('/reprocess/:tenantId', guardCallerTenantParam(), async (c) => {

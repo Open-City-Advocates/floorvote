@@ -18,6 +18,11 @@ export const lis: Provider<'LIS_STATES'> = {
   // The publisher, as members know it, like "Maryland General Assembly".
   // "LIS" is the name of the system, which members don't need to know.
   displayName: 'Virginia General Assembly',
+  attribution: {
+    name: 'Virginia Legislative Information System',
+    url: 'https://lis.virginia.gov',
+    note: 'Legislative data comes from the Virginia General Assembly\'s Legislative Information System (LIS) public data files.',
+  },
   coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: true, billText: false },
   envKeys: ['LIS_STATES'],
   states: [LIS_STATE],

@@ -76,7 +76,17 @@ The template compiles and passes lint behind the import boundary, and it is deli
 | `map.ts` | Pure mapping from the feed's records into central's shapes. No requests and no env. |
 | `inventory.ts` | The field inventory. |
 | `vocabulary.ts` | What your codes mean: statuses, bill types, event types, and extras. |
-| `index.ts` | The `Provider` object that ties them together. |
+| `index.ts` | The `Provider` object that ties them together, including its `attribution` (below). |
+
+### The data credit
+
+Every instance covering one of your states shows your credit in its sidebar footer: "Data:" and your name, linked to your data page. You declare it as `attribution` in `index.ts`:
+
+- `name` and `url` credit the publisher.
+- `note` is one plain sentence on where the data comes from and on what terms. It appears on hover and for screen readers.
+- `license` (a name and URL) is optional. Add it only when the publisher's license asks for credit, as LegiScan's CC BY 4.0 does.
+
+Central sends the credit to each instance along with the states you own for it, so a state claimed for your provider changes the footer by itself. No instance setting and no web code is involved.
 
 ## The vocabulary file
 
