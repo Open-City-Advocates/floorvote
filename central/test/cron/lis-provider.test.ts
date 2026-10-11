@@ -3,21 +3,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { drizzle } from 'drizzle-orm/d1'
 import { eq } from 'drizzle-orm'
 import * as schema from '../../src/db/schema'
-import { setupLsDb } from '../helpers/setupLsDb'
 import s2026Raw from '../fixtures/lis/20261-sample.json?raw'
 import s2027Raw from '../fixtures/lis/20271-sample.json?raw'
 
 // Virginia from the LIS public data files at the main seam (#301): the
 // recorded files in, with the network stubbed at fetch, and central's bill
 // API, its labels, and the notifications queued for tenants out.
-vi.mock('../../src/lib/rateLimitedFetch', () => ({
-  // Unpaced, so each request doesn't cost the test half a second.
-  rateLimitedFetch: async (url: string, init: RequestInit | undefined, opts: { onRequest?: () => void }) => {
-    const res = await fetch(url, init)
-    opts.onRequest?.()
-    return res
-  },
-}))
+vi.mock('../../src/lib/rateLimitedFetch', () => import('../helpers/unpacedFetch'))
 vi.mock('../../src/lib/sync-schedule', async () => {
   const actual = await vi.importActual<typeof import('../../src/lib/sync-schedule')>('../../src/lib/sync-schedule')
   return { ...actual, getCurrentEtHour: vi.fn(() => 5) }
@@ -25,12 +17,10 @@ vi.mock('../../src/lib/sync-schedule', async () => {
 const fetchMock = vi.fn()
 vi.stubGlobal('fetch', fetchMock)
 
-import { runSnapshotSync } from '../../src/cron/sync-snapshots'
-import { processIngestorQueue } from '../../src/queue/processor'
 import { lis } from '../../src/providers/lis'
 import { LIS_FILES, LIS_FILES_BASE, type LisFile, type LisFiles } from '../../src/providers/lis/client'
 import { toHandle } from '../../src/lib/billHandle'
-import { tenantQueueBindingName } from '../../src/lib/tenantQueue'
+import { mainSeam, resetCentral } from '../helpers/mainSeam'
 
 const s2026 = () => JSON.parse(s2026Raw) as LisFiles
 const s2027 = () => JSON.parse(s2027Raw) as LisFiles
@@ -48,70 +38,16 @@ function serve(code: string, files: LisFiles, version = 'v1') {
     [file, files[file] ? { text: files[file], etag: `"${code}-${file}-${version}"` } : null]))
 }
 
-function makeEnv() {
-  const ingestor = { sendBatch: vi.fn().mockResolvedValue(undefined), send: vi.fn() }
-  const tenantQueue = { sendBatch: vi.fn().mockResolvedValue(undefined), send: vi.fn().mockResolvedValue(undefined) }
-  return {
-    ingestor, tenantQueue,
-    env: { ...(env as any), INGESTOR_QUEUE: ingestor, [tenantQueueBindingName('vateam')]: tenantQueue },
-  }
-}
-type Run = ReturnType<typeof makeEnv>
-
-const sentToTenant = (run: Run) => [
-  ...run.tenantQueue.send.mock.calls.map(c => c[0]),
-  ...run.tenantQueue.sendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body)),
-]
-const queuedIds = (run: Run) => run.ingestor.sendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body.billId as number))
+const seam = mainSeam(lis, { tenantId: 'vateam' })
+const { makeRun, queued, queuedIds, sentToTenant, central, getJson, sync, syncAndIngest, ingest } = seam
 const gets = (code = '20261') => calls.filter(c => c.method === 'GET' && c.code === code).map(c => c.file)
 const heads = (code = '20261') => calls.filter(c => c.method === 'HEAD' && c.code === code).map(c => c.file)
-
-async function central(method: string, path: string, run: Run, body?: unknown) {
-  const { app } = await import('../../src/index-legiscan')
-  return app.fetch(new Request(`http://central/api${path}`, {
-    method,
-    headers: { 'x-admin-secret': 'test-secret', 'content-type': 'application/json' },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  }), { ...run.env, ADMIN_SECRET: 'test-secret' })
-}
-
-async function getJson(path: string, run = makeEnv()) {
-  const res = await central('GET', path, run)
-  expect(res.status).toBe(200)
-  return res.json() as Promise<any>
-}
-
-async function claim(provider: string, run = makeEnv()) {
-  return central('POST', '/admin/state-providers/VA', run, { provider })
-}
-
+const claim = (provider: string) => seam.claim('VA', provider)
 /** The central id of a bill by number, in a session (by its tag). */
-async function billId(number: string, code = '20261'): Promise<number> {
-  const db = drizzle(env.DB, { schema })
-  const rows = await db.select({ billId: schema.bills.billId, tag: schema.sessions.sessionTag }).from(schema.bills)
-    .innerJoin(schema.sessions, eq(schema.sessions.sessionId, schema.bills.sessionId))
-    .where(eq(schema.bills.billNumber, number)).all()
-  const row = rows.find(r => r.tag === code)
-  if (!row) throw new Error(`no bill ${number} in ${code}`)
-  return row.billId
-}
-
-/** The hourly Virginia sync, then the ingest of every bill it queued. */
-async function syncAndIngest(run = makeEnv()) {
-  const db = drizzle(env.DB, { schema })
-  await runSnapshotSync(lis, run.env, db)
-  // Whole bodies, so a calendar recheck reaches the ingestor as one.
-  const messages = run.ingestor.sendBatch.mock.calls.flatMap(c => c[0].map((m: any) => ({ body: m.body, ack: vi.fn(), retry: vi.fn() })))
-  if (messages.length > 0) await processIngestorQueue({ messages } as any, run.env, db)
-  for (const m of messages) expect(m.retry).not.toHaveBeenCalled()
-  return { run, messages }
-}
+const billId = (number: string, code = '20261') => seam.billIdOf(number, code)
 
 beforeEach(async () => {
-  vi.useFakeTimers({ toFake: ['Date'] })
-  vi.setSystemTime(new Date('2026-09-28T09:00:00Z'))   // 5 ET
-  await setupLsDb()
-  vi.clearAllMocks()
+  await resetCentral()
   sessions = {}
   serve('20261', s2026())
   calls = []
@@ -128,9 +64,7 @@ beforeEach(async () => {
     if (served.status) return new Response('server error', { status: served.status })
     return new Response(method === 'HEAD' ? null : served.text, { headers })
   })
-  const db = drizzle(env.DB, { schema })
-  await db.insert(schema.tenants).values({ tenantId: 'vateam', name: 'VA Team', stateCoverage: '["VA"]', active: true })
-  await db.insert(schema.keywordRegistry).values(['minimum wage', 'daylight', 'procurement'].map(keyword => ({ tenantId: 'vateam', keyword })))
+  await seam.addTenant('VA', ['minimum wage', 'daylight', 'procurement'])
 })
 
 afterEach(() => {
@@ -139,7 +73,7 @@ afterEach(() => {
 
 describe('Virginia from the LIS data files', () => {
   it('stays on LegiScan until Virginia is claimed', async () => {
-    expect(await runSnapshotSync(lis, makeEnv().env, drizzle(env.DB, { schema }))).toEqual([])
+    expect(await sync(makeRun())).toEqual([])
     expect(calls).toEqual([])
   })
 
@@ -192,11 +126,8 @@ describe('Virginia from the LIS data files', () => {
   it('maps every bill to a bill type and status Virginia\'s labels list', async () => {
     await claim('lis')
     await syncAndIngest()
-    const db = drizzle(env.DB, { schema })
-    const messages = (await db.select({ id: schema.bills.billId }).from(schema.bills).all())
-      .map(r => ({ body: { billId: r.id }, ack: vi.fn(), retry: vi.fn() }))
-    await processIngestorQueue({ messages } as any, makeEnv().env, db)
-    for (const m of messages) expect(m.retry).not.toHaveBeenCalled()
+    const all = await drizzle(env.DB, { schema }).select({ id: schema.bills.billId }).from(schema.bills).all()
+    for (const m of await ingest(all.map(r => r.id))) expect(m.retry).not.toHaveBeenCalled()
 
     const labels = await getJson('/bills/labels?state=VA')
     const types = new Set(labels.billTypes.map((t: any) => t.value.toLowerCase()))
@@ -320,9 +251,9 @@ describe('failing closed', () => {
     for (const served of Object.values(sessions['20261'])) if (served) served.etag = `${served.etag}+`
     const db = drizzle(env.DB, { schema })
     const recordsBefore = await db.select().from(schema.providerRecords).all()
-    const run = makeEnv()
-    await expect(runSnapshotSync(lis, run.env, db)).rejects.toThrow(message)
-    expect(queuedIds(run)).toEqual([])
+    const run = makeRun()
+    await expect(sync(run)).rejects.toThrow(message)
+    expect(queued(run)).toEqual([])
     expect(sentToTenant(run)).toEqual([])
     expect(await db.select().from(schema.providerRecords).all()).toEqual(recordsBefore)
   }
@@ -410,9 +341,9 @@ describe('files cut down to their header', () => {
     const served = sessions['20261'][file]!
     served.text = header(served.text)
     served.etag = '"cut"'
-    const run = makeEnv()
-    await expect(runSnapshotSync(lis, run.env, drizzle(env.DB, { schema }))).rejects.toThrow(`LIS 20261 ${file}: no rows for`)
-    expect(queuedIds(run)).toEqual([])
+    const run = makeRun()
+    await expect(sync(run)).rejects.toThrow(`LIS 20261 ${file}: no rows for`)
+    expect(queued(run)).toEqual([])
     expect(await getJson(`/bills/${toHandle(await billId('HB1'))}`)).toEqual(before)
   })
 
@@ -422,7 +353,7 @@ describe('files cut down to their header', () => {
     const dockets = sessions['20261'].dockets!
     dockets.text = header(dockets.text)
     dockets.etag = '"cut"'
-    await expect(runSnapshotSync(lis, makeEnv().env, drizzle(env.DB, { schema }))).rejects.toThrow('LIS 20261 dockets: no bill is on a docket, though the last pass found some')
+    await expect(sync(makeRun())).rejects.toThrow('LIS 20261 dockets: no bill is on a docket, though the last pass found some')
   })
 })
 
@@ -432,8 +363,8 @@ describe('one session failing', () => {
     serve('20262', s2027())
     sessions['20261'].sponsors = null
     await claim('lis')
-    const run = makeEnv()
-    await expect(runSnapshotSync(lis, run.env, drizzle(env.DB, { schema }))).rejects.toThrow('LIS 20261: Sponsors.csv is missing')
+    const run = makeRun()
+    await expect(sync(run)).rejects.toThrow('LIS 20261: Sponsors.csv is missing')
     expect(await billId('HB1532', '20262')).toBeGreaterThan(3_000_000_000)
     await expect(billId('HB1', '20261')).rejects.toThrow()
   })
@@ -448,7 +379,7 @@ describe('reading the files with their ETags', () => {
     await claim('lis')
     await syncAndIngest()
     calls = []
-    await runSnapshotSync(lis, makeEnv().env, drizzle(env.DB, { schema }))
+    await sync(makeRun())
     expect(gets()).toEqual([])
   })
 
@@ -460,7 +391,7 @@ describe('reading the files with their ETags', () => {
     const old = JSON.stringify(Object.fromEntries((Object.keys(LIS_FILES) as LisFile[]).map(f => [f, `"20261-${f}-v1"`])))
     await db.update(schema.sessions).set({ snapshotEtag: old }).where(eq(schema.sessions.sessionTag, '20261'))
     calls = []
-    await runSnapshotSync(lis, makeEnv().env, db)
+    await sync(makeRun())
     expect(gets().sort()).toEqual(Object.keys(LIS_FILES).sort())
   })
 
@@ -472,7 +403,7 @@ describe('reading the files with their ETags', () => {
     const before = await getJson(`/bills/${toHandle(await billId('HB1'))}`)
 
     calls = []
-    await runSnapshotSync(lis, makeEnv().env, drizzle(env.DB, { schema }))
+    await sync(makeRun())
     // At 5 ET the session list refreshes too, which checks BILLS.CSV once more.
     expect([...new Set(heads())].sort()).toEqual(Object.keys(LIS_FILES).sort())
     expect(gets()).toEqual([])
@@ -494,7 +425,7 @@ describe('reading the files with their ETags', () => {
     expect((await getJson(`/bills/${toHandle(await billId('HB1'))}`)).title).toMatch(/^Minimum wage; raises/)
 
     calls = []
-    await runSnapshotSync(lis, makeEnv().env, drizzle(env.DB, { schema }))
+    await sync(makeRun())
     expect(gets()).toEqual([])
   })
 
@@ -505,7 +436,7 @@ describe('reading the files with their ETags', () => {
     sessions['20261'].subdockets = null
     calls = []
     // A subdocket file the last pass read can't go missing: the pass reads, then fails closed.
-    await expect(runSnapshotSync(lis, makeEnv().env, drizzle(env.DB, { schema }))).rejects.toThrow('SUBDOCKET.CSV is missing')
+    await expect(sync(makeRun())).rejects.toThrow('SUBDOCKET.CSV is missing')
     expect(gets()).toContain('bills')
 
     serve('20261', s2026())
@@ -513,7 +444,7 @@ describe('reading the files with their ETags', () => {
     await syncAndIngest()
     sessions['20261'].members!.etag = ''
     calls = []
-    await runSnapshotSync(lis, makeEnv().env, drizzle(env.DB, { schema }))
+    await sync(makeRun())
     expect(gets().sort()).toEqual(Object.keys(LIS_FILES).sort())
   })
 
@@ -522,7 +453,7 @@ describe('reading the files with their ETags', () => {
     await syncAndIngest()
 
     calls = []
-    expect((await central('POST', '/admin/providers/lis/sync', makeEnv())).status).toBe(200)
+    expect((await central('POST', '/admin/providers/lis/sync', makeRun())).status).toBe(200)
     expect(heads().filter(f => f !== 'bills')).toEqual([])
     expect(gets().sort()).toEqual(Object.keys(LIS_FILES).sort())
 
@@ -531,7 +462,7 @@ describe('reading the files with their ETags', () => {
     expect((await claim('legiscan')).status).toBe(200)
     expect((await claim('lis')).status).toBe(200)
     calls = []
-    await runSnapshotSync(lis, makeEnv().env, db)
+    await sync(makeRun())
     expect(gets().sort()).toEqual(Object.keys(LIS_FILES).sort())
   })
 })

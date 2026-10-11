@@ -75,6 +75,10 @@ git push --force-with-lease
 
 There is no CLA to sign and no form to fill out — the one line in the commit is the whole process.
 
+## Adding a data provider
+
+To bring in a legislature's own feed for your state, follow [Adding a data provider](./providers). It explains the provider model and the rules every provider follows, and points to a template directory and the test helper maintainers use.
+
 ## Forking and operator overlays
 
 FloorVote is deployed per-team, and each instance is tied to a specific Cloudflare account, tenant domains, and secrets. Because of that, a fork that runs its own instance will tend to accumulate an **operator overlay**: files like `wrangler.toml`, deploy scripts, and an internal ops runbook that are meaningful only to that operator's deployment and should never appear in the public repository. If you fork to run your own instance, expect to build up the same kind of overlay. The guidance below is for sending a change from a fork like that back upstream.

@@ -22,6 +22,8 @@ The two interactive HTML companions are the exception: GitHub renders `.html` as
 | `rebranding.md` | Renaming resources via `RESOURCE_PREFIX` for forks. |
 | `openstates.md` | The removed OpenStates central: where to find it (`openstates-final` tag), what it knew, and why it was removed. |
 
+The contributor-facing guide to adding a provider is published on the docs site (`docs/content/contributing/providers.md`). It links here for the internals.
+
 ## Previewing the docs site locally
 
 Neither command publishes — only `wrangler deploy` and the deploy scripts do.
