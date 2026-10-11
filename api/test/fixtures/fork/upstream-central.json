@@ -1,5 +1,5 @@
 {
- "about": "What upstream's central sends the fork's instance after the upgrade, recorded from central/test/cron/fork-upgrade.test.ts: the notifications its first DC sync and the LIMS re-ingest queued, the bill API's answer for each of their bills, and the instance's body events after the Council calendar sync. api/test/migrations/forkUpgrade.test.ts replays them.",
+ "about": "What upstream's central sends the fork's instance after the upgrade, recorded from central/test/cron/fork-upgrade.test.ts: the notifications its first DC sync and the LIMS re-ingest queued, the bill API's answer for each of their bills after the Council calendar sync, the instance's body events, and the committees and kinds its event rules can choose from (GET /tenants/oca/body-event-options). api/test/migrations/forkUpgrade.test.ts replays them.",
  "notifications": [
   {
    "tenantId": "oca",
@@ -1850,5 +1850,70 @@
     "covers": []
    }
   ]
+ },
+ "bodyEventOptions": {
+  "states": {
+   "DC": {
+    "committees": [
+     {
+      "committeeId": "3000000006",
+      "name": "Committee of the Whole",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000003",
+      "name": "Committee on Health",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000004",
+      "name": "Committee on Housing",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000008",
+      "name": "Committee on Human Services",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000002",
+      "name": "Committee on Judiciary and Public Safety",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000007",
+      "name": "Committee on Public Works and Operations",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000005",
+      "name": "Committee on Transportation and the Environment",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000001",
+      "name": "Committee on Youth Affairs",
+      "chamber": "C"
+     }
+    ],
+    "kinds": [
+     {
+      "kind": "hearing",
+      "types": [
+       "Hearing",
+       "Joint Hearing",
+       "Oversight Hearing",
+       "Roundtable"
+      ]
+     },
+     {
+      "kind": "meeting",
+      "types": [
+       "Meeting"
+      ]
+     }
+    ]
+   }
+  }
  }
 }

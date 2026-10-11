@@ -27,7 +27,9 @@ vi.mock('../../src/lib/llm', async (importOriginal) => {
 type Row = Record<string, unknown>
 const forkManifest = JSON.parse(forkManifestRaw) as { files: string[] }
 const forkRows = JSON.parse(forkRowsRaw) as { rows: Record<string, Row[]> }
-const upstream = JSON.parse(upstreamRaw) as { notifications: any[]; bills: Record<string, unknown>; bodyEvents: { capabilities: unknown; events: any[] } }
+const upstream = JSON.parse(upstreamRaw) as {
+  notifications: any[]; bills: Record<string, unknown>; bodyEvents: { capabilities: unknown; events: any[] }; bodyEventOptions: unknown
+}
 
 const upstreamMigrations = import.meta.glob<string>('../../migrations/*.sql', { query: '?raw', import: 'default', eager: true })
 const forkOwnMigrations = import.meta.glob<string>('../fixtures/fork/migrations/*.sql', { query: '?raw', import: 'default', eager: true })
@@ -89,14 +91,20 @@ async function buildForkInstance() {
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
 const testEnv = { ...env, TENANT_ID: 'oca', CENTRAL_API_URL: 'https://central.test', CENTRAL_ADMIN_SECRET: 'x', STATE: 'DC' } as any
+/** Whether central answers the committee options call. An upgraded central does, within the hour. */
+let centralListsOptions = false
 
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ['Date'] })
   // The upgrade, the day after the fork's instance recorded its rows.
   vi.setSystemTime(new Date('2026-09-29T10:00:00Z'))
+  centralListsOptions = false
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
     const url = new URL(String(input instanceof Request ? input.url : input))
     if (url.pathname === '/api/tenants/oca/body-events') return json(upstream.bodyEvents)
+    if (url.pathname === '/api/tenants/oca/body-event-options') {
+      return centralListsOptions ? json(upstream.bodyEventOptions) : new Response('unavailable', { status: 503 })
+    }
     const billId = /^\/api\/bills\/(.+)$/.exec(decodeURIComponent(url.pathname))?.[1]
     if (billId && upstream.bills[billId]) return json(upstream.bills[billId])
     if (url.hostname === 'lims.dccouncil.gov') return new Response('%PDF-1.7\n%%EOF\n', { status: 200, headers: { 'Content-Type': 'application/pdf' } })
@@ -165,15 +173,18 @@ describe('a fork\'s instance, moved onto upstream', () => {
     const result = await syncBodyEvents(testEnv, db)
     const council = forkRows.rows.calendar_events.filter(e => e.source === 'council')
     expect(result).toMatchObject({ upserted: upstream.bodyEvents.events.length - council.length, cancelled: 0, removed: 0 })
-    const after = new Map((await rows('SELECT id, uid, sequence, status, source, kind, covered_by FROM calendar_events')).map(r => [r.uid, r]))
+    const after = new Map((await rows('SELECT id, uid, sequence, status, source, kind, covered_by, rule_match FROM calendar_events')).map(r => [r.uid, r]))
     // Each Council row the fork's rules picked is the same row under the same
     // UID, at the same SEQUENCE, since its hash is the fork's own.
     const sent = new Map(upstream.bodyEvents.events.map(e => [e.uid, e]))
     for (const e of council) {
       expect(after.get(e.uid as string)).toMatchObject({ id: e.id, sequence: e.sequence, status: 'confirmed', source: 'body', kind: sent.get(e.uid)!.kind })
     }
-    // Every other Council event shows too, until the instance's event rules narrow them (#298).
+    // Every other Council event shows too. The fork's #217 rules wait for
+    // central's committee list before they're carried over, so none are applied.
     expect([...after.values()].filter(r => r.source === 'body')).toHaveLength(upstream.bodyEvents.events.length)
+    expect([...after.values()].filter(r => r.source === 'body' && r.rule_match !== null)).toEqual([])
+    expect(await rows(`SELECT key FROM association_config WHERE key = 'event_rules'`)).toEqual([])
     // Each hearing shows once: the bill entries the Council's events cover point at them.
     expect(after.get(hearingUid('legiscan:1012600769', '1|public hearing on b26-0769', 'oca'))).toMatchObject({ covered_by: 'council-2405@lims.dccouncil.gov' })
     expect(after.get(hearingUid('legiscan:1082600171', '1|public oversight roundtable on department of behavioral health’s financial challenges', 'oca')))
@@ -185,5 +196,33 @@ describe('a fork\'s instance, moved onto upstream', () => {
       SELECT 'deep_analyses' AS t, id FROM deep_analyses WHERE subject_id NOT IN (SELECT id FROM bills UNION SELECT id FROM calendar_events)
       UNION ALL SELECT 'team_links', id FROM team_links WHERE subject_id NOT IN (SELECT id FROM bills UNION SELECT id FROM calendar_events)
       UNION ALL SELECT 'crm_contacts', id FROM crm_contacts WHERE bill_id IS NOT NULL AND bill_id NOT IN (SELECT id FROM bills)`)).toEqual([])
+  })
+
+  it('carries the fork\'s Council calendar rules over as event rules once central lists its committees, so its team keeps the events it chose', async () => {
+    await applyD1Migrations(env.DB, migrationsFromFiles(upstreamMigrations))
+    const db = getDb(env.DB)
+    for (const msg of upstream.notifications) await processCentralNotification(msg, testEnv, db)
+    const legacy = await rows(`SELECT value FROM association_config WHERE key = 'council_calendar_rules'`)
+
+    centralListsOptions = true
+    await syncBodyEvents(testEnv, db)
+
+    // Committee names become central's committees, #217's types event types, and its tracked-bills flag stays.
+    const saved = await rows(`SELECT value FROM association_config WHERE key = 'event_rules'`)
+    expect(saved.map(r => JSON.parse(r.value as string))).toEqual([{
+      committees: [{ committeeId: '3000000003', name: 'Committee on Health' }, { committeeId: '3000000001', name: 'Committee on Youth Affairs' }],
+      kinds: ['Oversight Hearing'],
+      topics: [],
+      trackedBills: true,
+    }])
+    // The events they select are the very ones the fork's own mirror picked. The rest are hidden.
+    const council = forkRows.rows.calendar_events.filter(e => e.source === 'council').map(e => e.uid as string)
+    const body = await rows(`SELECT uid, rule_match FROM calendar_events WHERE source = 'body' ORDER BY uid`)
+    expect(body.filter(r => r.rule_match === 1).map(r => r.uid).sort()).toEqual([...council].sort())
+    expect(body.filter(r => r.rule_match !== 1)).toEqual(
+      upstream.bodyEvents.events.map(e => e.uid as string).filter(uid => !council.includes(uid)).sort().map(uid => ({ uid, rule_match: 0 })),
+    )
+    // The fork's own setting stays where it was, unread from here on.
+    expect(await rows(`SELECT value FROM association_config WHERE key = 'council_calendar_rules'`)).toEqual(legacy)
   })
 })
