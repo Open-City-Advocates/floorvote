@@ -41,7 +41,7 @@ function serve(records: Rec[], etag: string | null = '"v1"') {
 const seam = mainSeam(mga, { tenantId: 'mdteam' })
 const { makeRun, queued, queuedIds, sentToTenant, central, getJson, sync, syncAndIngest, ingest } = seam
 const fileRequests = () => calls.filter(c => c.method === 'GET' && c.url === FILE)
-const claim = (provider: string) => seam.claim('MD', provider)
+const claim = (provider: string, run?: Run) => seam.claim('MD', provider, run)
 const billId = (number: string) => seam.billIdOf(number)
 
 beforeEach(async () => {

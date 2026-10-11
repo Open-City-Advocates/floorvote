@@ -39,7 +39,7 @@ function serve(code: string, files: LisFiles, version = 'v1') {
 }
 
 const seam = mainSeam(lis, { tenantId: 'vateam' })
-const { makeRun, queuedIds, sentToTenant, central, getJson, sync, syncAndIngest, ingest } = seam
+const { makeRun, queued, queuedIds, sentToTenant, central, getJson, sync, syncAndIngest, ingest } = seam
 const gets = (code = '20261') => calls.filter(c => c.method === 'GET' && c.code === code).map(c => c.file)
 const heads = (code = '20261') => calls.filter(c => c.method === 'HEAD' && c.code === code).map(c => c.file)
 const claim = (provider: string) => seam.claim('VA', provider)
@@ -253,7 +253,7 @@ describe('failing closed', () => {
     const recordsBefore = await db.select().from(schema.providerRecords).all()
     const run = makeRun()
     await expect(sync(run)).rejects.toThrow(message)
-    expect(queuedIds(run)).toEqual([])
+    expect(queued(run)).toEqual([])
     expect(sentToTenant(run)).toEqual([])
     expect(await db.select().from(schema.providerRecords).all()).toEqual(recordsBefore)
   }
@@ -343,7 +343,7 @@ describe('files cut down to their header', () => {
     served.etag = '"cut"'
     const run = makeRun()
     await expect(sync(run)).rejects.toThrow(`LIS 20261 ${file}: no rows for`)
-    expect(queuedIds(run)).toEqual([])
+    expect(queued(run)).toEqual([])
     expect(await getJson(`/bills/${toHandle(await billId('HB1'))}`)).toEqual(before)
   })
 

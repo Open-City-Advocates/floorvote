@@ -88,6 +88,8 @@ The template compiles and passes lint behind the import boundary, and it is deli
 
 Explainers appear next to real bills, so keep them factual and cite the legislature's own guide to its process. Changing a status's stage or rank after launch changes how bills already in instances sort and filter, so it ships with a one-time metadata resend. [`docs/internal/sync-pipeline.md`](https://github.com/floorvote/floorvote/blob/main/docs/internal/sync-pipeline.md) explains how.
 
+The template's `map.ts` writes status code 900 and bill type `'B'` as placeholders. In a real provider, every code the mapping writes must be declared in `vocabulary.ts`.
+
 When your provider joins the registry, add its codes to "the codes each provider writes" in [`central/test/providers/vocabulary.test.ts`](https://github.com/floorvote/floorvote/blob/main/central/test/providers/vocabulary.test.ts). The same file then checks your vocabulary against the shared rules.
 
 ## The field inventory
@@ -112,6 +114,9 @@ Test against responses saved from the live feed, never against the live feed. Tr
 Test external behavior, not implementation. The seam is: your provider's recorded feed in, central's bill API and the notifications queued for instances out. [`central/test/helpers/mainSeam.ts`](https://github.com/floorvote/floorvote/blob/main/central/test/helpers/mainSeam.ts) wires it up. It stubs the network at `fetch`, runs the same hourly sync and ingest that production does against a real migrated D1 database (never a mock), and gives you the pieces to check:
 
 ```ts
+import { toHandle } from '../../src/lib/billHandle'
+import { mainSeam, resetCentral } from '../helpers/mainSeam'
+
 const seam = mainSeam(mga, { tenantId: 'mdteam' })
 
 beforeEach(async () => {
