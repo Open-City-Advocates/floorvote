@@ -4,7 +4,7 @@ These pages are **not** part of the published docs site (`floorvote.org/docs`). 
 
 Rule: relocate technical depth here — don't delete it.
 
-The two interactive HTML companions are the exception: GitHub renders `.html` as source, so they live in `docs/content/public/internal/` and are served as standalone pages at `floorvote.org/docs/internal/`. They are not sidebar pages, and the markdown here remains the source of truth.
+The interactive HTML companions are the exception: GitHub renders `.html` as source, so they live in `docs/content/public/internal/` and are served as standalone pages at `floorvote.org/docs/internal/`. They are not sidebar pages, and the markdown here remains the source of truth.
 
 | File | What it covers |
 |---|---|
@@ -20,6 +20,7 @@ The two interactive HTML companions are the exception: GitHub renders `.html` as
 | `legiscan-notes.md` | LegiScan operational + licensing notes (quota, `skipFetch`, attribution). |
 | `rebranding.md` | Renaming resources via `RESOURCE_PREFIX` for forks. |
 | `openstates.md` | The removed OpenStates central: where to find it (`openstates-final` tag), what it knew, and why it was removed. |
+| `themes.md` | Proposal: themes and dark mode — CSS-variable tokens, the theme file shape, the picker, and jurisdiction (flag) themes. Companion: `themes.html`. |
 
 ## Previewing the docs site locally
 

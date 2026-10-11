@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FloorVote — Themes</title>
+  <link rel="canonical" href="https://floorvote.org/docs/internal/themes" />
+  <style>body { margin: 0 } [hidden] { display: none !important }</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Archivo+Narrow:wght@500;600;700&family=Atkinson+Hyperlegible:wght@400;700&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=Libre+Franklin:wght@400;500;600;700;800&family=Literata:opsz,wght@7..72,400;7..72,500;7..72,600&family=Manrope:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,600&family=Public+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600&display=swap">
+<style>
+/* Layout: one working FloorVote screen, driven by a theme picker. Themes are data (colors, fonts, shape, an optional flag) applied as CSS variables; layouts are separate switches, so any theme can be seen with any layout. */
+:root {
+  --page-bg: #f3f4f6; --page-fg: #151a22; --page-muted: #586273; --page-rule: #d9dde4; --page-accent: #1f4d8a; --page-card: #ffffff;
+  --page-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --page-display: 'Archivo', 'Inter', sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --page-bg: #0f1218; --page-fg: #e6eaf0; --page-muted: #97a1b1; --page-rule: #262c37; --page-accent: #9dbbe6; --page-card: #161b23; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --page-bg: #0f1218; --page-fg: #e6eaf0; --page-muted: #97a1b1; --page-rule: #262c37; --page-accent: #9dbbe6; --page-card: #161b23; color-scheme: dark }
+
+body { background: var(--page-bg); color: var(--page-fg); font-family: var(--page-font); font-size: 15px; line-height: 1.5 }
+.wrap { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: grid; gap: 18px }
+.intro { display: grid; gap: 8px; max-width: 70ch }
+.intro h1 { font-family: var(--page-display); font-size: clamp(24px, 3.6vw, 32px); line-height: 1.15; margin: 0; letter-spacing: -0.01em; text-wrap: balance }
+.intro p { margin: 0; color: var(--page-muted) }
+.controls { display: grid; gap: 10px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 2; background: var(--page-bg); padding-block: 10px; border-bottom: 1px solid var(--page-rule) }
+.ctl-row { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center }
+.ctl { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--page-muted); flex-wrap: wrap }
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--page-rule); border-radius: 8px; overflow: hidden; background: var(--page-card) }
+.seg button { font: inherit; font-size: 13.5px; font-weight: 500; border: 0; background: transparent; color: var(--page-fg); padding: 6px 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px }
+.seg button + button { border-left: 1px solid var(--page-rule) }
+.seg button[aria-pressed="true"] { background: var(--page-fg); color: var(--page-bg) }
+.seg button:focus-visible, .p-btn:focus-visible { outline: 2px solid var(--page-accent); outline-offset: -2px }
+.dot { width: 10px; height: 10px; border-radius: 50%; flex: none; box-shadow: 0 0 0 1px rgb(127 127 127 / 0.35) }
+.ctl[hidden] { display: none }
+.panel { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px }
+@media (max-width: 860px) { .panel { grid-template-columns: minmax(0, 1fr) } }
+.card { background: var(--page-card); border: 1px solid var(--page-rule); border-radius: 10px; padding: 14px 16px; display: grid; gap: 6px; align-content: start; font-size: 13.5px; color: var(--page-muted) }
+.card strong { color: var(--page-fg); font-family: var(--page-display); font-size: 15px }
+.card p { margin: 0 }
+.about { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 8px 24px }
+@media (max-width: 860px) { .about { grid-template-columns: minmax(0, 1fr) } }
+.about h2 { margin: 0; font-family: var(--page-display); font-size: 20px; color: var(--page-fg) }
+.swatches { display: flex; flex-wrap: wrap; gap: 6px }
+.sw { display: grid; gap: 3px; font-size: 11.5px; color: var(--page-muted); width: 62px }
+.sw i { height: 28px; border-radius: 5px; box-shadow: inset 0 0 0 1px rgb(127 127 127 / 0.3) }
+.p-btn { font: inherit; font-size: 13.5px; font-weight: 600; border: 1px solid var(--page-rule); border-radius: 8px; background: var(--page-card); color: var(--page-accent); padding: 6px 12px; cursor: pointer; justify-self: start }
+
+/* ---------- The mock: every color, face, and measure comes from the theme ---------- */
+.mock { border-radius: 10px; overflow: hidden; border: 1px solid var(--m-border); background: var(--m-bg); color: var(--m-text);
+  font-family: var(--f-ui); font-size: 14px; line-height: 1.45; display: grid; grid-template-columns: 196px minmax(0, 1fr) }
+@media (max-width: 700px) { .mock { grid-template-columns: minmax(0, 1fr) } .mock .m-side { display: none } }
+.mock button { font: inherit; color: inherit }
+.m-side { background: var(--m-side); color: var(--m-side-fg); border-right: 1px solid var(--m-border); padding: 18px 10px; display: flex; flex-direction: column; gap: 2px }
+.m-word { font-family: var(--f-brand); font-weight: 700; font-size: 19px; padding: 0 10px 16px; letter-spacing: -0.01em; display: flex; align-items: center; gap: 9px }
+.m-word b { color: var(--m-mark); font-weight: 700 }
+.m-flag { width: 34px; height: 17px; flex: none; border-radius: 1px; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.18) }
+.m-nav { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-radius: var(--s-radius); font-family: var(--f-brand); font-weight: 500; color: var(--m-side-fg); font-size: 14.5px; cursor: pointer; border: 0; background: none; text-align: left; width: 100% }
+.m-nav:disabled { cursor: default; color: var(--m-side-muted) }
+.m-nav:focus-visible { outline: 2px solid var(--m-attn); outline-offset: -2px }
+.m-nav[aria-current="page"] { background: var(--m-nav-on); color: var(--m-nav-on-fg) }
+.m-nav.settings { margin-top: auto }
+.m-nav[aria-current="page"] .m-count { background: transparent; color: inherit; box-shadow: inset 0 0 0 1px currentColor }
+.m-count { font-family: var(--f-ui); font-size: 12px; font-weight: 600; padding: 0 7px; border-radius: 999px; background: var(--m-chip); color: var(--m-text2) }
+.m-main { padding: 20px 22px 24px; display: grid; gap: 16px; align-content: start; min-width: 0 }
+.mock[data-top="rule"] .m-main { border-top: 5px solid var(--m-accent) }
+.m-bars { height: 11px; margin: -20px -22px 0 }
+.mock[data-top="bars"] .m-bars { background: linear-gradient(to bottom, #c8102e 0 4px, transparent 4px 7px, #c8102e 7px 11px) }
+.m-top { display: flex; justify-content: space-between; align-items: baseline; gap: 4px 16px; flex-wrap: wrap }
+.m-h1 { font-family: var(--f-head); font-size: var(--s-h1); font-weight: var(--s-h1w); margin: 0; line-height: 1.15; text-wrap: balance }
+.m-sub { color: var(--m-muted); font-size: 13px }
+.m-h2 { font-family: var(--f-head); font-size: 18px; font-weight: 600; margin: 0 }
+.m-h2 small { font-family: var(--f-ui); font-weight: 400; font-size: 13px; color: var(--m-muted); margin-left: 6px }
+.m-group { display: grid; gap: 8px }
+
+/* Bill rows */
+.m-list { display: grid; border: 1px solid var(--m-border); border-radius: var(--s-radius); background: var(--m-surface); overflow: hidden }
+.m-row { display: grid; grid-template-columns: var(--s-numcol) minmax(0, 1fr) auto; gap: 4px 14px; padding: var(--s-rowpad); border-top: 1px solid var(--m-border); align-items: start }
+.m-row:first-child { border-top: 0 }
+.m-row.attn { box-shadow: inset 3px 0 0 var(--m-attn) }
+.m-num { font-family: var(--f-num); font-weight: 600; font-size: 13px; color: var(--m-num-fg); white-space: nowrap; letter-spacing: var(--s-numtrack) }
+.m-num.badge { justify-self: start; background: var(--m-num-bg); padding: 1px 7px; border-radius: var(--s-radius) }
+.m-jur { display: block; font-family: var(--f-ui); font-weight: 500; font-size: 12px; color: var(--m-muted); letter-spacing: 0; margin-top: 2px }
+.m-body { display: grid; gap: 3px; min-width: 0 }
+.m-title { font-family: var(--f-list); font-size: var(--s-title); font-weight: 600; color: var(--m-text); line-height: 1.32 }
+.m-stage { font-size: 13px; color: var(--m-text2) }
+.m-next { font-size: 13px; font-weight: 600; color: var(--m-link) }
+.m-next.deadline { color: var(--m-deadline) }
+.m-side-col { display: grid; gap: 4px; justify-items: end; text-align: right; font-size: 12.5px; white-space: nowrap }
+.m-pri { font-weight: 600; padding: 0 8px; border-radius: 999px; border: 1px solid currentColor; font-size: 12.5px }
+.m-pri.high { color: var(--m-pri-high) } .m-pri.medium { color: var(--m-pri-med) } .m-pri.low { color: var(--m-pri-low) }
+.m-rel { color: var(--m-muted); font-variant-numeric: tabular-nums; font-size: 12.5px }
+@media (max-width: 560px) { .m-row { grid-template-columns: minmax(0, 1fr) } .m-side-col { justify-items: start; text-align: left; grid-auto-flow: column; justify-content: start; gap: 10px } }
+.mock[data-density="compact"] .m-row { border-top: 0 }
+.mock[data-density="compact"] .m-row:nth-child(even), .mock[data-density="compact"] .m-item:nth-child(even), .mock[data-density="compact"] .m-day:nth-child(even) { background: var(--m-band) }
+.mock[data-density="compact"] .m-item, .mock[data-density="compact"] .m-day { border-top: 0; padding-block: 8px }
+.mock[data-density="compact"] .m-row .m-body { display: block }
+.mock[data-density="compact"] .m-row .m-title { display: block; margin-bottom: 1px; font-weight: 500 }
+.mock[data-density="compact"] .m-row .m-stage, .mock[data-density="compact"] .m-row .m-next { display: inline; margin-right: 12px }
+
+/* Feed, calendar, briefing lists */
+.m-feed { display: grid; border: 1px solid var(--m-border); border-radius: var(--s-radius); background: var(--m-surface); overflow: hidden }
+.m-item { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 2px 14px; padding: 12px 14px; border-top: 1px solid var(--m-border) }
+.m-item:first-child { border-top: 0 }
+.m-when { font-size: 12.5px; color: var(--m-muted); font-variant-numeric: tabular-nums }
+.m-what { display: grid; gap: 2px; min-width: 0 }
+.m-what b { font-weight: 600 }
+.m-quote { font-family: var(--f-title); font-size: 15px; color: var(--m-text2); border-left: 2px solid var(--m-border-strong); padding-left: 10px; margin-top: 3px }
+.m-day { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 10px 16px; padding: 12px 14px; border-top: 1px solid var(--m-border) }
+.m-day:first-child { border-top: 0 }
+.m-dayname { font-family: var(--f-head); font-weight: 600; font-size: 15px }
+.m-dayname span { display: block; font-family: var(--f-ui); font-weight: 400; font-size: 12.5px; color: var(--m-muted) }
+.m-events { display: grid; gap: 8px; min-width: 0 }
+.m-event { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 2px 12px }
+.m-time { font-size: 13px; font-weight: 600; color: var(--m-link); font-variant-numeric: tabular-nums }
+.m-event-body { display: grid; gap: 1px; min-width: 0 }
+.m-meta { font-size: 12.5px; color: var(--m-muted) }
+.m-kind { font-size: 12px; font-weight: 600; color: var(--m-muted) }
+.m-kind.deadline { color: var(--m-deadline) }
+.m-empty { color: var(--m-muted); font-size: 13.5px; padding: 12px 14px; margin: 0 }
+@media (max-width: 560px) { .m-item, .m-day { grid-template-columns: minmax(0, 1fr) } }
+
+/* Split pane: the list keeps its place while the inspector changes */
+.m-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); border: 1px solid var(--m-border); border-radius: var(--s-radius); overflow: hidden; background: var(--m-surface); align-items: start }
+@media (max-width: 900px) { .m-split { grid-template-columns: minmax(0, 1fr) } .m-inspector { order: -1; border-bottom: 1px solid var(--m-border) } }
+.m-picklist { display: grid; border-right: 1px solid var(--m-border); max-height: 760px; overflow-y: auto }
+.m-pick { display: grid; gap: 2px; text-align: left; border: 0; border-top: 1px solid var(--m-border); background: transparent; padding: 10px 14px; cursor: pointer }
+.m-pick:first-child { border-top: 0 }
+.m-pick.attn { box-shadow: inset 3px 0 0 var(--m-attn) }
+.m-pick[aria-pressed="true"] { background: var(--m-soft); box-shadow: inset 3px 0 0 var(--m-accent) }
+.m-pick:focus-visible { outline: 2px solid var(--m-accent); outline-offset: -2px }
+.m-pick-top { display: flex; justify-content: space-between; align-items: center; gap: 10px }
+.m-pick .m-title { font-size: 14px }
+.m-inspector { background: var(--m-raised); padding: 20px 22px; display: grid; gap: 14px; align-content: start }
+.m-inspector h4 { font-family: var(--f-head); font-size: 22px; font-weight: 600; line-height: 1.22; margin: 0; text-wrap: balance }
+.m-dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 16px; margin: 0; padding-block: 14px; border-block: 1px solid var(--m-border); font-size: 13.5px }
+.m-dl dt { color: var(--m-muted) }
+.m-dl dd { margin: 0 }
+.m-details summary { cursor: pointer; color: var(--m-link); font-weight: 600; font-size: 13.5px }
+.m-details p { margin: 8px 0 0 }
+
+/* Lead story briefing */
+.m-dispatch { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 28px }
+@media (max-width: 900px) { .m-dispatch { grid-template-columns: minmax(0, 1fr) } }
+.m-lead { border-top: 2px solid var(--m-text); padding-top: 16px; display: grid; gap: 12px; align-content: start }
+.m-lead h4 { font-family: var(--f-head); font-size: 30px; font-weight: 500; line-height: 1.18; margin: 0; text-wrap: balance }
+.m-why { font-size: 13px; color: var(--m-muted); border-top: 1px solid var(--m-border); padding-top: 10px; margin: 0 }
+.m-note { background: var(--m-soft); padding: 12px 14px; border-radius: var(--s-radius); display: grid; gap: 4px }
+.m-note .m-quote { border: 0; padding: 0; margin: 0 }
+.m-margin { border-top: 2px solid var(--m-text); padding-top: 16px; display: grid; align-content: start }
+.m-margin h5 { font-family: var(--f-head); font-size: 16px; font-weight: 600; margin: 0 0 8px }
+.m-change { padding-block: 10px; border-top: 1px solid var(--m-border); display: grid; gap: 3px }
+.m-change .m-title { font-family: var(--f-ui); font-size: 14.5px }
+.m-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px }
+.m-bottom { border-top: 1px solid var(--m-border); padding-top: 12px; color: var(--m-muted); font-size: 13.5px; margin: 0 }
+
+/* Team room */
+.m-team { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 22px; align-items: start }
+@media (max-width: 900px) { .m-team { grid-template-columns: minmax(0, 1fr) } }
+.m-decision { background: var(--m-raised); border: 1px solid var(--m-border); border-radius: var(--s-radius-lg); padding: 20px 22px; display: grid; gap: 14px }
+.m-decision h4 { font-family: var(--f-head); font-size: 24px; font-weight: 600; line-height: 1.2; margin: 0; text-wrap: balance }
+.m-avatars { display: flex; flex-wrap: wrap; align-items: center; gap: 6px }
+.m-av { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--m-soft); color: var(--m-text); font-size: 11px; font-weight: 600 }
+.m-tally { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--m-chip) }
+.m-tally i { display: block }
+.m-statement { display: grid; gap: 2px }
+.m-statement span:first-child { font-size: 12.5px; color: var(--m-muted) }
+.m-statement strong { font-size: 15px }
+.m-vote { border-top: 1px solid var(--m-border); padding-top: 14px; display: grid; gap: 8px }
+.m-vote-opts { display: flex; flex-wrap: wrap; gap: 7px }
+.m-vote-opts button { padding: 7px 14px; background: var(--m-surface); border: 1px solid var(--m-border-strong); border-radius: var(--s-radius); cursor: pointer; font-weight: 600 }
+.m-vote-opts button[aria-pressed="true"] { background: var(--m-accent); border-color: var(--m-accent); color: var(--m-on-accent) }
+.m-vote-opts button:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 2px }
+.m-teamside { display: grid; gap: 18px; align-content: start }
+.m-thread { border-left: 2px solid var(--m-border-strong); padding-left: 14px; display: grid; gap: 12px }
+.m-thread div { display: grid; gap: 2px }
+
+/* Appearance: the proposed picker */
+.m-section { display: grid; gap: 10px; border: 1px solid var(--m-border); border-radius: var(--s-radius-lg); background: var(--m-surface); padding: 16px 18px }
+.m-section p { margin: 0; color: var(--m-muted); font-size: 13.5px }
+.m-modes { display: inline-flex; border: 1px solid var(--m-border-strong); border-radius: var(--s-radius); overflow: hidden; justify-self: start }
+.m-modes button { border: 0; background: transparent; padding: 7px 14px; cursor: pointer; font-weight: 600 }
+.m-modes button + button { border-left: 1px solid var(--m-border-strong) }
+.m-modes button[aria-pressed="true"] { background: var(--m-nav-on); color: var(--m-nav-on-fg) }
+.m-modes button:focus-visible { outline: 2px solid var(--m-accent); outline-offset: -2px }
+.m-themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px }
+.m-tcard { display: grid; gap: 6px; align-content: start; text-align: left; border: 1px solid var(--m-border); border-radius: var(--s-radius-lg); background: var(--m-raised); padding: 8px 8px 10px; cursor: pointer }
+.m-tcard[aria-pressed="true"] { border-color: var(--m-accent); box-shadow: 0 0 0 2px var(--m-accent) }
+.m-tcard:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 2px }
+.m-tcard b { font-size: 14px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap }
+.m-tcard > span:not(.m-mini) { font-size: 12.5px; color: var(--m-muted); line-height: 1.35 }
+.m-mini { display: grid; grid-template-columns: 30% 1fr; height: 62px; border-radius: 6px; overflow: hidden; box-shadow: inset 0 0 0 1px rgb(127 127 127 / 0.25) }
+.m-mini > i { display: grid; align-content: start; gap: 4px; padding: 7px 5px }
+.m-mini > em { display: grid; align-content: start; gap: 5px; padding: 8px; font-style: normal }
+.m-mini u { display: block; height: 5px; border-radius: 2px; text-decoration: none }
+.m-tcard.add { border-style: dashed; cursor: default; background: transparent }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="intro">
+    <h1>FloorVote themes</h1>
+    <p>Eight looks for FloorVote, each a set of colors, typefaces, and measures that a team or a person could pick, plus three layouts that work with any of them. The District theme shows how a state could ship its own flag and colors. Bill titles are real youth justice bills from DC, Maryland, and Virginia, and Maryland's hearing dates are real. Statuses, other dates, votes, names, and comments are sample data for Tuesday, February 3, 2026.</p>
+  </header>
+
+  <div class="controls" role="group" aria-label="What the mock shows">
+    <div class="ctl-row"><span class="ctl">Theme <span class="seg" data-ctl="theme" id="theme-seg"></span></span></div>
+    <div class="ctl-row">
+      <span class="ctl">Mode <span class="seg" data-ctl="mode"><button type="button" data-v="system">System</button><button type="button" data-v="light">Light</button><button type="button" data-v="dark">Dark</button></span></span>
+      <span class="ctl">Screen <span class="seg" data-ctl="screen"><button type="button" data-v="briefing">Briefing</button><button type="button" data-v="bills">Bills</button><button type="button" data-v="feed">Feed</button><button type="button" data-v="calendar">Calendar</button><button type="button" data-v="team">Team</button><button type="button" data-v="appearance">Appearance</button></span></span>
+      <span class="ctl" id="ctl-bills">Bills layout <span class="seg" data-ctl="billsLayout"><button type="button" data-v="list">List</button><button type="button" data-v="split">Split pane</button></span></span>
+      <span class="ctl" id="ctl-briefing">Briefing layout <span class="seg" data-ctl="briefLayout"><button type="button" data-v="sections">Sections</button><button type="button" data-v="lead">Lead story</button></span></span>
+    </div>
+  </div>
+
+  <div id="stage" style="scroll-margin-top: 150px"></div>
+
+  <div class="panel">
+    <div class="card about" id="about"></div>
+    <div class="card"><strong>A theme is data</strong><p>Each theme is one small file: about 30 named colors for light and dark, up to six typefaces, a few measures (corner radius, row spacing, density), and an optional flag. The picker swaps these values. It never changes what a screen shows or where things sit.</p></div>
+    <div class="card"><strong>Who picks</strong><p>An admin sets the team's default theme. Each person can keep it or choose their own, and separately choose System, Light, or Dark. The Appearance screen above sketches the setting.</p></div>
+    <div class="card"><strong>Layouts are separate</strong><p>Three of these themes were first proposed together with a new layout. Here they come apart: the split pane, the lead story, and the team room are product decisions to test on their own, and every theme can dress them.</p></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  // ---------- Themes ----------
+  // Each theme: colors for light and dark, typefaces by role, and measures. The keys are the proposed theme contract.
+  const THEMES = [
+    { id: 'today', name: 'Today', group: 'FloorVote', origin: 'FloorVote as it ships now, with a straight dark translation.', blurb: 'Navy badges, honey accent, Source Serif titles.',
+      fonts: { ui: 'Inter', brand: 'Archivo', head: 'Inter', title: 'Source Serif 4', list: 'Source Serif 4', num: 'Inter' },
+      shape: { radius: '6px', radiusLg: '10px', rowpad: '12px 16px', numcol: '124px', title: '15px', h1: '24px', h1w: 600, numtrack: '0' }, density: 'regular', badge: true,
+      light: { bg: '#f5f8fc', side: '#ffffff', sideFg: '#374151', sideMuted: '#8a94a5', surface: '#ffffff', raised: '#ffffff', border: '#e2e8f0', borderStrong: '#cbd5e1', chip: '#ecf0f6', soft: '#eff6ff', band: '#f8fafc', text: '#0f172a', text2: '#374151', muted: '#667386', accent: '#e8a33d', mark: '#e8a33d', navOn: '#fef3c7', navOnFg: '#1e3a5f', link: '#2563eb', attn: '#e8a33d', deadline: '#92400e', priHigh: '#850028', priMed: '#be2342', priLow: '#a2626b', numFg: '#ffffff', numBg: '#1e3a5f', support: '#16a34a', oppose: '#dc2626', onAccent: '#1e3a5f' },
+      dark: { bg: '#0d131c', side: '#111925', sideFg: '#c3ccd9', sideMuted: '#6f7b8d', surface: '#151e2b', raised: '#182232', border: '#243042', borderStrong: '#33425a', chip: '#1d2838', soft: '#16233a', band: '#18212f', text: '#e8edf4', text2: '#c3ccd9', muted: '#8d99ab', accent: '#f0b459', mark: '#f0b459', navOn: '#2a2214', navOnFg: '#f6d79f', link: '#7fb0ff', attn: '#f0b459', deadline: '#f2b866', priHigh: '#ff5c86', priMed: '#f0788f', priLow: '#b98189', numFg: '#eaf2ff', numBg: '#2b4a72', support: '#3fcf73', oppose: '#f26363', onAccent: '#1b1407' } },
+    { id: 'chamber', name: 'Chamber', group: 'FloorVote', origin: 'Marble and ink with restrained brass.', blurb: 'Public Sans lists, Newsreader headings, brass edges.',
+      fonts: { ui: 'Public Sans', brand: 'Public Sans', head: 'Newsreader', title: 'Newsreader', list: 'Public Sans', num: 'Public Sans' },
+      shape: { radius: '4px', radiusLg: '8px', rowpad: '13px 16px', numcol: '124px', title: '14.5px', h1: '27px', h1w: 500, numtrack: '0.02em' }, density: 'regular',
+      light: { bg: '#eceeec', side: '#e3e6e4', sideFg: '#344052', sideMuted: '#7c8693', surface: '#fbfbfa', raised: '#ffffff', border: '#d5dad7', borderStrong: '#b9c1bd', chip: '#e2e6e3', soft: '#f1ece0', band: '#f4f5f3', text: '#142033', text2: '#344052', muted: '#5a6574', accent: '#a8792a', mark: '#a8792a', navOn: '#142033', navOnFg: '#f6f1e4', link: '#1f4d8a', attn: '#a8792a', deadline: '#8a3b12', priHigh: '#7a1f2b', priMed: '#5a6574', priLow: '#7f8893', numFg: '#142033', numBg: 'transparent', support: '#2f6b45', oppose: '#9b2c2c', onAccent: '#ffffff' },
+      dark: { bg: '#0c1424', side: '#09111f', sideFg: '#c9d1dd', sideMuted: '#6c7890', surface: '#121d30', raised: '#16233a', border: '#23314b', borderStrong: '#35476b', chip: '#1b2841', soft: '#1f2a3c', band: '#15213a', text: '#eef1f5', text2: '#c9d1dd', muted: '#929eb2', accent: '#d4a85a', mark: '#d4a85a', navOn: '#d4a85a', navOnFg: '#0c1424', link: '#9dbbe6', attn: '#d4a85a', deadline: '#f0a77c', priHigh: '#ee7b88', priMed: '#aab4c4', priLow: '#8591a7', numFg: '#e8c98a', numBg: 'transparent', support: '#6fcf97', oppose: '#f08a8a', onAccent: '#0c1424' } },
+    { id: 'docket', name: 'Docket', group: 'FloorVote', origin: "The clerk's ledger, compact.", blurb: 'Archivo, mono bill numbers, green-bar rows.',
+      fonts: { ui: 'Archivo', brand: 'Archivo Narrow', head: 'Archivo Narrow', title: 'Archivo', list: 'Archivo', num: 'IBM Plex Mono' },
+      shape: { radius: '2px', radiusLg: '4px', rowpad: '8px 14px', numcol: '122px', title: '14px', h1: '26px', h1w: 700, numtrack: '0' }, density: 'compact',
+      light: { bg: '#f2f4ef', side: '#e8ece3', sideFg: '#38433a', sideMuted: '#7a8578', surface: '#fbfcf8', raised: '#fbfcf8', border: '#d8ded1', borderStrong: '#bac3b1', chip: '#e3e8dc', soft: '#e3ece0', band: '#e7f0e3', text: '#1c231b', text2: '#38433a', muted: '#5c685b', accent: '#c2412d', mark: '#c2412d', navOn: '#1c231b', navOnFg: '#fbfcf8', link: '#24595b', attn: '#c2412d', deadline: '#a83623', priHigh: '#a83623', priMed: '#5c685b', priLow: '#7b8573', numFg: '#1c231b', numBg: 'transparent', support: '#2e6b3a', oppose: '#a83623', onAccent: '#ffffff' },
+      dark: { bg: '#121713', side: '#0e120f', sideFg: '#c5cdbe', sideMuted: '#6c7769', surface: '#161c17', raised: '#1a211b', border: '#283129', borderStrong: '#3b463c', chip: '#212922', soft: '#1f2a20', band: '#19251b', text: '#e8ede3', text2: '#c5cdbe', muted: '#909b8c', accent: '#ff7a5c', mark: '#ff7a5c', navOn: '#e8ede3', navOnFg: '#121713', link: '#7cc2c0', attn: '#ff7a5c', deadline: '#ff9a80', priHigh: '#ff8a6f', priMed: '#a8b2a4', priLow: '#7f8a7c', numFg: '#e8ede3', numBg: 'transparent', support: '#7fd18f', oppose: '#ff8a6f', onAccent: '#121713' } },
+    { id: 'signal', name: 'Signal', group: 'FloorVote', origin: 'Readability first, with quiet tags.', blurb: 'Atkinson Hyperlegible, larger text, rounder shapes.',
+      fonts: { ui: 'Atkinson Hyperlegible', brand: 'Atkinson Hyperlegible', head: 'Atkinson Hyperlegible', title: 'Atkinson Hyperlegible', list: 'Atkinson Hyperlegible', num: 'Atkinson Hyperlegible' },
+      shape: { radius: '10px', radiusLg: '14px', rowpad: '14px 16px', numcol: '124px', title: '15.5px', h1: '26px', h1w: 700, numtrack: '0' }, density: 'regular', badge: true,
+      light: { bg: '#ffffff', side: '#f6f7f9', sideFg: '#2c323c', sideMuted: '#858c97', surface: '#ffffff', raised: '#ffffff', border: '#e3e6eb', borderStrong: '#c9ced6', chip: '#eef0f3', soft: '#e2ecfb', band: '#f8f9fb', text: '#101318', text2: '#2c323c', muted: '#59616e', accent: '#0b57d0', mark: '#0b57d0', navOn: '#101318', navOnFg: '#ffffff', link: '#0b57d0', attn: '#0b57d0', deadline: '#9a4b00', priHigh: '#101318', priMed: '#59616e', priLow: '#7c8491', numFg: '#101318', numBg: '#eef0f3', support: '#1e7f45', oppose: '#b3261e', onAccent: '#ffffff' },
+      dark: { bg: '#161a21', side: '#1b2028', sideFg: '#d3d8df', sideMuted: '#747c88', surface: '#1f252e', raised: '#232a34', border: '#2e3541', borderStrong: '#48505c', chip: '#262c35', soft: '#16233b', band: '#222832', text: '#f4f6f8', text2: '#d3d8df', muted: '#9aa2ae', accent: '#8ab4ff', mark: '#8ab4ff', navOn: '#f4f6f8', navOnFg: '#161a21', link: '#8ab4ff', attn: '#8ab4ff', deadline: '#ffb870', priHigh: '#f4f6f8', priMed: '#9aa2ae', priLow: '#7d8591', numFg: '#f4f6f8', numBg: '#2c333d', support: '#5fd08a', oppose: '#ff8a80', onAccent: '#161a21' } },
+    { id: 'dispatch', name: 'Dispatch', group: 'FloorVote', origin: 'An editorial briefing in plum, paper, and ink.', blurb: 'Literata headings, IBM Plex controls, a plum top rule.', pairs: { screen: 'briefing', briefLayout: 'lead' }, pairLabel: 'the lead story briefing', top: 'rule',
+      fonts: { ui: 'IBM Plex Sans', brand: 'IBM Plex Sans', head: 'Literata', title: 'Literata', list: 'IBM Plex Sans', num: 'IBM Plex Mono' },
+      shape: { radius: '4px', radiusLg: '6px', rowpad: '13px 16px', numcol: '124px', title: '14.5px', h1: '30px', h1w: 500, numtrack: '0' }, density: 'regular',
+      light: { bg: '#faf8fa', side: '#faf8fa', sideFg: '#463a48', sideMuted: '#9a8e9c', surface: '#ffffff', raised: '#ffffff', border: '#e2d9e2', borderStrong: '#cbbccb', chip: '#ede3ed', soft: '#ede3ed', band: '#f6f1f6', text: '#281d2a', text2: '#463a48', muted: '#6e6170', accent: '#6d3758', mark: '#6d3758', navOn: '#6d3758', navOnFg: '#faf8fa', link: '#6d3758', attn: '#6d3758', deadline: '#8a2f3f', priHigh: '#6d3758', priMed: '#6e6170', priLow: '#8f8291', numFg: '#281d2a', numBg: 'transparent', support: '#2f6b4a', oppose: '#a3324a', onAccent: '#faf8fa' },
+      dark: { bg: '#19171c', side: '#19171c', sideFg: '#e2d6e1', sideMuted: '#7f7182', surface: '#211e25', raised: '#261f2a', border: '#463747', borderStrong: '#5c4a5e', chip: '#38283b', soft: '#38283b', band: '#241f28', text: '#f5eaf4', text2: '#e2d6e1', muted: '#b9aabc', accent: '#e5a5c8', mark: '#e5a5c8', navOn: '#e5a5c8', navOnFg: '#19171c', link: '#e5a5c8', attn: '#e5a5c8', deadline: '#ffb3a8', priHigh: '#e5a5c8', priMed: '#b9aabc', priLow: '#958898', numFg: '#f5eaf4', numBg: 'transparent', support: '#8fd6a8', oppose: '#ff9fb0', onAccent: '#19171c' } },
+    { id: 'workbench', name: 'Workbench', group: 'FloorVote', origin: 'A legislative instrument in petrol and graphite.', blurb: 'IBM Plex throughout, a graphite rail, compact rows.', pairs: { screen: 'bills', billsLayout: 'split' }, pairLabel: 'the split pane',
+      fonts: { ui: 'IBM Plex Sans', brand: 'IBM Plex Sans', head: 'IBM Plex Sans', title: 'IBM Plex Sans', list: 'IBM Plex Sans', num: 'IBM Plex Mono' },
+      shape: { radius: '3px', radiusLg: '6px', rowpad: '9px 14px', numcol: '122px', title: '14px', h1: '25px', h1w: 600, numtrack: '0' }, density: 'compact',
+      light: { bg: '#edf1f1', side: '#172c30', sideFg: '#dce8e9', sideMuted: '#7f9597', surface: '#ffffff', raised: '#ffffff', border: '#cfdcdd', borderStrong: '#b3c6c8', chip: '#dceded', soft: '#dceded', band: '#f3f7f7', text: '#172c30', text2: '#2f4649', muted: '#596f72', accent: '#006d72', mark: '#70d1d3', navOn: '#edf1f1', navOnFg: '#172c30', link: '#006d72', attn: '#006d72', deadline: '#9a3d12', priHigh: '#9b2335', priMed: '#596f72', priLow: '#7d9396', numFg: '#172c30', numBg: 'transparent', support: '#1f7a4d', oppose: '#b3322f', onAccent: '#ffffff' },
+      dark: { bg: '#141c1e', side: '#0d1416', sideFg: '#cfe0e2', sideMuted: '#6b8285', surface: '#1c2628', raised: '#1c2628', border: '#36484b', borderStrong: '#4a6064', chip: '#243c3e', soft: '#243c3e', band: '#202c2e', text: '#e8f1f2', text2: '#c8d8da', muted: '#a1b7ba', accent: '#70d1d3', mark: '#70d1d3', navOn: '#70d1d3', navOnFg: '#0d1416', link: '#70d1d3', attn: '#70d1d3', deadline: '#ffb08a', priHigh: '#ff8f9c', priMed: '#a1b7ba', priLow: '#7f9598', numFg: '#e8f1f2', numBg: 'transparent', support: '#6fd49c', oppose: '#ff8a80', onAccent: '#0d1416' } },
+    { id: 'coalition', name: 'Coalition', group: 'FloorVote', origin: 'A shared team room in indigo and periwinkle.', blurb: 'Manrope, softer surfaces, rounded decision cards.', pairs: { screen: 'team' }, pairLabel: 'the team room',
+      fonts: { ui: 'Manrope', brand: 'Manrope', head: 'Manrope', title: 'Manrope', list: 'Manrope', num: 'IBM Plex Mono' },
+      shape: { radius: '8px', radiusLg: '16px', rowpad: '13px 16px', numcol: '124px', title: '14.5px', h1: '26px', h1w: 700, numtrack: '0' }, density: 'regular',
+      light: { bg: '#f3f4fb', side: '#ffffff', sideFg: '#3a426a', sideMuted: '#8e97b5', surface: '#ffffff', raised: '#ffffff', border: '#d9def1', borderStrong: '#bcc4e3', chip: '#e7eafa', soft: '#e7eafa', band: '#f7f8fd', text: '#20274b', text2: '#3a426a', muted: '#647092', accent: '#394eb5', mark: '#394eb5', navOn: '#394eb5', navOnFg: '#ffffff', link: '#394eb5', attn: '#394eb5', deadline: '#9a3412', priHigh: '#9f1d4a', priMed: '#647092', priLow: '#838cab', numFg: '#20274b', numBg: 'transparent', support: '#1f7a4d', oppose: '#b4233b', onAccent: '#ffffff' },
+      dark: { bg: '#191d31', side: '#1d2239', sideFg: '#d6dbf5', sideMuted: '#7a84a8', surface: '#232840', raised: '#232840', border: '#414b70', borderStrong: '#56618c', chip: '#323c66', soft: '#323c66', band: '#272d48', text: '#edf0ff', text2: '#d6dbf5', muted: '#abb5d7', accent: '#b2bcff', mark: '#b2bcff', navOn: '#b2bcff', navOnFg: '#191d31', link: '#b2bcff', attn: '#b2bcff', deadline: '#ffb38a', priHigh: '#ff9ec0', priMed: '#abb5d7', priLow: '#8c96ba', numFg: '#edf0ff', numBg: 'transparent', support: '#7fdcaa', oppose: '#ff9aa8', onAccent: '#191d31' } },
+    { id: 'district', name: 'District', group: 'Jurisdictions', origin: "The District of Columbia's flag: white, two red bars, three red stars.", blurb: 'Flag red on white, Libre Franklin, the bars across the top.', top: 'bars', emblem: 'dc',
+      fonts: { ui: 'Libre Franklin', brand: 'Libre Franklin', head: 'Libre Franklin', title: 'Libre Franklin', list: 'Libre Franklin', num: 'Libre Franklin' },
+      shape: { radius: '3px', radiusLg: '6px', rowpad: '13px 16px', numcol: '124px', title: '14.5px', h1: '26px', h1w: 800, numtrack: '0.01em' }, density: 'regular',
+      light: { bg: '#f4f5f6', side: '#ffffff', sideFg: '#2b2e35', sideMuted: '#8a8f98', surface: '#ffffff', raised: '#ffffff', border: '#dfe1e5', borderStrong: '#c4c8ce', chip: '#eceef1', soft: '#fbe9ec', band: '#f8f9fa', text: '#16181d', text2: '#2b2e35', muted: '#5d626b', accent: '#c8102e', mark: '#c8102e', navOn: '#c8102e', navOnFg: '#ffffff', link: '#26466f', attn: '#c8102e', deadline: '#9c1c1c', priHigh: '#a50d26', priMed: '#5d626b', priLow: '#7f858f', numFg: '#16181d', numBg: 'transparent', support: '#23744a', oppose: '#a50d26', onAccent: '#ffffff' },
+      dark: { bg: '#121316', side: '#0e0f12', sideFg: '#d9dce1', sideMuted: '#6f747c', surface: '#1b1d21', raised: '#1f2126', border: '#2d3036', borderStrong: '#43474f', chip: '#26292e', soft: '#3a1a20', band: '#202227', text: '#f2f3f5', text2: '#d9dce1', muted: '#9ea3ab', accent: '#ff5c70', mark: '#ff5c70', navOn: '#c8102e', navOnFg: '#ffffff', link: '#9dbbe6', attn: '#ff5c70', deadline: '#ff9c8a', priHigh: '#ff7a8a', priMed: '#9ea3ab', priLow: '#80858d', numFg: '#f2f3f5', numBg: 'transparent', support: '#6fd49c', oppose: '#ff7a8a', onAccent: '#ffffff' } },
+  ];
+  const byId = Object.fromEntries(THEMES.map(t => [t.id, t]));
+  const STACK = f => /Serif|Newsreader|Literata/.test(f) ? `'${f}', Georgia, serif` : /Mono/.test(f) ? `'${f}', ui-monospace, monospace` : `'${f}', -apple-system, 'Segoe UI', sans-serif`;
+  const kebab = s => s.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
+
+  // The District flag: white field, two red bars, three red stars. A flag keeps its own colors in both modes.
+  function star(cx, cy, r) {
+    const pts = [];
+    for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.382 : r; pts.push((cx + rr * Math.cos(a)).toFixed(2) + ',' + (cy + rr * Math.sin(a)).toFixed(2)) }
+    return '<polygon points="' + pts.join(' ') + '"/>';
+  }
+  const flag = (w, h) => '<svg class="m-flag" style="width:' + w + 'px;height:' + h + 'px" viewBox="0 0 100 50" role="img" aria-label="Flag of the District of Columbia"><rect width="100" height="50" fill="#fff"/><g fill="#c8102e">' + star(29, 12.5, 6.8) + star(50, 12.5, 6.8) + star(71, 12.5, 6.8) + '<rect y="23.5" width="100" height="9"/><rect y="37" width="100" height="9"/></g></svg>';
+
+  // ---------- The day's material ----------
+  const TODAY = '2026-02-03';
+  const B = [
+    { num: 'B26-0400', st: 'DC', title: 'Statutory Neglect Amendment Act of 2025', stage: 'Under Mayoral review', next: { k: 'deadline', d: '2026-02-10', t: '', label: "Mayor's response due" }, pri: 'high', rel: 9, chg: { d: '2026-02-02', what: 'Transmitted to the Mayor' } },
+    { num: 'REPROG26-0153', st: 'DC', title: 'FY 2026 Reprogramming Request for $750,000.00 of Local Funds within the Department of Youth Rehabilitation Services', stage: 'Under Council review', next: { k: 'deadline', d: '2026-02-09', t: '', label: 'Review period ends' }, pri: 'high', rel: 8, chg: { d: '2026-02-02', what: 'Filed with the Council' } },
+    { num: 'HN26-0171', st: 'DC', title: "Public Oversight Roundtable on Department of Behavioral Health's Financial Challenges", stage: 'Hearing notice', next: { k: 'hearing', d: '2026-02-05', t: '11 a.m.', label: 'Committee on Health roundtable' }, pri: 'medium', rel: 7 },
+    { num: 'PR26-0808', st: 'DC', title: 'Citizen Review Panel Elizabeth Mohler Reappointment and Redesignation Resolution of 2026', stage: 'Under Council review', next: { k: 'vote', d: '2026-02-17', t: '11 a.m.', label: 'Legislative meeting' }, pri: 'low', rel: 5 },
+    { num: 'B26-0001', st: 'DC', title: 'Rent Stabilized Housing Inflation Protection Continuation Emergency Amendment Act of 2025', stage: 'Enacted', next: null, pri: null, rel: 3 },
+    { num: 'B26-0769', st: 'DC', title: 'Soccer Stadium Redevelopment and Maintenance Act of 2026', stage: 'In committee: Committee of the Whole', next: null, pri: null, rel: 2 },
+    { num: 'HB409', st: 'MD', title: 'Juvenile Court – Jurisdiction (Youth Charging Reform Act)', stage: 'In committee: House Judiciary', next: { k: 'hearing', d: '2026-02-12', t: '1 p.m.', label: 'House Judiciary hearing' }, pri: 'high', rel: 10 },
+    { num: 'HB389', st: 'MD', title: 'Juveniles – Detention and Confinement – Limitations on Juvenile Contact With Incarcerated Adults', stage: 'In committee: House Judiciary', next: { k: 'hearing', d: '2026-02-05', t: '1 p.m.', label: 'House Judiciary hearing' }, pri: 'high', rel: 9, chg: { d: '2026-02-02', what: 'Hearing scheduled' } },
+    { num: 'HB449', st: 'MD', title: 'Juvenile Justice Restoration Act', stage: 'In committee: House Judiciary', next: { k: 'hearing', d: '2026-02-12', t: '1 p.m.', label: 'House Judiciary hearing' }, pri: 'high', rel: 9 },
+    { num: 'HB475', st: 'MD', title: 'Department of Juvenile Services – Employees – Prohibited Convictions (Juvenile Offender Protection Act)', stage: 'In committee: House Judiciary', next: { k: 'hearing', d: '2026-02-12', t: '1 p.m.', label: 'House Judiciary hearing' }, pri: 'medium', rel: 7 },
+    { num: 'HB12', st: 'MD', title: 'Juvenile Sex Offender Registry – Qualifying Offenses and Access', stage: 'Heard in House Judiciary, awaiting a vote', next: null, pri: 'medium', rel: 8, chg: { d: '2026-01-29', what: 'Heard in House Judiciary' } },
+    { num: 'HB309', st: 'MD', title: 'Judicial Facilities – Stops, Detentions, and Arrests – Limitations', stage: 'In committee: House Judiciary', next: { k: 'hearing', d: '2026-02-04', t: '1 p.m.', label: 'House Judiciary hearing' }, pri: 'low', rel: 6 },
+    { num: 'HB396', st: 'MD', title: 'Residential Child Care Programs – Education of Children and Training of Child and Youth Care Practitioners', stage: 'In committee', next: { k: 'hearing', d: '2026-02-11', t: '2 p.m.', label: 'House hearing' }, pri: 'medium', rel: 7 },
+    { num: 'HB468', st: 'MD', title: 'Health and Taxation – Digital Social Media Services and the Mental Health Care Fund for Children and Youth', stage: 'In committee', next: { k: 'hearing', d: '2026-02-12', t: '1 p.m.', label: 'House hearing' }, pri: 'low', rel: 5 },
+    { num: 'HB91', st: 'VA', title: 'Minors; limiting room or cell confinement in a juvenile correctional facility, report.', stage: 'Passed the House', next: { k: 'hearing', d: '2026-02-06', t: '8:30 a.m.', label: 'Senate Rehabilitation and Social Services docket' }, pri: 'high', rel: 10, chg: { d: '2026-02-02', what: 'Passed the House, 64–34' } },
+    { num: 'HB318', st: 'VA', title: 'Virginia Parole Board; powers and duties, juvenile offenders, parole procedures and considerations.', stage: 'In committee: House Courts of Justice', next: { k: 'hearing', d: '2026-02-09', t: '4 p.m.', label: 'House Courts of Justice docket' }, pri: 'high', rel: 9 },
+    { num: 'HB191', st: 'VA', title: 'Victims of sex trafficking; immunity for minors to arrest or prosecution for prostitution.', stage: 'Passed the House', next: null, pri: 'medium', rel: 8, chg: { d: '2026-01-30', what: 'Passed the House' } },
+    { num: 'HB73', st: 'VA', title: 'Juvenile and domestic relations district courts; petitions for relief of care and custody.', stage: 'Passed the House', next: null, pri: 'low', rel: 6 },
+    { num: 'HB667', st: 'VA', title: 'Juvenile/domestic rel. district cts.; petition, noncitizen aged 18–21 years for legal custody.', stage: 'In committee: House Courts of Justice', next: null, pri: 'low', rel: 6 },
+    { num: 'HB117', st: 'VA', title: 'Youth, Virginia Commission on; nonlegislative citizen member, person younger than 18 years of age.', stage: 'Failed in committee', next: null, pri: null, rel: 4, chg: { d: '2026-01-30', what: 'Left in House Rules' } },
+  ];
+  const FEED = [
+    { d: '2026-02-03', t: '9:12 a.m.', who: 'Dana', what: 'commented on', num: 'HB389', quote: "Written testimony is due before Thursday's hearing. I'll draft it; Marcus, can you pull the DJS numbers on youth held in adult facilities?" },
+    { d: '2026-02-03', t: '8:40 a.m.', what: 'New match', num: 'HB475', note: 'Matched your keywords: juvenile services, prohibited convictions.' },
+    { d: '2026-02-02', t: '6:05 p.m.', what: 'Status changed', num: 'HB91', note: 'Passed the House, 64–34. Next: Senate Rehabilitation and Social Services.' },
+    { d: '2026-02-02', t: '4:30 p.m.', what: 'Status changed', num: 'B26-0400', note: "Transmitted to the Mayor. The Mayor's response is due February 10." },
+    { d: '2026-02-02', t: '2:15 p.m.', who: 'Marcus', what: 'set high priority on', num: 'REPROG26-0153', note: 'Moves $750,000 within DYRS. The review period ends February 9.' },
+    { d: '2026-02-02', t: '11:00 a.m.', what: 'Hearing scheduled', num: 'HB389', note: 'House Judiciary, Thursday, February 5 at 1 p.m.' },
+    { d: '2026-01-30', t: '3:48 p.m.', what: 'Status changed', num: 'HB117', note: 'Left in House Rules.' },
+  ];
+  const TEAM = { num: 'HB409', voted: ['DA', 'MR', 'JL', 'KT', 'SO', 'AP', 'RB', 'NW'], members: 11, support: 6, oppose: 1, neutral: 1,
+    thread: [{ who: 'Keisha', when: 'Yesterday', text: 'The jurisdiction change is the core of our platform. I think we support, with testimony.' }, { who: 'Ray', when: 'This morning', text: "I'm the one oppose for now. I want to see the fiscal note before we commit." }],
+    awaiting: ['HB389', 'REPROG26-0153', 'HB91'] };
+
+  // ---------- Helpers ----------
+  const byNum = Object.fromEntries(B.map(b => [b.num, b]));
+  const days = s => Math.round((Date.parse(s) - Date.parse(TODAY)) / 86400000);
+  const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const MON = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const dt = s => new Date(s + 'T12:00:00');
+  const short = s => { const d = dt(s); return DOW[d.getDay()].slice(0, 3) + ', ' + MON[d.getMonth()].slice(0, 3) + ' ' + d.getDate() };
+  const longDay = s => { const d = dt(s); return MON[d.getMonth()] + ' ' + d.getDate() };
+  const when = s => { const n = days(s); return n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : n === -1 ? 'Yesterday' : short(s) };
+  const attention = b => !!(b.pri && b.pri !== 'low' && b.next && days(b.next.d) >= 0 && days(b.next.d) <= 7);
+  const upcoming = (b, n) => b.next && days(b.next.d) >= 0 && days(b.next.d) <= n;
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const PRI = { high: 'High priority', medium: 'Medium priority', low: 'Low priority' };
+  const PRI_SHORT = { high: 'High', medium: 'Medium', low: 'Low' };
+  const ORDER = { high: 0, medium: 1, low: 2 };
+  const STATE_NAME = { DC: 'District of Columbia', MD: 'Maryland', VA: 'Virginia' };
+  const ranked = () => [...B].sort((a, b) => (attention(b) - attention(a)) || ((ORDER[a.pri] ?? 3) - (ORDER[b.pri] ?? 3)) || (b.rel - a.rel));
+  const num = b => '<span class="m-num' + (theme().badge ? ' badge' : '') + '">' + esc(b.num) + '</span>';
+  const nextText = n => n.k === 'deadline' ? n.label + ' ' + when(n.d) : n.label + ', ' + when(n.d) + (n.t ? ' at ' + n.t : '');
+  const nextLine = b => b.next ? '<span class="m-next' + (b.next.k === 'deadline' ? ' deadline' : '') + '">' + esc(nextText(b.next)) + '</span>' : '';
+  const priRel = b => (b.pri ? '<span class="m-pri ' + b.pri + '">' + PRI[b.pri] + '</span>' : '') + '<span class="m-rel">Relevance ' + b.rel + '/10</span>';
+
+  function row(b) {
+    return '<div class="m-row' + (attention(b) ? ' attn' : '') + '"><div>' + num(b) + '<span class="m-jur">' + b.st + '</span></div>' +
+      '<div class="m-body"><span class="m-title">' + esc(b.title) + '</span><span class="m-stage">' + esc(b.stage) + '</span>' + nextLine(b) + '</div><div class="m-side-col">' + priRel(b) + '</div></div>';
+  }
+  const list = arr => '<div class="m-list">' + (arr.length ? arr.map(row).join('') : '<p class="m-empty">Nothing here today.</p>') + '</div>';
+  const top = (h, sub) => '<div class="m-top"><h3 class="m-h1">' + h + '</h3><span class="m-sub">' + sub + '</span></div>';
+
+  // ---------- Screens ----------
+  const SCREENS = {
+    bills() {
+      if (state.billsLayout === 'split') {
+        const sorted = ranked();
+        const sel = byNum[state.selected] || sorted[0];
+        const pick = b => '<button type="button" class="m-pick' + (attention(b) ? ' attn' : '') + '" data-pick="' + esc(b.num) + '" aria-pressed="' + (b === sel) + '">' +
+          '<span class="m-pick-top"><span>' + num(b) + ' <span class="m-meta">' + b.st + '</span></span>' + (b.pri ? '<span class="m-pri ' + b.pri + '">' + PRI_SHORT[b.pri] + '</span>' : '') + '</span>' +
+          '<span class="m-title">' + esc(b.title) + '</span><span class="m-stage">' + esc(b.stage) + '</span></button>';
+        const comment = FEED.find(f => f.num === sel.num && f.quote);
+        const insp = '<article class="m-inspector" aria-live="polite"><div class="m-inline">' + num(sel) + '<span class="m-meta">' + STATE_NAME[sel.st] + '</span></div>' +
+          '<h4>' + esc(sel.title) + '</h4><div class="m-body"><span class="m-stage">' + esc(sel.stage) + '</span>' + nextLine(sel) + '</div>' +
+          '<dl class="m-dl"><dt>Team priority</dt><dd>' + (sel.pri ? PRI_SHORT[sel.pri] : 'Not set') + '</dd><dt>Relevance</dt><dd>' + sel.rel + '/10</dd>' +
+          '<dt>Latest change</dt><dd>' + (sel.chg ? esc(sel.chg.what) + ', ' + when(sel.chg.d) : 'None this week') + '</dd><dt>Needs attention</dt><dd>' + (attention(sel) ? 'Yes: ' + esc(nextText(sel.next)) : 'No') + '</dd></dl>' +
+          '<details class="m-details"' + (comment ? ' open' : '') + '><summary>Team notes</summary><p>' + (comment ? '<b>' + comment.who + ':</b> ' + esc(comment.quote) : 'No notes yet.') + '</p></details>' +
+          '<span class="m-meta">The full bill page keeps its own address. Choose another bill to inspect it here.</span></article>';
+        return top('Bills', '20 tracked. Choose a bill to inspect it without leaving the list.') + '<div class="m-split"><div class="m-picklist" role="group" aria-label="Bills">' + sorted.map(pick).join('') + '</div>' + insp + '</div>';
+      }
+      return top('Bills', '20 tracked in DC, Maryland, and Virginia. Needs attention first, then by priority.') + list(ranked());
+    },
+    briefing() {
+      const attn = B.filter(attention).sort((a, b) => (ORDER[a.pri] - ORDER[b.pri]) || a.next.d.localeCompare(b.next.d));
+      const changed = B.filter(b => b.chg && days(b.chg.d) >= -4).sort((a, b) => b.chg.d.localeCompare(a.chg.d));
+      if (state.briefLayout === 'lead') {
+        const lead = attn[0];
+        const note = FEED.find(f => f.num === lead.num && f.quote);
+        const rest = [...attn.slice(1), ...changed.filter(b => !attention(b))];
+        const change = b => '<div class="m-change"><span class="m-inline">' + num(b) + '<span class="m-meta">' + b.st + '</span></span><span class="m-title">' + esc(b.title) + '</span>' +
+          (attention(b) ? nextLine(b) : '<span class="m-stage">' + esc(b.chg.what) + ', ' + when(b.chg.d) + '</span>') + '</div>';
+        return top('Your legislative brief', 'Tuesday, February 3') +
+          '<div class="m-dispatch"><article class="m-lead"><span class="m-inline">' + num(lead) + '<span class="m-stage">' + esc(lead.stage) + '</span></span>' +
+          '<h4>' + esc(lead.title) + '</h4>' + nextLine(lead) + '<span class="m-inline">' + priRel(lead) + '</span>' +
+          (note ? '<div class="m-note"><span class="m-meta">' + note.who + ', ' + when(note.d).toLowerCase() + ' at ' + note.t + '</span><span class="m-quote">' + esc(note.quote) + '</span></div>' : '') +
+          '<p class="m-why">Leads because it is your highest-priority bill with the soonest hearing. Pin a bill to lead instead.</p></article>' +
+          '<aside class="m-margin"><h5>Elsewhere on your watchlist</h5>' + rest.map(change).join('') + '</aside></div>' +
+          '<p class="m-bottom">' + changed.length + ' bills changed since Friday. ' + B.length + ' bills on the full list.</p>';
+      }
+      const hearings = B.filter(b => upcoming(b, 10) && b.next.k !== 'deadline' && !attention(b)).sort((a, b) => a.next.d.localeCompare(b.next.d));
+      const chRow = b => '<div class="m-item"><span class="m-when">' + esc(when(b.chg.d)) + '</span><div class="m-what"><span><b>' + esc(b.num) + '</b> ' + esc(b.chg.what) + '</span><span class="m-meta">' + esc(b.title) + '</span></div></div>';
+      const hRow = b => '<div class="m-item"><span class="m-when">' + esc(when(b.next.d)) + '<br>' + esc(b.next.t) + '</span><div class="m-what"><span><b>' + esc(b.num) + '</b> ' + esc(b.next.label) + '</span><span class="m-meta">' + esc(b.title) + '</span></div></div>';
+      return top('Briefing for Tuesday, February 3', 'What moved, and what comes next, across your 20 bills.') +
+        '<section class="m-group"><h4 class="m-h2">Needs attention<small>Prioritized bills with a hearing or deadline in the next 7 days</small></h4>' + list(attn) + '</section>' +
+        '<section class="m-group"><h4 class="m-h2">Changed recently<small>Since Friday</small></h4><div class="m-feed">' + changed.map(chRow).join('') + '</div></section>' +
+        '<section class="m-group"><h4 class="m-h2">Other hearings and votes<small>Next 10 days</small></h4><div class="m-feed">' + hearings.map(hRow).join('') + '</div></section>';
+    },
+    feed() {
+      const item = f => {
+        const b = byNum[f.num];
+        const head = f.who ? '<span><b>' + esc(f.who) + '</b> ' + esc(f.what) + ' <b>' + esc(f.num) + '</b></span>' : '<span><b>' + esc(f.what) + '</b>: ' + esc(f.num) + '</span>';
+        return '<div class="m-item"><span class="m-when">' + esc(when(f.d)) + '<br>' + esc(f.t) + '</span><div class="m-what">' + head +
+          '<span class="m-meta">' + esc(b.title) + '</span>' + (f.quote ? '<span class="m-quote">' + esc(f.quote) + '</span>' : '<span>' + esc(f.note) + '</span>') + '</div></div>';
+      };
+      return top('Feed', 'Your team and your bills, newest first.') + '<div class="m-feed">' + FEED.map(item).join('') + '</div>';
+    },
+    calendar() {
+      const ev = B.filter(b => upcoming(b, 14)).sort((a, b) => a.next.d.localeCompare(b.next.d) || (a.next.t ? 1 : 0) - (b.next.t ? 1 : 0));
+      const byDay = {};
+      ev.forEach(b => { (byDay[b.next.d] = byDay[b.next.d] || []).push(b) });
+      const kind = k => k === 'deadline' ? 'Deadline' : k === 'vote' ? 'Vote' : 'Hearing';
+      const dayRow = d => '<div class="m-day"><div class="m-dayname">' + (days(d) === 1 ? 'Tomorrow' : DOW[dt(d).getDay()]) + '<span>' + longDay(d) + '</span></div><div class="m-events">' +
+        byDay[d].map(b => '<div class="m-event"><span class="m-time">' + esc(b.next.t || 'All day') + '</span><div class="m-event-body"><span class="m-kind' + (b.next.k === 'deadline' ? ' deadline' : '') + '">' + kind(b.next.k) + (attention(b) ? ', needs attention' : '') + '</span><span><b>' + esc(b.num) + '</b> ' + esc(b.next.label) + '</span><span class="m-meta">' + esc(b.title) + '</span></div></div>').join('') +
+        '</div></div>';
+      return top('Calendar', 'The next two weeks of hearings, votes, and deadlines on your bills.') + '<div class="m-feed">' + Object.keys(byDay).map(dayRow).join('') + '</div>';
+    },
+    team() {
+      const b = byNum[TEAM.num];
+      const tok = tokens();
+      const total = TEAM.members;
+      const seg = (n, c) => '<i style="width:' + (n / total * 100).toFixed(1) + '%;background:' + c + '"></i>';
+      const voteNote = state.vote ? 'Your vote: ' + state.vote + '. This preview does not record it.' : 'You have not voted on this bill.';
+      const aw = n => { const x = byNum[n]; return '<div class="m-change"><span class="m-inline">' + num(x) + '<span class="m-meta">' + x.st + '</span></span><span class="m-title">' + esc(x.title) + '</span><span class="m-stage">' + esc(x.stage) + '</span></div>' };
+      return top('Where your team stands', 'Bills waiting on a team decision.') +
+        '<div class="m-team"><article class="m-decision"><div class="m-inline">' + num(b) + '<span class="m-stage">' + esc(b.stage) + '</span></div>' +
+        '<h4>' + esc(b.title) + '</h4><div class="m-inline">' + priRel(b) + nextLine(b) + '</div>' +
+        '<div class="m-avatars">' + TEAM.voted.map(i => '<span class="m-av" aria-hidden="true">' + i + '</span>').join('') + '<span class="m-meta">' + TEAM.voted.length + ' of ' + total + ' members have voted</span></div>' +
+        '<div class="m-statement"><span>Member votes</span><strong>' + TEAM.support + ' support, ' + TEAM.oppose + ' oppose, ' + TEAM.neutral + ' neutral</strong></div>' +
+        '<div class="m-tally" role="img" aria-label="' + TEAM.support + ' support, ' + TEAM.oppose + ' oppose, ' + TEAM.neutral + ' neutral, ' + (total - TEAM.voted.length) + ' not voted">' + seg(TEAM.support, tok.support) + seg(TEAM.oppose, tok.oppose) + seg(TEAM.neutral, tok.muted) + '</div>' +
+        '<div class="m-statement"><span>Official team position</span><strong>Not yet set. An admin records it after the vote.</strong></div>' +
+        '<div class="m-vote"><span class="m-meta">Your vote</span><div class="m-vote-opts" role="group" aria-label="Your vote">' +
+        ['Support', 'Oppose', 'Neutral'].map(v => '<button type="button" data-vote="' + v + '" aria-pressed="' + (state.vote === v) + '">' + v + '</button>').join('') + '</div><span class="m-meta" aria-live="polite">' + voteNote + '</span></div></article>' +
+        '<aside class="m-teamside"><div class="m-group"><h5 class="m-h2">Discussion</h5><div class="m-thread">' + TEAM.thread.map(c => '<div><b>' + c.who + '</b><span>' + esc(c.text) + '</span><span class="m-meta">' + c.when + ', sample</span></div>').join('') + '</div></div>' +
+        '<div class="m-group"><h5 class="m-h2">Also awaiting your vote</h5><div>' + TEAM.awaiting.map(aw).join('') + '</div></div></aside></div>';
+    },
+    appearance() {
+      const mode = resolvedMode();
+      const card = t => {
+        const k = t[mode];
+        const mini = '<span class="m-mini" aria-hidden="true"><i style="background:' + k.side + '"><u style="background:' + k.mark + ';width:70%"></u><u style="background:' + k.navOn + '"></u><u style="background:' + k.sideMuted + ';width:80%"></u></i>' +
+          '<em style="background:' + k.bg + '"><u style="background:' + k.text + ';width:55%;height:7px"></u><u style="background:' + k.surface + ';height:10px;box-shadow:inset 3px 0 ' + k.attn + ', inset 0 0 0 1px ' + k.border + '"></u><u style="background:' + k.surface + ';height:10px;box-shadow:inset 0 0 0 1px ' + k.border + '"></u><u style="background:' + k.link + ';width:40%"></u></em></span>';
+        return '<button type="button" class="m-tcard" data-theme-pick="' + t.id + '" aria-pressed="' + (t.id === state.theme) + '">' + mini +
+          '<b>' + (t.emblem === 'dc' ? flag(24, 12) : '') + t.name + (t.id === 'today' ? ' <span class="m-meta">Team default</span>' : '') + '</b><span>' + t.blurb + '</span></button>';
+      };
+      const group = g => THEMES.filter(t => t.group === g).map(card).join('');
+      return top('Appearance', 'These settings apply only to you.') +
+        '<section class="m-section"><h4 class="m-h2">Mode</h4><div class="m-modes" role="group" aria-label="Mode">' + ['system', 'light', 'dark'].map(m => '<button type="button" data-mode-pick="' + m + '" aria-pressed="' + (state.mode === m) + '">' + m[0].toUpperCase() + m.slice(1) + '</button>').join('') + '</div><p>System follows your device. Every theme has a light and a dark version.</p></section>' +
+        '<section class="m-section"><h4 class="m-h2">Theme</h4><p>Your team uses Today unless you choose another. Admins set the team default in Organization settings.</p><div class="m-themes">' + group('FloorVote') + '</div>' +
+        '<h4 class="m-h2" style="margin-top:6px">Jurisdictions</h4><p>Flag colors for the places your team covers.</p><div class="m-themes">' + group('Jurisdictions') +
+        '<div class="m-tcard add"><b>Your state</b><span>A state theme is one file: two palettes, typefaces, and the flag as an SVG. Seals stay out.</span></div></div></section>';
+    },
+  };
+
+  // ---------- State and rendering ----------
+  const state = { theme: 'chamber', mode: 'system', screen: 'bills', billsLayout: 'list', briefLayout: 'sections', selected: 'HB409', vote: null };
+  try { Object.assign(state, JSON.parse(localStorage.getItem('fv-looks-4') || '{}')) } catch (e) { }
+  if (!byId[state.theme]) state.theme = 'chamber';
+  if (!SCREENS[state.screen]) state.screen = 'bills';
+  const mq = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
+  const resolvedMode = () => state.mode === 'system' ? (mq && mq.matches ? 'dark' : 'light') : state.mode;
+  const theme = () => byId[state.theme];
+  const tokens = () => theme()[resolvedMode()];
+  const stage = document.getElementById('stage');
+  const counts = () => ({ briefing: B.filter(attention).length, bills: B.length, feed: FEED.filter(f => days(f.d) === 0).length, calendar: B.filter(b => upcoming(b, 14)).length, team: 1 + TEAM.awaiting.length });
+  const NAV = [['briefing', 'Briefing'], ['feed', 'Feed'], ['bills', 'Bills'], ['calendar', 'Calendar'], ['team', 'Team'], ['people', 'People']];
+
+  document.getElementById('theme-seg').innerHTML = THEMES.map(t => '<button type="button" data-v="' + t.id + '"><span class="dot" style="background:' + t.light.accent + '"></span>' + t.name + '</button>').join('');
+
+  function applyTheme(el) {
+    const t = theme(), k = tokens();
+    Object.entries(k).forEach(([n, v]) => el.style.setProperty('--m-' + kebab(n), v));
+    Object.entries(t.fonts).forEach(([n, v]) => el.style.setProperty('--f-' + n, STACK(v)));
+    Object.entries(t.shape).forEach(([n, v]) => el.style.setProperty('--s-' + kebab(n), String(v)));
+    el.dataset.density = t.density;
+    el.dataset.top = t.top || 'none';
+    el.style.colorScheme = resolvedMode();
+  }
+
+  function renderAbout() {
+    const t = theme(), l = t.light, d = t.dark;
+    const sw = (k, label) => '<span class="sw"><i style="background:linear-gradient(90deg,' + l[k] + ' 50%,' + d[k] + ' 50%)"></i>' + label + '</span>';
+    const faces = [...new Set(Object.values(t.fonts))].join(', ');
+    document.getElementById('about').innerHTML =
+      '<div style="display:grid;gap:6px;align-content:start"><h2>' + t.name + '</h2><p>' + t.origin + '</p><p>Typefaces: ' + faces + '. Corners ' + t.shape.radius + ', ' + (t.density === 'compact' ? 'compact rows with banding' : 'regular rows') + '.</p>' +
+      (t.pairs ? '<button type="button" class="p-btn" id="pair-btn">See it with ' + t.pairLabel + '</button>' : '') + '</div>' +
+      '<div style="display:grid;gap:6px;align-content:start"><span>Light and dark, side by side</span><div class="swatches">' + sw('bg', 'Ground') + sw('surface', 'Surface') + sw('text', 'Text') + sw('accent', 'Accent') + sw('link', 'Next event') + sw('priHigh', 'High priority') + sw('side', 'Sidebar') + sw('soft', 'Highlight') + '</div></div>';
+    const pb = document.getElementById('pair-btn');
+    if (pb) pb.addEventListener('click', () => { Object.assign(state, t.pairs); render(); stage.scrollIntoView({ behavior: 'smooth', block: 'start' }) });
+  }
+
+  function render() {
+    const t = theme();
+    const c = counts();
+    const keep = stage.querySelector('.m-picklist'), keepTop = keep ? keep.scrollTop : 0;
+    stage.innerHTML = '<div class="mock" role="region" aria-label="FloorVote ' + state.screen + ' screen in the ' + t.name + ' theme, ' + resolvedMode() + ' mode">' +
+      '<nav class="m-side" aria-label="Sample app navigation"><div class="m-word">' + (t.emblem === 'dc' ? flag(34, 17) : '') + '<span>Floor<b>Vote</b></span></div>' +
+      NAV.map(([k, label]) => '<button type="button" class="m-nav" data-go="' + k + '"' + (k === state.screen ? ' aria-current="page"' : '') + (k === 'people' ? ' disabled' : '') + '>' + label + (c[k] ? ' <span class="m-count">' + c[k] + '</span>' : '') + '</button>').join('') +
+      '<button type="button" class="m-nav settings" data-go="appearance"' + (state.screen === 'appearance' ? ' aria-current="page"' : '') + '>Appearance</button>' +
+      '</nav><div class="m-main">' + (t.top === 'bars' ? '<div class="m-bars" aria-hidden="true"></div>' : '') + SCREENS[state.screen]() + '</div></div>';
+    applyTheme(stage.firstElementChild);
+    const list2 = stage.querySelector('.m-picklist');
+    if (list2) list2.scrollTop = keepTop;
+    document.querySelectorAll('.seg').forEach(seg => {
+      const key = seg.dataset.ctl;
+      seg.querySelectorAll('button').forEach(btn => btn.setAttribute('aria-pressed', String(btn.dataset.v === state[key])));
+    });
+    document.getElementById('ctl-bills').hidden = state.screen !== 'bills';
+    document.getElementById('ctl-briefing').hidden = state.screen !== 'briefing';
+    renderAbout();
+    try { localStorage.setItem('fv-looks-4', JSON.stringify(state)) } catch (e) { }
+  }
+
+  document.querySelectorAll('.seg').forEach(seg => seg.addEventListener('click', e => {
+    const btn = e.target.closest('button'); if (!btn) return;
+    state[seg.dataset.ctl] = btn.dataset.v; render();
+  }));
+  stage.addEventListener('click', e => {
+    const go = e.target.closest('[data-go]');
+    if (go && !go.disabled) { state.screen = go.dataset.go; render(); return }
+    const pick = e.target.closest('[data-pick]');
+    if (pick) { state.selected = pick.dataset.pick; render(); const p = stage.querySelector('[data-pick="' + CSS.escape(state.selected) + '"]'); if (p) p.focus({ preventScroll: true }); return }
+    const vote = e.target.closest('[data-vote]');
+    if (vote) { state.vote = state.vote === vote.dataset.vote ? null : vote.dataset.vote; render(); return }
+    const tp = e.target.closest('[data-theme-pick]');
+    if (tp) { state.theme = tp.dataset.themePick; render(); return }
+    const mp = e.target.closest('[data-mode-pick]');
+    if (mp) { state.mode = mp.dataset.modePick; render() }
+  });
+  if (mq && mq.addEventListener) mq.addEventListener('change', () => { if (state.mode === 'system') render() });
+  render();
+})();
+</script>
+</body>
+</html>
