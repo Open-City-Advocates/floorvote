@@ -207,6 +207,11 @@ describe('the status chip on a bill page', () => {
     })
   })
 
+  it('reaches keyboard and screen-reader users through an info button', async () => {
+    renderBillDetail({ state: 'DC', billNumber: 'B26-0401', status: 'Under Mayoral Review' })
+    expect(await screen.findByRole('button', { name: 'About the status "Under Mayoral Review"' })).toBeInTheDocument()
+  })
+
   it('shows no explainer for a status the state\'s labels don\'t list', async () => {
     // Another state, since each state's labels are fetched once per page load.
     const spy = renderBillDetail({ state: 'VA', billNumber: 'HB 1', status: 'Something new' })
@@ -247,6 +252,11 @@ describe('deadlines and explainers on a bill page', () => {
       fireEvent.pointerEnter(screen.getByText('Council Emergency Bill'), { pointerType: 'mouse' })
       expect(screen.getByText(TYPE_EXPLAINER)).toBeInTheDocument()
     })
+  })
+
+  it('reaches keyboard and screen-reader users with the bill type\'s explainer too', async () => {
+    renderBillDetail({ state: 'MD', billNumber: 'B26-0402', body: 'C', billType: 'Emergency Bill', status: 'Introduced', calendar })
+    expect(await screen.findByRole('button', { name: 'About "Council Emergency Bill"' })).toBeInTheDocument()
   })
 
   it('shows no deadline chip for a bill without upcoming deadlines', async () => {

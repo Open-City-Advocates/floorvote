@@ -294,7 +294,9 @@ async function reconcileBodyEvents(
     }
   }
 
-  result.covered = await pointCovers(env, db, events, new Set(removed.map(r => r.uid)))
+  // A cover clears when its event is removed, or missing and so just cancelled
+  // here: a bill entry stays hidden only behind an event central still sends.
+  result.covered = await pointCovers(env, db, events, new Set(missing.map(r => r.uid)))
   // The instance's event rules, over events new or changed since, and bills tracked since.
   // Rules still waiting on central's committee list (a fork's being carried over) apply nothing yet: the next hour retries.
   // With no body events in any covered state there's nothing to apply, nor committees to carry a fork's rules over with.
@@ -317,13 +319,14 @@ async function relink(db: AppDb, eventId: string, billIds: string[]): Promise<vo
 
 /**
  * Point each covered bill entry at the event covering it, and clear a cover
- * that names one of these events (or a removed one) but no longer holds.
+ * that names one of these events, or one central stopped sending, but no
+ * longer holds. An event central sends as cancelled still covers its entry.
  * Returns how many entries changed.
  */
-async function pointCovers(env: Env, db: AppDb, events: CentralBodyEvent[], removedUids: Set<string>): Promise<number> {
+async function pointCovers(env: Env, db: AppDb, events: CentralBodyEvent[], goneUids: Set<string>): Promise<number> {
   const want = new Map<string, string>()
   for (const e of events) for (const c of e.covers) want.set(hearingUid(c.billId, c.identityKey, env.TENANT_ID), e.uid)
-  const known = new Set([...events.map(e => e.uid), ...removedUids])
+  const known = new Set([...events.map(e => e.uid), ...goneUids])
 
   const rows = new Map<string, { id: string; uid: string; coveredBy: string | null }>()
   const cols = { id: calendarEvents.id, uid: calendarEvents.uid, coveredBy: calendarEvents.coveredBy }

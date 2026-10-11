@@ -1287,7 +1287,13 @@ export function BillDetail() {
           />
           {bill.isDraft ? <DraftChip /> : (() => {
             const chip = <StatusChip status={decodeStatus(bill.status)} onClick={() => navigate(`/bills?status=${encodeURIComponent(bill.status)}`)} />
-            return statusExplainer ? <HoverTooltip text={statusExplainer} maxWidth={320}>{chip}</HoverTooltip> : chip
+            // The hover bubble is for pointers; the info button reaches keyboard and screen-reader users.
+            return statusExplainer
+              ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                  <HoverTooltip text={statusExplainer} maxWidth={320}>{chip}</HoverTooltip>
+                  <InfoTooltip text={statusExplainer} maxWidth={320} align="center" label={`About the status "${decodeStatus(bill.status)}"`} />
+                </span>
+              : chip
           })()}
           {bill.session && (
             <SessionChip
@@ -1592,7 +1598,10 @@ export function BillDetail() {
           const metaItems: React.ReactNode[] = []
           const typeExplainer = billTypeExplainer(stateLabels, bill.billType)
           if (bodyLabel) metaItems.push(typeExplainer
-            ? <HoverTooltip key="body" text={typeExplainer} maxWidth={320}><span style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span></HoverTooltip>
+            ? <span key="body" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <HoverTooltip text={typeExplainer} maxWidth={320}><span>{bodyLabel}</span></HoverTooltip>
+                <InfoTooltip text={typeExplainer} maxWidth={340} align="center" label={`About "${bodyLabel}"`} />
+              </span>
             : <span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>)
           // The bill's next deadline (an executive's time to act, a review
           // period ending, an act expiring), where it's hard to miss.

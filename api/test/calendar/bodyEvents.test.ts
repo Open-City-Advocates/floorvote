@@ -167,10 +167,21 @@ describe('body events on an instance', () => {
     central.events = [bodyEvent()]
     await sync()
     expect(await row('council-2405@lims.dccouncil.gov')).toMatchObject({ status: 'cancelled', sequence: 1 })
-    // Still the bill hearing's cover, so the cancellation shows once.
-    expect((await row(HEARING_UID))?.coveredBy).toBe('council-2405@lims.dccouncil.gov')
+    // Central sends a cancelled event as cancelled. One it stops sending left
+    // the instance's coverage or its state's provider, and the bill's own
+    // hearing, still confirmed, shows again rather than hide behind it.
+    expect((await row(HEARING_UID))?.coveredBy).toBeNull()
+    expect((await calendar()).map(e => e.uid)).toContain(HEARING_UID)
     await sync()
     expect(await row('council-2405@lims.dccouncil.gov')).toMatchObject({ status: 'cancelled', sequence: 1 })
+  })
+
+  it('keep covering the entry when central sends the event as cancelled, so the cancellation shows once', async () => {
+    await sync()
+    central.events = [bodyEvent(), stadiumHearing({ cancelled: true })]
+    await sync()
+    expect(await row('council-2405@lims.dccouncil.gov')).toMatchObject({ status: 'cancelled' })
+    expect((await row(HEARING_UID))?.coveredBy).toBe('council-2405@lims.dccouncil.gov')
   })
 
   it('stay as they are when central answers without its events or capabilities', async () => {
