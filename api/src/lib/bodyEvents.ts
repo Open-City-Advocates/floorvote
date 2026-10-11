@@ -3,6 +3,7 @@ import { associationConfig, bills, calendarEventBills, calendarEvents } from '..
 import { centralFetch } from './centralFetch'
 import { hearingUid } from './hearingUid'
 import { nowDb } from './dbTime'
+import { applyEventRules, bodyEventFacets, centralOptions, loadEventRules, optionCommittees } from './eventRules'
 import type { AppDb, Env } from '../types'
 
 /**
@@ -18,6 +19,10 @@ import type { AppDb, Env } from '../types'
  * hearing that the legislature's calendar lists too. Each covered entry's
  * covered_by names the event, and the calendar and ICS feed show the event in
  * its place, so the hearing appears once (lib/calendarVisibility.ts).
+ *
+ * Every event is mirrored, whatever the instance's event rules (#298,
+ * lib/eventRules.ts): each keeps what the rules read of it, and the rules
+ * decide at read time which ones show.
  *
  * The same call brings the capabilities of the states the instance covers
  * (`state_capabilities`, which GET /config serves), so features gate on what a
@@ -156,10 +161,10 @@ async function reconcileBodyEvents(
   const result: BodyEventSyncResult = { upserted: 0, cancelled: 0, removed: 0, covered: 0 }
   const incoming = new Map(events.map(e => [e.uid, e]))
 
-  type Existing = { id: string; uid: string; sequence: number; eventHash: string | null; status: string; source: string; kind: string | null }
+  type Existing = { id: string; uid: string; sequence: number; eventHash: string | null; status: string; source: string; kind: string | null; ruleFacets: string | null }
   const cols = {
     id: calendarEvents.id, uid: calendarEvents.uid, sequence: calendarEvents.sequence, eventHash: calendarEvents.eventHash,
-    status: calendarEvents.status, source: calendarEvents.source, kind: calendarEvents.kind,
+    status: calendarEvents.status, source: calendarEvents.source, kind: calendarEvents.kind, ruleFacets: calendarEvents.ruleFacets,
   }
   const existing = new Map<string, Existing>()
   for (const r of await db.select(cols).from(calendarEvents)
@@ -188,7 +193,7 @@ async function reconcileBodyEvents(
       source: 'body', billId: null, kind: e.kind, status, coveredBy: null,
       date: e.date, time: e.time, location: e.location,
       description: bodyEventDescription(e), details: bodyEventDetails(e), url: e.url,
-      timezone: e.timezone, eventHash: e.eventHash, updatedAt: now,
+      timezone: e.timezone, eventHash: e.eventHash, ruleFacets: JSON.stringify(bodyEventFacets(e)), updatedAt: now,
     }
     let id: string
     if (!prior) {
@@ -199,7 +204,7 @@ async function reconcileBodyEvents(
       id = prior.id
       const bump = (prior.eventHash ?? '') !== e.eventHash || prior.status !== status
       // The hash covers everything shown, so an unchanged event costs no write.
-      if (bump || prior.source !== 'body' || prior.kind !== e.kind) {
+      if (bump || prior.source !== 'body' || prior.kind !== e.kind || prior.ruleFacets !== values.ruleFacets) {
         await db.update(calendarEvents).set({ ...values, sequence: bump ? prior.sequence + 1 : prior.sequence })
           .where(eq(calendarEvents.id, id))
       }
@@ -227,6 +232,13 @@ async function reconcileBodyEvents(
   }
 
   result.covered = await pointCovers(env, db, events, new Set(removed.map(r => r.uid)))
+  // The instance's event rules, over events new or changed since, and bills tracked since.
+  // Rules still waiting on central's committee list (a fork's being carried over) apply nothing yet: the next hour retries.
+  // With no body events in any covered state there's nothing to apply, nor committees to carry a fork's rules over with.
+  if (anyBodyEvents) {
+    const loaded = await loadEventRules(db, async () => optionCommittees(await centralOptions(env)))
+    if (loaded.settled) await applyEventRules(db, loaded.rules)
+  }
   return result
 }
 

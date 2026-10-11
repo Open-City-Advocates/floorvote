@@ -15,4 +15,13 @@ describe('eventSourceIcon', () => {
     expect(r.color).toBe(color.accentBlue)
     expect(r.tint).toBe(color.bgInfo)
   })
+  it('maps a bill\'s deadline to a clock in amber', () => {
+    expect(eventSourceIcon({ source: 'hearing', kind: 'deadline' })).toEqual({
+      icon: 'schedule', color: color.textAmberDark, tint: color.bgAmberPriority, label: 'Deadline',
+    })
+  })
+  it('labels other synced events by kind', () => {
+    expect(eventSourceIcon({ source: 'body', kind: 'markup' })).toMatchObject({ icon: 'gavel', label: 'Markup' })
+    expect(eventSourceIcon({ source: 'body', kind: 'hearing' })).toMatchObject({ icon: 'gavel', label: 'Hearing' })
+  })
 })

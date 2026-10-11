@@ -164,6 +164,19 @@ const VA_LABELS = {
   statuses: [{ label: 'Introduced', stage: 'introduced', rank: 101, explainer: 'Introduced and sent to a committee.' }],
 }
 
+const DEADLINE_EXPLAINER = 'A date the law sets for the measure\'s next step.'
+const TYPE_EXPLAINER = 'Emergency act: takes effect once signed and lasts no more than 90 days.'
+const HEARING_EXPLAINER = 'A committee hearing, where the public can testify.'
+// Another state again, since each state's labels are fetched once per page load.
+const MD_LABELS = {
+  ...DC_LABELS, state: 'MD', calendarName: null, statuses: [],
+  billTypes: [{ value: 'Emergency Bill', label: 'Emergency Bill', explainer: TYPE_EXPLAINER }],
+  eventTypes: [
+    { typeId: 1, label: 'Hearing', kind: 'hearing', explainer: HEARING_EXPLAINER },
+    { typeId: 10, label: 'Deadline', kind: 'deadline', explainer: DEADLINE_EXPLAINER },
+  ],
+}
+
 function renderBillDetail(overrides: Record<string, unknown>) {
   const bill = { ...BILL, ...overrides }
   routerMock.loaderData = bill
@@ -172,6 +185,7 @@ function renderBillDetail(overrides: Record<string, unknown>) {
     if (path === '/config') return { ...CONFIG } as never
     if (path === '/bills/labels?state=DC') return DC_LABELS as never
     if (path === '/bills/labels?state=VA') return VA_LABELS as never
+    if (path === '/bills/labels?state=MD') return MD_LABELS as never
     if (path === '/config/custom-fields') return [] as never
     return {} as never
   })
@@ -206,5 +220,38 @@ describe('the status chip on a bill page', () => {
     const spy = renderBillDetail({ state: 'DC', billNumber: 'D1', status: '', isDraft: true })
     await screen.findByText('Test Bill')
     expect(spy).not.toHaveBeenCalledWith(expect.stringMatching(/^\/bills\/labels/))
+  })
+})
+
+describe('deadlines and explainers on a bill page', () => {
+  const day = (offset: number) => new Date(Date.now() + offset * 86400_000).toISOString().slice(0, 10)
+  const calendar = [
+    { eventHash: 'd-past', typeId: 10, type: 'Deadline', kind: 'deadline', date: day(-3), time: null, location: null, description: 'Mayor\'s response due' },
+    { eventHash: 'd-later', typeId: 10, type: 'Deadline', kind: 'deadline', date: day(40), time: null, location: null, description: 'Act expires' },
+    { eventHash: 'd-next', typeId: 10, type: 'Deadline', kind: 'deadline', date: day(9), time: null, location: null, description: 'Congressional review ends' },
+    { eventHash: 'h1', typeId: 1, type: 'Hearing', kind: 'hearing', date: day(2), time: null, location: 'Room 412', description: 'Public Hearing' },
+  ]
+
+  it('shows the next deadline under the title, explained, and lists deadlines with the hearings', async () => {
+    renderBillDetail({ state: 'MD', billNumber: 'B26-0400', billType: 'Emergency Bill', status: 'Introduced', calendar })
+    const chip = await screen.findByTestId('next-deadline')
+    expect(chip).toHaveTextContent('Congressional review ends')
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'About "Congressional review ends"' }).length).toBeGreaterThan(0))
+    expect(screen.getByText('Hearings and deadlines')).toBeInTheDocument()
+  })
+
+  it('explains the bill type and each calendar entry from the state\'s labels', async () => {
+    renderBillDetail({ state: 'MD', billNumber: 'B26-0400', body: 'C', billType: 'Emergency Bill', status: 'Introduced', calendar })
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'About "Public Hearing"' }).length).toBeGreaterThan(0))
+    await waitFor(() => {
+      fireEvent.pointerEnter(screen.getByText('Council Emergency Bill'), { pointerType: 'mouse' })
+      expect(screen.getByText(TYPE_EXPLAINER)).toBeInTheDocument()
+    })
+  })
+
+  it('shows no deadline chip for a bill without upcoming deadlines', async () => {
+    renderBillDetail({ state: 'MD', billNumber: 'B26-0401', status: 'Introduced', calendar: calendar.filter(e => e.eventHash === 'd-past' || e.eventHash === 'h1') })
+    await screen.findByText('Test Bill')
+    expect(screen.queryByTestId('next-deadline')).toBeNull()
   })
 })

@@ -1,0 +1,21 @@
+-- Event rules (#298). An instance's admins choose which body events (the
+-- legislature's own calendar) its calendar shows, by committee, kind, topic,
+-- or tracked bill. Each body event keeps what the rules read of it.
+--
+-- rule_facets: the event's committee, kind, type, title, and agenda topics as
+-- JSON, written by the hourly body-event sync, so saving rules can apply them
+-- at once without asking central.
+--
+-- rule_match: whether the instance's rules select the event. Null while the
+-- instance has no rules, and the event shows. 1 when the rules select it, and
+-- 0 when they don't, and the event is hidden. Clearing the rules sets every
+-- row back to null in the same batch that deletes them, so no event is left
+-- hidden or shown by rules that no longer exist.
+--
+-- Two nullable columns only. Nothing is rewritten, so every event keeps its
+-- UID and SEQUENCE, and every body event shows until rules are saved.
+--
+-- No semicolons in these comments. api/test/helpers.ts splits migration files
+-- on the statement terminator before it strips comment lines.
+ALTER TABLE calendar_events ADD COLUMN rule_facets TEXT;
+ALTER TABLE calendar_events ADD COLUMN rule_match INTEGER;

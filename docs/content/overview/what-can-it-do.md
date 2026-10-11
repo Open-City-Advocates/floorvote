@@ -15,7 +15,7 @@ Each team gets a private, isolated deployment with its own database, member rost
 
 ## Set keywords for the topics you care about
 
-Point FloorVote at the states you track—and Congress, if federal legislation matters to you—and you get access to every bill introduced there.
+Point FloorVote at the states you track—and Congress, if federal legislation matters to you—and you get access to every bill introduced there. Some legislatures also publish their own data, which adds details LegiScan doesn't carry. See [State coverage](/contributing/state-coverage) for what exists for each state.
 
 From that full pool, you set keywords for the issues your team actually cares about. Whenever a bill's title or description matches one of your keywords, FloorVote pulls it out for a closer look—summarizing, tagging, and everything else below—so nobody on your team has to track the whole legislative session by hand.
 
@@ -84,6 +84,8 @@ When a bill newly matches your keywords, it needs a quick decision: assign it a 
 ## Shared calendar
 
 Hearings on bills your team has prioritized are added to your team's calendar automatically as they're scheduled. You can add custom events of your own (like coalition calls) alongside them. Everyone on the team can subscribe to the calendar from their own calendar app.
+
+Where a state's data includes the legislature's own calendar (DC's Council calendar, for one), its hearings, roundtables, and meetings appear too, with or without a bill on the agenda. Admins choose which ones under Settings, by committee, kind of event, topic keywords, or bills the team tracks. An event with a prioritized bill on its agenda always shows, and an event the choices leave out drops out of the calendar subscription too. Where a state's data includes deadlines, such as the end of the executive's time to sign or veto, a prioritized bill's deadlines go on the calendar alongside its hearings, and every bill's next deadline shows on its bill page.
 
 You can also import a full spreadsheet or .ics file of events at once.
 

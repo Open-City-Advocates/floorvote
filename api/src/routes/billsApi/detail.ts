@@ -23,7 +23,7 @@ type CentralBillRich = {
   sponsors?: Array<{ name: string; party: string | null; role: string | null; primary: boolean; personId: string | null; url: string | null }>
   votes?: Array<{ id: string; motionText: string; date: string; result: string; chamber: string; counts: Array<{ option: string; value: number }>; legislatorVotes?: Array<{ personId: string; name: string; vote: string }> }>
   relatedBills?: Array<{ identifier: string; sastBillId?: number; session: string; relationType: string }>
-  calendar?: Array<{ eventHash: string; typeId: number; type: string; date: string; time: string | null; location: string | null; description: string | null }>
+  calendar?: Array<{ eventHash: string; typeId: number; type: string; kind?: string | null; date: string; time: string | null; location: string | null; description: string | null }>
   supplements?: Array<{ supplementId: number; typeId: number; type: string; date: string | null; dateResolved: string | null; dateInferred: boolean; title: string | null; description: string | null; mime: string | null; url: string | null; stateLink: string | null }>
   amendments?: Array<{
     amendmentId: number

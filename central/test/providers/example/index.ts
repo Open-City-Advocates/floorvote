@@ -34,6 +34,7 @@ export const exampleFeed: { records: ExampleRecord[] } = { records: [] }
 export const example: Provider = {
   id: 'example',
   displayName: 'Example Legislature',
+  coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: false, billText: false },
   envKeys: [],
   states: [EXAMPLE_STATE],
 
