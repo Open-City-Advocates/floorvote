@@ -193,6 +193,21 @@ describe('lisStatus', () => {
     expect(vocabulary.statuses[lisStatus(hb30, '20262')].label).toBe('Passed the House')
     expect(vocabulary.statuses[lisStatus(record('HB30', { Carried_over: 'Y' }, history.slice(0, 2)), '20262')].label).toBe('Continued from last session')
   })
+
+  it('reads a carried-in bill as pending until it moves, whatever its copied flags say', () => {
+    // HB 1238 as the 2027 files carry it: its 2026 flags (passed the House, then
+    // defeated in a Senate committee and continued) come along with its history.
+    const history: [string, string, string][] = [
+      ['2026-02-17', 'H Read third time and passed House (58-Y 36-N 0-A)', '26110413'],
+      ['2026-02-18', 'S Referred to Committee on Agriculture, Conservation and Natural Resources', 'S01'],
+      ['2026-02-24', 'S Failed to report (defeated) in Agriculture, Conservation and Natural Resources (6-Y 8-N)', 'S1V1968'],
+      ['2026-02-24', 'S Continued to next session in Agriculture, Conservation and Natural Resources (11-Y 3-N)', 'S1V1969'],
+    ]
+    const hb1238 = record('HB1238', { Carried_over: 'Y', Failed: 'Y', Passed_house: 'Y' }, history)
+    expect(vocabulary.statuses[lisStatus(hb1238, '20271')].label).toBe('Continued from last session')
+    expect(vocabulary.statuses[lisStatus(record('SB228', { Carried_over: 'Y', Failed: 'Y' }, history), '20271')].label)
+      .toBe('Continued from last session')
+  })
 })
 
 describe('carry-over', () => {

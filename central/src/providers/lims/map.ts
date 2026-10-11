@@ -30,8 +30,18 @@ export const LIMS_STATUS_BASE = 100
 
 const STATUS_CODE_BY_NAME = new Map(Object.entries(vocabulary.statuses).map(([code, s]) => [s.label.toLowerCase(), Number(code)]))
 
+/**
+ * A blank status, and a name the vocabulary doesn't list, both read as "Not
+ * Applicable" (100), which is terminal. An unlisted name is a status LIMS
+ * started using after vocabulary.ts was written, so say so: otherwise its bills
+ * drop out of the details refresh and the stage filter with no sign why.
+ */
 export function limsStatusCode(name: string | null | undefined): number {
-  return STATUS_CODE_BY_NAME.get(clean(name).toLowerCase()) ?? LIMS_STATUS_BASE
+  const key = clean(name).toLowerCase()
+  const code = key ? STATUS_CODE_BY_NAME.get(key) : LIMS_STATUS_BASE
+  if (code !== undefined) return code
+  console.warn(`[lims] unrecognized status "${clean(name)}", read as Not Applicable; add it to providers/lims/vocabulary.ts`)
+  return LIMS_STATUS_BASE
 }
 
 /**
