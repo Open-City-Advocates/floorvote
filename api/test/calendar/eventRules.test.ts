@@ -51,7 +51,7 @@ const legislativeMeeting = () => bodyEvent({
   agenda: [], url: 'https://lims.dccouncil.gov/Hearings/hearings/2045', eventHash: 'e3',
 })
 
-let central: { status?: number; events: CentralBodyEvent[] }
+let central: { status?: number; optionsStatus?: number; events: CentralBodyEvent[] }
 const fetchMock = vi.fn()
 let admin: string
 let member: string
@@ -75,6 +75,7 @@ beforeEach(async () => {
       return json({ capabilities: { DC: { bodyEvents: true, deadlines: true } }, events: central.events })
     }
     if (String(url) === 'https://central.test/api/tenants/bpc-test/body-event-options') {
+      if (central.optionsStatus) return new Response('down', { status: central.optionsStatus })
       return json({ states: { DC: {
         committees: [{ ...COW, chamber: 'C' }, { ...HOUSING, chamber: 'C' }, { committeeId: '3000000003', name: 'Committee on Health', chamber: 'C' }],
         kinds: [{ kind: 'hearing', types: ['Hearing', 'Roundtable'] }, { kind: 'meeting', types: ['Meeting'] }],
@@ -211,6 +212,34 @@ describe('event rules', () => {
     await sync()
     expect(await calendarUids()).toEqual([ROUNDTABLE, MEETING, STADIUM].sort())
     expect(await getDb(env.DB).select().from(associationConfig).where(eq(associationConfig.key, 'council_calendar_rules')).get()).toBeUndefined()
+  })
+
+  it('carry a fork team\'s rules over only once central\'s committee list arrives', async () => {
+    await getDb(env.DB).insert(associationConfig).values({ key: 'council_calendar_rules', value: JSON.stringify({
+      include: [{ committee: 'Health' }], types: [], topicKeywords: [], trackedBills: false,
+    }) })
+    const savedRules = () => getDb(env.DB).select().from(associationConfig).where(eq(associationConfig.key, 'event_rules')).get()
+    central.optionsStatus = 503
+    await sync()
+    // Without the list, "Health" (whose committee holds no event yet) would become a keyword, so nothing is saved or applied.
+    expect(await savedRules()).toBeUndefined()
+    expect(await calendarUids()).toEqual([ROUNDTABLE, MEETING, STADIUM].sort())
+    const rows = await getDb(env.DB).select({ ruleMatch: calendarEvents.ruleMatch }).from(calendarEvents).where(eq(calendarEvents.source, 'body')).all()
+    expect(rows.every(r => r.ruleMatch === null)).toBe(true)
+
+    // The settings page shows the carry-over meanwhile, without saving it.
+    const page = await (await api('/admin/event-rules')).json() as any
+    expect(page.optionsError).toMatch(/unavailable/)
+    expect(page.rules).toMatchObject({ committees: [], topics: [{ name: COUNCIL_CALENDAR_TOPIC, keywords: ['health'] }] })
+    expect(await savedRules()).toBeUndefined()
+
+    // The next hour, central answers.
+    delete central.optionsStatus
+    await sync()
+    expect(JSON.parse((await savedRules())!.value)).toEqual({
+      committees: [{ committeeId: '3000000003', name: 'Committee on Health' }], kinds: [], topics: [], trackedBills: false,
+    })
+    expect(await calendarUids()).toEqual([STADIUM])
   })
 
   it('refuse malformed rules and members', async () => {

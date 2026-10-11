@@ -113,6 +113,11 @@ describe('rulesFromCouncilCalendar', () => {
     })
   })
 
+  it('keeps only each committee\'s id and name from central\'s list', () => {
+    expect(rulesFromCouncilCalendar({ include: [{ committee: 'Health' }] }, [{ ...health, chamber: 'C', state: 'DC' } as typeof health])!.committees)
+      .toEqual([health])
+  })
+
   it('selects what the fork\'s rules selected', () => {
     const r = rulesFromCouncilCalendar({ include: [{ committee: 'Legislative Meeting' }, { committee: 'Committee of the Whole', type: 'Meeting' }] }, committees)!
     expect(eventMatchesRules(event({ committeeId: null, kind: 'meeting', type: 'Meeting', title: 'Legislative Meeting', topics: [] }), r, NONE)).toBe(true)

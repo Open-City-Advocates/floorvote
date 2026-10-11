@@ -2,9 +2,8 @@ import { Hono } from 'hono'
 import { and, asc, eq, gte, isNotNull, lte } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { calendarEvents } from '../db/schema'
-import { centralFetch } from '../lib/centralFetch'
 import { readStateCapabilities } from '../lib/bodyEvents'
-import { agendaBills, loadEventRules, saveEventRules } from '../lib/eventRules'
+import { agendaBills, centralOptions, loadEventRules, optionCommittees, saveEventRules } from '../lib/eventRules'
 import { parseEventRules, type EventFacets } from '../../../shared/eventRules'
 import type { AppEnv } from '../types'
 
@@ -15,12 +14,6 @@ import type { AppEnv } from '../types'
  * covered state has body events (`capabilities` in GET /config).
  */
 export const eventRulesAdminRouter = new Hono<AppEnv>()
-
-/** The committees and kinds central lists for a state (GET /tenants/:tenantId/body-event-options). */
-interface StateOptions {
-  committees: { committeeId: string; name: string; chamber: string | null }[]
-  kinds: { kind: string; types: string[] }[]
-}
 
 /** How far ahead the settings page previews the rules. */
 const PREVIEW_DAYS = 120
@@ -33,19 +26,12 @@ const PREVIEW_DAYS = 120
 // central outage or a committee since gone never drops a choice.
 eventRulesAdminRouter.get('/', async (c) => {
   const db = getDb(c.env.DB)
-  let states: Record<string, StateOptions> = {}
-  let optionsError: string | null = null
-  try {
-    const res = await centralFetch(c.env, `/tenants/${c.env.TENANT_ID}/body-event-options`)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const body = await res.json() as { states?: Record<string, StateOptions> }
-    states = body.states ?? {}
-  } catch (err) {
-    console.error('[event-rules] options: central unavailable', err)
-    optionsError = 'The lists below may be incomplete: the legislative data service is unavailable right now.'
-  }
-  const centralCommittees = Object.entries(states).flatMap(([state, o]) => o.committees.map(cm => ({ ...cm, state })))
-  const rules = await loadEventRules(db, centralCommittees)
+  const listed = await centralOptions(c.env)
+  const states = listed ?? {}
+  const optionsError = listed ? null : 'The lists below may be incomplete: the legislative data service is unavailable right now.'
+  const centralCommittees = optionCommittees(listed) ?? []
+  // A fork's #217 rules not yet carried over (central didn't answer) come back provisionally, unsaved.
+  const { rules } = await loadEventRules(db, optionCommittees(listed))
 
   const today = new Date().toISOString().slice(0, 10)
   const until = new Date(Date.now() + PREVIEW_DAYS * 86_400_000).toISOString().slice(0, 10)

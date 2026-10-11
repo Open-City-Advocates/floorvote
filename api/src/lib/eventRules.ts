@@ -26,8 +26,9 @@ import type { CentralBodyEvent } from './bodyEvents'
  *
  * A fork's teams set their DC Council calendar rules in #217's
  * `council_calendar_rules`. While an instance has no `event_rules`, those are
- * carried over (rulesFromCouncilCalendar) and saved as its event rules, once
- * the instance holds body events whose committees they can name.
+ * carried over (rulesFromCouncilCalendar) and saved as its event rules once
+ * central's committee list arrives. Until it does, nothing is applied, and
+ * the next hourly sync tries again.
  */
 
 export const EVENT_RULES_KEY = 'event_rules'
@@ -70,14 +71,27 @@ async function heldCommittees(db: AppDb): Promise<{ committeeId: string; name: s
 
 type CommitteeList = readonly { committeeId: string; name: string }[]
 
+/** The instance's event rules, and whether they are settled. */
+export interface LoadedEventRules {
+  /** The rules, or null when the instance has none and every event shows. */
+  rules: EventRules | null
+  /**
+   * False while a fork's #217 rules are carried over without central's
+   * committee list (central didn't answer). `rules` is then a provisional
+   * carry-over, not saved, and nothing should be applied until it settles.
+   */
+  settled: boolean
+}
+
 /**
- * The instance's event rules, or null when it has none. A fork's #217 rules
- * are carried over and saved the first time they can be: when the instance
- * holds body events, or central's committee list (`committees`, asked for
- * only then) names some. Stored rules that no longer parse count as none, so
- * every event shows.
+ * The instance's event rules. A fork's #217 rules are carried over and saved
+ * the first time central's committee list arrives (`committees`, asked for
+ * only then, null when central didn't answer), so committee names become
+ * committees rather than keywords. Until then they're unsettled, and the
+ * hourly sync applies nothing and tries again. Stored rules that no longer
+ * parse count as none, so every event shows.
  */
-export async function loadEventRules(db: AppDb, committees: CommitteeList | (() => Promise<CommitteeList>) = []): Promise<EventRules | null> {
+export async function loadEventRules(db: AppDb, committees: CommitteeList | null | (() => Promise<CommitteeList | null>)): Promise<LoadedEventRules> {
   const rows = await db.select().from(associationConfig)
     .where(inArray(associationConfig.key, [EVENT_RULES_KEY, COUNCIL_RULES_KEY])).all()
   const value = (key: string) => {
@@ -91,37 +105,46 @@ export async function loadEventRules(db: AppDb, committees: CommitteeList | (() 
     const rules = parseEventRules(saved)
     if (typeof rules === 'string') {
       console.error(`[event-rules] stored rules are invalid, showing every event: ${rules}`)
-      return null
+      return { rules: null, settled: true }
     }
-    return rules
+    return { rules, settled: true }
   }
 
   const legacy = value(COUNCIL_RULES_KEY)
-  if (legacy === undefined) return null
-  const known = [...(typeof committees === 'function' ? await committees() : committees), ...await heldCommittees(db)]
-  const carried = rulesFromCouncilCalendar(legacy, known)
-  if (!carried) return null
-  if (known.length > 0) {
-    // Saved once, so the team's settings page shows them and edits them from here on.
-    await db.insert(associationConfig).values({ key: EVENT_RULES_KEY, value: JSON.stringify(carried) }).onConflictDoNothing()
-  }
-  return carried
+  if (legacy === undefined) return { rules: null, settled: true }
+  const listed = typeof committees === 'function' ? await committees() : committees
+  const carried = rulesFromCouncilCalendar(legacy, [...(listed ?? []), ...await heldCommittees(db)])
+  if (!carried) return { rules: null, settled: true }
+  if (!listed) return { rules: carried, settled: false }
+  // Saved once, so the team's settings page shows them and edits them from here on.
+  await db.insert(associationConfig).values({ key: EVENT_RULES_KEY, value: JSON.stringify(carried) }).onConflictDoNothing()
+  return { rules: carried, settled: true }
 }
 
-/**
- * The committees central lists for the instance's covered states
- * (GET /tenants/:tenantId/body-event-options), or none when central can't say.
- */
-export async function centralCommittees(env: Env): Promise<{ committeeId: string; name: string; chamber: string | null; state: string }[]> {
+/** The committees and kinds central lists for a state (GET /tenants/:tenantId/body-event-options). */
+export interface StateOptions {
+  committees: { committeeId: string; name: string; chamber: string | null }[]
+  kinds: { kind: string; types: string[] }[]
+}
+
+/** What central lists for each covered state with body events, or null when central didn't answer. */
+export async function centralOptions(env: Env): Promise<Record<string, StateOptions> | null> {
   try {
     const res = await centralFetch(env, `/tenants/${env.TENANT_ID}/body-event-options`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const body = await res.json() as { states?: Record<string, { committees?: { committeeId: string; name: string; chamber: string | null }[] }> }
-    return Object.entries(body.states ?? {}).flatMap(([state, o]) => (o.committees ?? []).map(c => ({ ...c, state })))
+    const body = await res.json() as { states?: unknown }
+    if (!body.states || typeof body.states !== 'object' || Array.isArray(body.states)) throw new Error('the answer has no states')
+    const states = body.states as Record<string, Partial<StateOptions>>
+    return Object.fromEntries(Object.entries(states).map(([state, o]) => [state, { committees: o.committees ?? [], kinds: o.kinds ?? [] }]))
   } catch (err) {
-    console.error('[event-rules] central committee list unavailable', err)
-    return []
+    console.error('[event-rules] central options unavailable', err)
+    return null
   }
+}
+
+/** Central's committees for the covered states, each with its state, or null when central didn't answer. */
+export function optionCommittees(states: Record<string, StateOptions> | null) {
+  return states && Object.entries(states).flatMap(([state, o]) => o.committees.map(c => ({ ...c, state })))
 }
 
 function chunks<T>(items: readonly T[], size = 80): T[][] {

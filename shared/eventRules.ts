@@ -188,7 +188,9 @@ export function rulesFromCouncilCalendar(legacy: unknown, committees: readonly {
     const prior = out.committees.find(c => c.committeeId === committee.committeeId)
     // A committee listed twice keeps its broadest entry: every event wins.
     if (prior) { if (!kind) delete prior.kind; continue }
-    out.committees.push(kind ? { ...committee, kind } : { ...committee })
+    // Only the id and name: central's list carries more (chamber, state) that rules don't keep.
+    const { committeeId, name: committeeName } = committee
+    out.committees.push(kind ? { committeeId, name: committeeName, kind } : { committeeId, name: committeeName })
   }
   if (keywords.length > 0) out.topics.push({ name: COUNCIL_CALENDAR_TOPIC, keywords: [...new Set(keywords)] })
   return out

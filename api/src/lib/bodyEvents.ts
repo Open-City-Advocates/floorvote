@@ -3,7 +3,7 @@ import { associationConfig, bills, calendarEventBills, calendarEvents } from '..
 import { centralFetch } from './centralFetch'
 import { hearingUid } from './hearingUid'
 import { nowDb } from './dbTime'
-import { applyEventRules, bodyEventFacets, centralCommittees, loadEventRules } from './eventRules'
+import { applyEventRules, bodyEventFacets, centralOptions, loadEventRules, optionCommittees } from './eventRules'
 import type { AppDb, Env } from '../types'
 
 /**
@@ -233,7 +233,9 @@ async function reconcileBodyEvents(
 
   result.covered = await pointCovers(env, db, events, new Set(removed.map(r => r.uid)))
   // The instance's event rules, over events new or changed since, and bills tracked since.
-  await applyEventRules(db, await loadEventRules(db, () => centralCommittees(env)))
+  // Rules still waiting on central's committee list (a fork's being carried over) apply nothing yet: the next hour retries.
+  const loaded = await loadEventRules(db, async () => optionCommittees(await centralOptions(env)))
+  if (loaded.settled) await applyEventRules(db, loaded.rules)
   return result
 }
 
