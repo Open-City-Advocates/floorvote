@@ -30,7 +30,7 @@ import { matchesUnion } from './keywords'
 export interface EventRules {
   /** Committees, by central committee id, each with its name for display and joint hearings. */
   committees: EventRuleCommittee[]
-  /** Kinds (matched exactly) or event types (matched without regard to case), in any committee. */
+  /** Kinds or event types, in any committee. A value matches an event's kind exactly, or its event type in any case. */
   kinds: string[]
   topics: EventRuleTopic[]
   /** Show any event with a bill the instance tracks (a keyword match, an added bill, or a prioritized one) on its agenda. */
@@ -128,7 +128,12 @@ function shortCommitteeName(name: string): string {
   return name.trim().replace(/^committee on\s+/i, '')
 }
 
-/** A kind matches exactly, and an event type without regard to case, as #217's hearing types did. */
+/**
+ * Whether a rule's kind or event type names the event: its kind exactly, or
+ * its event type without regard to case, as #217's hearing types matched. Any
+ * value is compared with the type, so a kind-named value ('meeting') also
+ * selects an event typed "Meeting" under another kind.
+ */
 function isKind(event: EventFacets, value: string): boolean {
   return value === event.kind || (event.type !== null && value.toLowerCase() === event.type.toLowerCase())
 }
