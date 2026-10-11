@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 // sessionToSlug imported via the api re-export — also validates the dedup
 // wiring (api/src/lib/sessionSlug re-exports shared). billUrl is shared-only.
-import { sessionToSlug } from '../../src/lib/sessionSlug'
+import { legacySessionSlug, sessionToSlug } from '../../src/lib/sessionSlug'
 import { billUrl } from '../../../shared/sessionSlug'
 
 describe('sessionToSlug', () => {
@@ -37,6 +37,24 @@ describe('sessionToSlug', () => {
 
   it('falls back to a kebab slug when there is no leading year', () => {
     expect(sessionToSlug('Special Joint Session')).toBe('special-joint-session')
+  })
+})
+
+describe('legacySessionSlug', () => {
+  // The slug releases before provider-model gave a session, wherever the
+  // current rule gives it another. Old links use it.
+  it('returns the old slug for each session the current rule renames', () => {
+    expect(legacySessionSlug('2026 Special Session 1')).toBe('2026')
+    expect(legacySessionSlug('2026 Special Session II')).toBe('2026')
+    expect(legacySessionSlug('2025-2026 Special Session 2')).toBe('2025-2026')
+    expect(legacySessionSlug('2025-2026 Council Period 26')).toBe('2025-2026')
+  })
+
+  it('returns null where the slug is unchanged', () => {
+    expect(legacySessionSlug('2026 Regular Session')).toBeNull()
+    expect(legacySessionSlug('2026 1st Special Session')).toBeNull()
+    expect(legacySessionSlug('2026 Special Session')).toBeNull()
+    expect(legacySessionSlug('Special Joint Session')).toBeNull()
   })
 })
 
