@@ -23,11 +23,14 @@ export interface DryRunCollision extends DryRunSession {
  * bill URLs change. `slug` is the one it would get. `oldSlugHolder` is the
  * session of its state that would hold its old slug, if any: an old link to a
  * number both sessions have reaches that session's bill, with a pointer here.
+ * `sharesOldSlugWith` lists the other renamed sessions of its state with the
+ * same old slug: an old link to a number they share is a 409 that names each.
  */
 export interface DryRunRename extends DryRunSession {
   oldSlug: string
   slug: string
   oldSlugHolder?: number
+  sharesOldSlugWith?: number[]
 }
 
 /**
@@ -78,11 +81,15 @@ export function dryRunSlugs(rows: DryRunSession[]): { collisions: DryRunCollisio
     assigned.push({ session: s, wanted, slug })
   }
   const collisions = assigned.filter(a => a.slug !== a.wanted).map(a => ({ ...a.session, wanted: a.wanted, slug: a.slug }))
-  const renames = assigned.flatMap(({ session: s, wanted, slug }) => {
+  const renames: DryRunRename[] = assigned.flatMap(({ session: s, wanted, slug }) => {
     const oldSlug = sessionToSlugBeforeProviders(s.sessionName) || 'session'
     if (oldSlug === wanted) return []
     const oldSlugHolder = taken.get(s.state)!.get(oldSlug)
     return [{ ...s, oldSlug, slug, ...(oldSlugHolder === undefined ? {} : { oldSlugHolder }) }]
   })
+  for (const r of renames) {
+    const sharing = renames.filter(o => o !== r && o.state === r.state && o.oldSlug === r.oldSlug).map(o => o.sessionId)
+    if (sharing.length > 0) r.sharesOldSlugWith = sharing
+  }
   return { collisions, renames }
 }

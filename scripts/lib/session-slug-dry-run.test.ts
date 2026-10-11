@@ -57,6 +57,19 @@ describe('dryRunSlugs', () => {
     ])
   })
 
+  it('flags renamed sessions that share an old slug, whose old links to a shared number are ambiguous', () => {
+    const { renames } = dryRunSlugs(parseSessionRows([
+      '2210,MD,2026 Special Session 1',
+      '2211,MD,2026 Special Session 2',
+      '2300,VA,2026 Special Session I',
+    ].join('\n')))
+    expect(renames.map(r => [r.sessionId, r.oldSlugHolder, r.sharesOldSlugWith])).toEqual([
+      [2210, undefined, [2211]],
+      [2211, undefined, [2210]],
+      [2300, undefined, undefined],
+    ])
+  })
+
   it('lists a renamed session whose new slug is taken in both lists, with the slug it would get', () => {
     const { collisions, renames } = dryRunSlugs([
       { sessionId: 2050, state: 'DC', sessionName: '2025-2026 Council Period 26', provider: 'legiscan', owner: 'lims' },

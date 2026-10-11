@@ -11,7 +11,8 @@
  *   slug is ambiguous: a bill number that the session now holding the old slug
  *   also has reaches that session's bill, which points to this one (such
  *   renames say who holds it), and a number that two renamed sessions with the
- *   same old slug share asks the reader to choose.
+ *   same old slug share asks the reader to choose (such renames say which
+ *   sessions share it).
  * - Collisions: sessions whose name asks for a slug another session of their
  *   state would hold first, with the slug they would get instead. Old links
  *   with the slug asked for resolve the same way.
@@ -41,7 +42,8 @@ console.log(`${rows.length} sessions.`)
 console.log(`\nRenames: ${renames.length} would get a different slug than older releases gave them.`)
 for (const r of renames.sort(byStateAndId)) {
   const holder = r.oldSlugHolder === undefined ? '' : `\t(${r.oldSlug} now held by ${r.oldSlugHolder})`
-  console.log(`${r.state}\t${r.sessionId}\t${r.provider ?? 'legiscan'}\t"${r.sessionName}"\t${r.oldSlug} → ${r.slug}${holder}`)
+  const sharing = r.sharesOldSlugWith ? `\t(shares old slug with ${r.sharesOldSlugWith.join(', ')})` : ''
+  console.log(`${r.state}\t${r.sessionId}\t${r.provider ?? 'legiscan'}\t"${r.sessionName}"\t${r.oldSlug} → ${r.slug}${holder}${sharing}`)
 }
 console.log(`\nCollisions: ${collisions.length} would not get the slug their name asks for.`)
 for (const c of collisions.sort(byStateAndId)) {
