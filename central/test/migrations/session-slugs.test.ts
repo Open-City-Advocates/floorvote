@@ -90,6 +90,19 @@ describe('session slugs on an upgraded central', () => {
     expect(await slugsIn('US')).toEqual({ 7001: 'special-joint-session', 7002: 'special-joint-session-2', 7003: 'special-joint-session-3' })
   })
 
+  it('slug a large central\'s sessions in batches, unique within each state across batch boundaries', async () => {
+    // 120 more Texas sessions that all ask for "2026", more than one batch holds.
+    await env.DB.batch(Array.from({ length: 120 }, (_, i) => env.DB.prepare(
+      `INSERT INTO sessions (session_id, state_id, state, year_start, year_end, session_tag, session_title, session_name)
+       VALUES (?, 43, 'TX', 2026, 2026, '', '2026 Regular Session', '2026 Regular Session')`).bind(80000 + i)))
+    const db = drizzle(env.DB, { schema })
+    await Promise.all([assignSessionSlugs(db), assignSessionSlugs(db)])
+    const tx = Object.values(await slugsIn('TX'))
+    expect(new Set(tx).size).toBe(120)
+    expect(tx).toEqual(expect.arrayContaining(['2026', '2026-2', '2026-120']))
+    expect(await slugsIn('MD')).toEqual({ 2200: '2026', 3000000005: '2026-2', 3000000006: '2026-s1' })
+  })
+
   it('give the plain slug to the session of the provider that owns the state, ahead of an older one', async () => {
     // A fork's DC: LIMS owns it, and a leftover LegiScan Council Period 26
     // session has a lower id. /DC/cp26/... stays with LIMS.
