@@ -5,7 +5,9 @@ import {
   DEFAULT_PROVIDER_ID, findProvider,
   type CentralMeasure, type Provider, type ProviderContext, type ProviderPerson, type ProviderRecord, type StoredSession, type SyncSession,
 } from '../providers'
-import { isSnapshotProvider, sessionValues, type SnapshotProvider } from '../cron/sync-snapshots'
+import { isSnapshotProvider, runSnapshotSync, sessionValues, type SnapshotPassReport, type SnapshotProvider } from '../cron/sync-snapshots'
+import { resendStateStubs } from './tenantLinks'
+import type { DeliveryOutcome } from './tenantDelivery'
 import { carryCalendar, calendarKind, sentIdentity, type CalendarRow } from './billCalendar'
 import { billMatchKey, matchPeople, type PeopleMatch, type PersonFacts, type PersonMatch } from './cutoverMatch'
 import { providerContext } from './providerContext'
@@ -37,11 +39,13 @@ import type { Db, Env } from '../types'
  *   cleared, since the ingest upserts those by their own ids and the two
  *   providers' would otherwise mix.
  * - **The first ingest** of each moved bill (queue/processor.ts, flagged by
- *   `bills.carried_from`) sends instances no changes, and carries the bill's
- *   calendar entries over (`carryCalendar`): an entry on the same date and of
- *   the same kind keeps the identity, and so the calendar UID, instances
- *   already have. The rest of the old entries are cancelled once, and the new
- *   provider's other entries arrive as new.
+ *   `bills.carried_from`) is queued by the new provider's sync, for every
+ *   moved bill, tracked or not (`syncMovedState` runs that sync at once, and
+ *   then re-sends instances' monitor stubs). It sends instances no changes,
+ *   and carries the bill's calendar entries over (`carryCalendar`): an entry
+ *   on the same date and of the same kind keeps the identity, and so the
+ *   calendar UID, instances already have. The rest of the old entries are
+ *   cancelled once, and the new provider's other entries arrive as new.
  * - **Legislators** are matched on name, chamber, and district, and keep
  *   their person ids (`cutover_people`, applied by lib/carriedIds.ts).
  * - **The losing provider's sessions** in the state are marked ended, since
@@ -51,9 +55,10 @@ import type { Db, Env } from '../types'
  *   bills. If anything fails, nothing is written and the state stays on its
  *   provider.
  *
- * `undoCutover` flips the state back and puts each moved bill back where it
+ * `applyUndo` flips the state back and puts each moved bill back where it
  * was. The previous provider's sync then rewrites the rows, with the same
- * quiet first ingest.
+ * quiet first ingest. LegiScan's gives it only to tracked bills, since each
+ * costs a getBill (cron/sync.ts).
  */
 
 /** A refused or impossible cutover, with the HTTP status the admin route answers. */
@@ -681,6 +686,43 @@ export async function applyUndo(env: Env, db: Db, plan: UndoPlan): Promise<void>
     throw new CutoverError(409, `${cutover.state} changed provider before the undo could run. Nothing was written.`)
   }
   console.log(`[cutover] undid ${id}: ${cutover.state} is back on ${from.id}, ${plan.bills} bills moved back`)
+}
+
+/** What syncing a state after a cutover or an undo did. */
+export interface MoveSync {
+  sync?: { passes: SnapshotPassReport[] } | { error: string }
+  stubs?: { tenantId: string; queued: number; via: DeliveryOutcome }[] | { error: string }
+}
+
+/**
+ * Right after a cutover or an undo, the provider the state now has syncs it,
+ * when it is a snapshot provider. That pass stores its records under the kept
+ * ids, gives each untracked moved bill the provider's status, and queues
+ * every moved bill's first ingest (cron/sync.ts). Then each instance covering
+ * the state gets its monitor stubs there again, which makes no provider call
+ * and runs no AI, so the stubs show the new provider's statuses.
+ *
+ * LegiScan's sync runs on its own schedule, and a stub re-sent before its
+ * full pass would carry a status code its vocabulary doesn't label. That pass
+ * sends a stub itself for each moved bill the other provider rewrote, since
+ * its change hash moved with it. If a snapshot sync fails, its next pass
+ * does the same.
+ */
+export async function syncMovedState(env: Env, db: Db, provider: Provider, state: string): Promise<MoveSync> {
+  if (!isSnapshotProvider(provider)) return {}
+  let passes: SnapshotPassReport[]
+  try {
+    passes = await runSnapshotSync(provider, env, db, { force: true })
+  } catch (err) {
+    console.error(`[cutover] ${provider.id}'s first sync of ${state} failed; its next pass will retry:`, err)
+    return { sync: { error: err instanceof Error ? err.message : String(err) } }
+  }
+  try {
+    return { sync: { passes }, stubs: await resendStateStubs(env, db, state) }
+  } catch (err) {
+    console.error(`[cutover] re-sending ${state}'s monitor stubs failed:`, err)
+    return { sync: { passes }, stubs: { error: err instanceof Error ? err.message : String(err) } }
+  }
 }
 
 /** What the admin routes answer for a plan. */

@@ -110,6 +110,15 @@ export type BillMessage = {
    * entries were missing from (lib/billCalendar.ts). Calls no provider.
    */
   calendarRecheck?: string
+  /**
+   * The provider whose sync queued this as the first ingest of an untracked
+   * bill a cutover moved to it (cron/sync.ts). The ingest is skipped, with no
+   * provider call, once that first ingest has happened or the bill has moved
+   * on to another provider, so a pass that queues the bill again while an
+   * earlier message waits costs nothing, and an undo never spends the previous
+   * provider's budget on it.
+   */
+  firstIngestFor?: string
 }
 
 /**

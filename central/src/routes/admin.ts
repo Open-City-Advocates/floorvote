@@ -14,13 +14,14 @@ import { importProviderMeasures, isSnapshotProvider, runSnapshotSync } from '../
 import { runBodyEventSync } from '../cron/body-events'
 import { ingestQueueFor, providerConfigured } from '../lib/providerRouting'
 import { claimState, listStateOwnership, loadStateOwners, ownerOf } from '../lib/stateProviders'
-import { applyCutover, applyUndo, CutoverError, cutoverReport, planCutover, planUndo, undoReport } from '../lib/cutover'
+import { applyCutover, applyUndo, CutoverError, cutoverReport, planCutover, planUndo, syncMovedState, undoReport } from '../lib/cutover'
 import { runAnomalyWatch } from '../lib/anomalyWatch'
 import { nowDb } from '../lib/dbTime'
 import { providerContext } from '../lib/providerContext'
 import type { Env, IngestorMessage, NotificationMessage } from '../types'
 import { getTenantQueue } from '../lib/tenantQueue'
 import { deliverBatchToTenant } from '../lib/tenantDelivery'
+import { resendTenantLinks } from '../lib/tenantLinks'
 import { queuesRestEnabled } from '../lib/queuesRest'
 import { guardCallerTenantParam } from '../lib/callerTenant'
 import { parseHandle, toHandle } from '../lib/billHandle'
@@ -111,8 +112,9 @@ adminRoutes.post('/state-providers/:state', async (c) => {
 // ?confirm=true: it reads the new provider's feed, reports matched and
 // unmatched bills, calendar entries, and people, and writes nothing but the API call log. With
 // confirm, every matched bill keeps its row id and handle, ownership flips
-// last, and the new provider's sync runs at once. Operator-only, like the
-// claim, so it isn't on the tenant surface allowlist.
+// last, the new provider's sync runs at once, and instances' monitor stubs in
+// the state are re-sent. Operator-only, like the claim, so it isn't on the
+// tenant surface allowlist.
 adminRoutes.post('/state-providers/:state/cutover', async (c) => {
   const state = c.req.param('state').toUpperCase()
   if (!/^[A-Z]{2}$/.test(state)) return c.json({ error: 'state must be a two-letter code' }, 400)
@@ -126,14 +128,9 @@ adminRoutes.post('/state-providers/:state/cutover', async (c) => {
     if (dryRun) return c.json({ dryRun: true, ...cutoverReport(plan) })
     const { id } = await applyCutover(c.env, db, plan)
     // The new provider's first pass stores its records under the kept ids and
-    // queues the moved bills' first ingests. If it fails, the hourly sync runs it.
-    let sync: { passes: Awaited<ReturnType<typeof runSnapshotSync>> } | { error: string }
-    try {
-      sync = { passes: await runSnapshotSync(plan.to, c.env, db, { force: true }) }
-    } catch (err) {
-      console.error(`[cutover] ${plan.to.id}'s first sync of ${state} failed; the hourly sync will retry:`, err)
-      sync = { error: err instanceof Error ? err.message : String(err) }
-    }
+    // queues every moved bill's first ingest, and then instances' monitor
+    // stubs are re-sent. If the pass fails, the hourly sync runs it.
+    const { sync, stubs } = await syncMovedState(c.env, db, plan.to, state)
     const report = cutoverReport(plan)
     return c.json({
       ok: true, cutover: id, state, from: plan.from.id, to: plan.to.id,
@@ -141,6 +138,7 @@ adminRoutes.post('/state-providers/:state/cutover', async (c) => {
         unmatched: { old: report.bills.unmatched.old.length, new: report.bills.unmatched.new.length } },
       people: { matched: report.people.matched, weak: report.people.weak },
       sync,
+      ...(stubs ? { stubs } : {}),
     })
   } catch (err) {
     if (err instanceof CutoverError) return c.json({ error: err.message }, err.status)
@@ -161,16 +159,10 @@ adminRoutes.post('/state-providers/:state/undo-cutover', async (c) => {
     const plan = await planUndo(c.env, db, state)
     if (c.req.query('confirm') !== 'true') return c.json({ dryRun: true, ...undoReport(plan) })
     await applyUndo(c.env, db, plan)
-    // A snapshot provider syncs the state back now. LegiScan's hourly sync does it on its own schedule.
-    let sync: { passes: Awaited<ReturnType<typeof runSnapshotSync>> } | { error: string } | undefined
-    if (isSnapshotProvider(plan.from)) {
-      try {
-        sync = { passes: await runSnapshotSync(plan.from, c.env, db, { force: true }) }
-      } catch (err) {
-        sync = { error: err instanceof Error ? err.message : String(err) }
-      }
-    }
-    return c.json({ ok: true, ...undoReport(plan), ...(sync ? { sync } : {}) })
+    // A snapshot provider syncs the state back now, and instances' monitor
+    // stubs are re-sent. LegiScan's hourly sync does both on its own schedule.
+    const { sync, stubs } = await syncMovedState(c.env, db, plan.from, state)
+    return c.json({ ok: true, ...undoReport(plan), ...(sync ? { sync } : {}), ...(stubs ? { stubs } : {}) })
   } catch (err) {
     if (err instanceof CutoverError) return c.json({ error: err.message }, err.status)
     console.error(`[cutover] undo of ${state} stopped:`, err)
@@ -542,7 +534,8 @@ adminRoutes.post('/refetch-fragment-texts', async (c) => {
 // Shared body for /refresh-stubs and /refresh-metadata: both queue a batch of
 // LegiScan-free notification messages for a tenant's bill_tenants rows, scoped
 // by match_type (stub vs. matched) and optionally by state, differing only in
-// which notification flag they set. No LegiScan calls, no AI runs either way.
+// which notification flag they set (lib/tenantLinks.ts). No LegiScan calls, no
+// AI runs either way.
 async function refreshTenantLinks(
   c: Context<{ Bindings: Env }>,
   // tenantId is passed in rather than read from `c` here: this helper takes a
@@ -557,34 +550,13 @@ async function refreshTenantLinks(
   const tenant = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).get()
   if (!tenant) return c.json({ error: 'tenant not found' }, 404)
 
-  const matchTypeCond = opts.matched ? isNotNull(billTenants.matchType) : isNull(billTenants.matchType)
-
-  // bill_tenants has no state column, so only join to bills when a state filter
-  // is requested — the unscoped query stays identical to the pre-filter query.
-  const links = state
-    ? await db.select({ billId: billTenants.billId })
-      .from(billTenants)
-      .innerJoin(bills, eq(bills.billId, billTenants.billId))
-      .where(and(eq(billTenants.tenantId, tenantId), matchTypeCond, eq(bills.state, state)))
-      .all()
-    : await db.select({ billId: billTenants.billId })
-      .from(billTenants)
-      .where(and(eq(billTenants.tenantId, tenantId), matchTypeCond))
-      .all()
-
-  const bodies = links.map(l => ({
-    tenantId,
-    billId: toHandle(l.billId),
-    [opts.flag]: true,
-  } as NotificationMessage))
-
-  // Binding-first, HTTP fallback by queue_id for tenants without a static binding.
-  const outcome = await deliverBatchToTenant(c.env, tenantId, tenant.queueId ?? null, bodies)
-  if (outcome === 'dropped' && bodies.length > 0) {
+  const { queued, via } = await resendTenantLinks(c.env, db, { tenantId, queueId: tenant.queueId ?? null },
+    { matched: opts.matched, flag: opts.flag, state })
+  if (via === 'dropped') {
     return c.json({ error: `no delivery path for tenant ${tenantId} (no binding, no queue_id)` }, 400)
   }
 
-  return c.json({ ok: true, tenantId, queued: bodies.length, via: outcome, state: state ?? null })
+  return c.json({ ok: true, tenantId, queued, via, state: state ?? null })
 }
 
 // One-time catch-up for stale stub data. For every bill_tenants row with
