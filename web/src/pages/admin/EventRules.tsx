@@ -46,16 +46,23 @@ interface FormState {
 const KIND_LABELS: Record<string, string> = { hearing: 'Hearings', markup: 'Markups', meeting: 'Meetings' }
 const kindLabel = (kind: string) => KIND_LABELS[kind] ?? kind.charAt(0).toUpperCase() + kind.slice(1)
 
-/** The kinds a rule value may name: central's and the events', and the generic ones. */
-const kindNames = (kinds: Kind[]) => new Set([...Object.keys(KIND_LABELS), ...kinds.map(k => k.kind)])
+/** What the form reads saved rules against: the kinds and the event types listed. */
+interface Listed { kinds: Set<string>; types: string[] }
+const listedOf = (kinds: Kind[]): Listed => ({
+  // The generic kinds too, so a saved one stays a kind while no event of it is listed.
+  kinds: new Set([...Object.keys(KIND_LABELS), ...kinds.map(k => k.kind)]),
+  types: kinds.flatMap(k => k.types),
+})
 
-function toForm(rules: Rules | null, kinds: Set<string>): FormState {
-  const narrowing = (value: string | undefined) => value ? `${kinds.has(value) ? 'kind' : 'type'}:${value}` : ''
+function toForm(rules: Rules | null, listed: Listed): FormState {
+  // Event types match in any case, so a saved type takes the listed spelling, and its checkbox shows it chosen.
+  const asType = (value: string) => listed.types.find(t => t.toLowerCase() === value.toLowerCase()) ?? value
+  const narrowing = (value: string | undefined) => !value ? '' : listed.kinds.has(value) ? `kind:${value}` : `type:${asType(value)}`
   return {
     mode: rules ? 'rules' : 'all',
     committees: new Map((rules?.committees ?? []).map(c => [c.committeeId, narrowing(c.kind)])),
-    kinds: new Set((rules?.kinds ?? []).filter(k => kinds.has(k))),
-    types: new Set((rules?.kinds ?? []).filter(k => !kinds.has(k))),
+    kinds: new Set((rules?.kinds ?? []).filter(k => listed.kinds.has(k))),
+    types: new Set((rules?.kinds ?? []).filter(k => !listed.kinds.has(k)).map(asType)),
     topics: (rules?.topics ?? []).map(t => ({ name: t.name, keywords: t.keywords.join('\n') })),
     trackedBills: rules ? rules.trackedBills : true,
   }
@@ -92,7 +99,7 @@ export function EventRules() {
   const hasBodyEvents = useHasBodyEvents()
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [form, setForm] = useState<FormState>(() => toForm(null, kindNames([])))
+  const [form, setForm] = useState<FormState>(() => toForm(null, listedOf([])))
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null)
 
@@ -101,7 +108,7 @@ export function EventRules() {
   useEffect(() => {
     if (!offered) return
     apiFetch<Loaded>('/admin/event-rules')
-      .then(d => { setLoaded(d); setForm(toForm(d.rules, kindNames(d.kinds))) })
+      .then(d => { setLoaded(d); setForm(toForm(d.rules, listedOf(d.kinds))) })
       .catch(() => setLoadError('Could not load the calendar event settings.'))
   }, [offered])
 

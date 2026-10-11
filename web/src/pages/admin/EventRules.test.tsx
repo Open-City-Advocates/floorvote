@@ -126,6 +126,14 @@ describe('Calendar events settings', () => {
     })
   })
 
+  it('shows a saved event type chosen whatever its case, as the rules match it', async () => {
+    mockApi({ rules: { committees: [{ ...HOUSING, kind: 'roundtable' }], kinds: ['MEETING'], topics: [], trackedBills: false } })
+    render(<MemoryRouter><EventRules /></MemoryRouter>)
+    expect(await screen.findByLabelText('Meeting')).toBeChecked()
+    expect(screen.getByLabelText('Which Committee on Housing events')).toHaveValue('type:Roundtable')
+    expect(within(preview()).getByText(/2 of 3 upcoming events match/)).toBeInTheDocument()
+  })
+
   it('refuses a topic without keywords', async () => {
     const spy = mockApi({ rules: { committees: [], kinds: [], topics: [], trackedBills: false } })
     render(<MemoryRouter><EventRules /></MemoryRouter>)
