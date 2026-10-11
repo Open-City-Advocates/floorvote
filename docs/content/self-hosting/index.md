@@ -207,6 +207,10 @@ This loads the bills into central only. Linking them to a team and running AI su
 > [!CAUTION]
 > **Speed:** about 1,000 bills per minute against the remote database, so a typical state session (500–3,000 bills) takes 1–5 minutes. There's a `--from-api` option that downloads the dataset for you, but it can run out of memory on very large states (16,000+ bills) — use the manual download with `--from-dir` for those.
 
+## Optional: use a legislature's own data
+
+Every state starts on LegiScan, and **you don't need to do anything to stay on it**. For a few states (see [State coverage](/contributing/state-coverage)), FloorVote can read the legislature's own data instead. An admin switches a state over with a claim, `POST /api/admin/state-providers/:state` with the provider's name, which central refuses while instances track bills in that state from the current provider. The [provider guide](/contributing/providers) describes the claim, and `docs/internal/sync-pipeline.md` in the repository covers moving a state that teams already track.
+
 ## Next steps
 
 - **[Add your first tenant](/self-hosting/tenants)** — a team's instance, with its own users and keywords. This is the next required step.

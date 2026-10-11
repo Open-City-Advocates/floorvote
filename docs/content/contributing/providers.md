@@ -169,7 +169,7 @@ curl -X POST "$CENTRAL/api/admin/state-providers/MD" \
   -d '{"provider":"mga"}'
 ```
 
-Central refuses the claim when the provider doesn't serve that state or isn't configured, and when the state's current provider has bills that instances track. Moving those bills without orphaning anyone's links takes a cutover, a separate operation that matches bills across providers and moves instances' links onto the new rows. A new deployment, or a state no instance covers yet, can switch at once. A state whose provider later loses its key goes unsynced rather than falling back to LegiScan, since a fallback would duplicate every tracked bill.
+Central refuses the claim when the provider doesn't serve that state or isn't configured, and when the state's current provider has bills that instances track. Moving those bills without orphaning anyone's links takes a cutover, a separate operation that matches bills across providers and moves each matched bill onto the new provider's data, keeping its id so instances' links stay as they are. A new deployment, or a state no instance covers yet, can switch at once. A state whose provider later loses its key goes unsynced rather than falling back to LegiScan, since a fallback would duplicate every tracked bill.
 
 You don't write any of this as a contributor. It matters for two reasons: your provider should work for a state that is claimed at launch, and it should keep every bill's id stable across passes, since cutover and calendar subscriptions depend on that.
 
