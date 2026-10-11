@@ -22,6 +22,9 @@ import type { Db } from '../types'
  * it at once: each write claims a slug only if no other session of the state
  * holds it, in one statement, so two sessions can never take the same one.
  */
+/** Claims per batch: each binds four parameters, well under D1's 100 per statement. */
+const CLAIM_BATCH = 50
+
 export async function assignSessionSlugs(db: Db): Promise<void> {
   const pending = await db.select({ sessionId: sessions.sessionId, state: sessions.state, sessionName: sessions.sessionName })
     .from(sessions)
@@ -45,26 +48,42 @@ export async function assignSessionSlugs(db: Db): Promise<void> {
     return set
   }
 
+  // Plan every claim first, then send them in batches: on the first run after
+  // migration 0031 every session of every tracked state is pending, and one
+  // round trip each could pass D1's per-invocation query limit on a central
+  // that covers many states. Each claim keeps its guard, so a claim another job
+  // beat comes back with no change and is retried one at a time below.
+  const plans: { sessionId: number; state: string; wanted: string; slug: string }[] = []
   for (const s of pending) {
     const wanted = sessionToSlug(s.sessionName) || 'session'
     const used = await takenIn(s.state)
+    const slug = firstFreeSlug(wanted, used)
+    used.add(slug)
+    plans.push({ sessionId: s.sessionId, state: s.state, wanted, slug })
+  }
+  const claim = (p: { sessionId: number; state: string }, slug: string) => db.update(sessions).set({ slug })
+    .where(and(
+      eq(sessions.sessionId, p.sessionId),
+      isNull(sessions.slug),
+      sql`NOT EXISTS (SELECT 1 FROM sessions other WHERE other.state = ${p.state} AND other.slug = ${slug})`,
+    ))
+  const lost: typeof plans = []
+  for (let i = 0; i < plans.length; i += CLAIM_BATCH) {
+    const chunk = plans.slice(i, i + CLAIM_BATCH)
+    const stmts = chunk.map(p => claim(p, p.slug))
+    const results = await db.batch(stmts as [typeof stmts[number], ...typeof stmts])
+    results.forEach((r, j) => { if (!(r.meta.changes > 0)) lost.push(chunk[j]) })
+  }
+
+  for (const p of lost) {
+    const used = await takenIn(p.state)
     for (;;) {
-      const slug = firstFreeSlug(wanted, used)
-      const claimed = await db.update(sessions).set({ slug })
-        .where(and(
-          eq(sessions.sessionId, s.sessionId),
-          isNull(sessions.slug),
-          sql`NOT EXISTS (SELECT 1 FROM sessions other WHERE other.state = ${s.state} AND other.slug = ${slug})`,
-        ))
-        .run()
-      if (claimed.meta.changes > 0) {
-        used.add(slug)
-        break
-      }
       // Another job got here first: it slugged this session, or took the slug.
-      const now = await db.select({ slug: sessions.slug }).from(sessions).where(eq(sessions.sessionId, s.sessionId)).get()
+      const now = await db.select({ slug: sessions.slug }).from(sessions).where(eq(sessions.sessionId, p.sessionId)).get()
       if (!now || now.slug !== null) break
+      const slug = firstFreeSlug(p.wanted, used)
       used.add(slug)
+      if ((await claim(p, slug).run()).meta.changes > 0) break
     }
   }
 }
