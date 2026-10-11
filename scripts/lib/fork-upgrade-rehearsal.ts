@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 /**
@@ -71,30 +72,48 @@ export function readMigrations(dir: string): MigrationFile[] {
     .map(name => ({ name, sql: readFileSync(join(dir, name), 'utf8') }))
 }
 
+const sqlString = (s: string) => `'${s.replace(/'/g, "''")}'`
+
 /**
  * A database to rehearse on: a SQL dump (`wrangler d1 export`), loaded into
- * memory, or a SQLite file, copied into memory. The file itself is only read.
+ * memory, or a SQLite file, copied into memory. The file itself is only read:
+ * a SQLite file is opened read-only (so not even a WAL checkpoint writes to
+ * it) and snapshotted with VACUUM INTO to a temporary file, which is read in.
  */
 export function openCopy(path: string): DatabaseSync {
   const bytes = readFileSync(path)
   const db = new DatabaseSync(':memory:', { enableForeignKeyConstraints: false })
   if (bytes.subarray(0, 16).toString('latin1') === 'SQLite format 3\0') {
-    db.exec(`ATTACH DATABASE '${path.replace(/'/g, "''")}' AS source`)
-    const objects = db.prepare(`SELECT type, name, sql FROM source.sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type = 'table' DESC, rowid`).all() as { type: string; name: string; sql: string }[]
-    for (const o of objects.filter(o => o.type === 'table')) {
-      db.exec(o.sql)
-      db.exec(`INSERT INTO main."${o.name}" SELECT * FROM source."${o.name}"`)
+    const tmp = mkdtempSync(join(tmpdir(), 'fork-rehearsal-'))
+    const snapshot = join(tmp, 'copy.sqlite')
+    try {
+      const source = new DatabaseSync(path, { readOnly: true })
+      source.exec(`VACUUM INTO ${sqlString(snapshot)}`)
+      source.close()
+      loadSqlite(db, snapshot)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
     }
-    const seq = db.prepare(`SELECT 1 FROM source.sqlite_master WHERE name = 'sqlite_sequence'`).get()
-    if (seq) db.exec(`DELETE FROM main.sqlite_sequence; INSERT INTO main.sqlite_sequence SELECT * FROM source.sqlite_sequence`)
-    for (const o of objects.filter(o => o.type !== 'table')) db.exec(o.sql)
-    db.exec('DETACH DATABASE source')
   } else {
     db.exec(bytes.toString('utf8'))
   }
   // D1 enforces foreign keys, so the migrations run with them on.
   db.exec('PRAGMA foreign_keys = ON')
   return db
+}
+
+/** Every table, row, and index of a SQLite file, into `db`. */
+function loadSqlite(db: DatabaseSync, path: string) {
+  db.exec(`ATTACH DATABASE ${sqlString(path)} AS source`)
+  const objects = db.prepare(`SELECT type, name, sql FROM source.sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type = 'table' DESC, rowid`).all() as { type: string; name: string; sql: string }[]
+  for (const o of objects.filter(o => o.type === 'table')) {
+    db.exec(o.sql)
+    db.exec(`INSERT INTO main."${o.name}" SELECT * FROM source."${o.name}"`)
+  }
+  const seq = db.prepare(`SELECT 1 FROM source.sqlite_master WHERE name = 'sqlite_sequence'`).get()
+  if (seq) db.exec(`DELETE FROM main.sqlite_sequence; INSERT INTO main.sqlite_sequence SELECT * FROM source.sqlite_sequence`)
+  for (const o of objects.filter(o => o.type !== 'table')) db.exec(o.sql)
+  db.exec('DETACH DATABASE source')
 }
 
 const q = (id: string) => `"${id.replace(/"/g, '""')}"`
@@ -271,12 +290,20 @@ function sameFingerprints(before: Map<string, { rows: number; hash: string }>, a
 export interface RehearsalOptions {
   /** The fork's LIMS_STATES. Default DC. */
   limsStates?: string[]
+  /**
+   * The names of upstream's own migration files. Default: every file in
+   * `migrations`. Pass them when the folder also holds the fork's own files
+   * (cherry-picked onto an upgrade branch), or those count as upstream's and
+   * the fork's tables and columns go unchecked.
+   */
+  upstreamNames?: Iterable<string>
 }
 
 /**
- * Rehearse upstream's migrations on one database copy. `migrations` is
- * upstream's folder for this kind of database (central/migrations-legiscan or
- * api/migrations). The copy is changed in place, so it can be saved after.
+ * Rehearse a migrations folder on one database copy. `migrations` is the
+ * folder for this kind of database (central/migrations-legiscan or
+ * api/migrations) on the branch to deploy. The copy is changed in place, so
+ * it can be saved after.
  */
 export function rehearse(db: DatabaseSync, kind: DbKind, label: string, migrations: MigrationFile[], opts: RehearsalOptions = {}): RehearsalReport {
   const report: RehearsalReport = { kind, label, forkMigrations: [], applied: [], forkTables: [], forkColumns: [], checks: [], notes: [] }
@@ -287,11 +314,11 @@ export function rehearse(db: DatabaseSync, kind: DbKind, label: string, migratio
     return report
   }
   const appliedNames = rows(db, 'SELECT name FROM d1_migrations ORDER BY id').map(r => String(r.name))
-  const upstreamNames = new Set(migrations.map(m => m.name))
+  const upstreamNames = new Set(opts.upstreamNames ?? migrations.map(m => m.name))
   report.forkMigrations = appliedNames.filter(n => !upstreamNames.has(n))
   const pending = migrations.filter(m => !appliedNames.includes(m.name))
 
-  const upstream = upstreamSchema(migrations)
+  const upstream = upstreamSchema(migrations.filter(m => upstreamNames.has(m.name)))
   report.forkTables = tables(db).filter(t => !upstream.has(t))
   report.forkColumns = tables(db).filter(t => upstream.has(t))
     .flatMap(t => columns(db, t).filter(c => !upstream.get(t)!.has(c)).map(c => `${t}.${c}`))

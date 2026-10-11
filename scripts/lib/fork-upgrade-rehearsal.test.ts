@@ -113,6 +113,29 @@ describe('the fork upgrade rehearsal', () => {
       .toEqual({ n: forkFiles('instance').length })
   })
 
+  it('still checks the fork\'s own tables when its migrations are cherry-picked onto the branch, given upstream\'s names', () => {
+    // An upgrade branch: upstream's folders plus the fork's files it keeps.
+    const branch = (kind: DbKind, own: string[]) => [...upstreamMigrations(kind), ...readMigrations(join(ROOT, FORK[kind].own)).filter(m => own.includes(m.name))]
+      .sort((a, b) => compareMigrationNames(a.name, b.name))
+    const central = branch('central', ['0022_council_directory.sql', '0023_council_history.sql', '0024_council_seated.sql'])
+    const instance = branch('instance', ['0071_deep_analyses.sql', '0072_team_links.sql', '0074_council_crm.sql'])
+    const names = (kind: DbKind) => upstreamMigrations(kind).map(m => m.name)
+
+    const c = rehearse(forkCopy('central'), 'central', 'central', central, { upstreamNames: names('central') })
+    expect(c.checks.filter(x => !x.ok)).toEqual([])
+    expect(c.forkMigrations).toEqual(['0020_lims_records.sql', '0021_council_events.sql', '0022_council_directory.sql', '0023_council_history.sql', '0024_council_seated.sql'])
+    expect(c.forkTables).toEqual(['council_changes', 'council_committee_history', 'council_committees', 'council_directory', 'council_events'])
+    expect(c.forkColumns).toEqual(['people.term_start', 'people.term_end', 'people.seated'])
+    const i = rehearse(forkCopy('instance'), 'instance', 'instance', instance, { upstreamNames: names('instance') })
+    expect(i.checks.filter(x => !x.ok)).toEqual([])
+    expect(i.forkTables).toEqual(['crm_contacts', 'crm_followups', 'crm_people', 'deep_analyses', 'team_links'])
+
+    // Without upstream's names, the cherry-picked files pass for upstream's and their tables go unchecked.
+    const blind = rehearse(forkCopy('instance'), 'instance', 'instance', instance)
+    expect(blind.forkMigrations).toEqual([])
+    expect(blind.forkTables).toEqual([])
+  })
+
   it('fails before upgrading when LegiScan bills in DC are tracked, since DC\'s ownership row would be refused', () => {
     const db = forkCopy('central')
     db.exec(`INSERT INTO bills (bill_id, session_id, state, state_id, bill_number, change_hash, title) VALUES (2001234, 2100, 'DC', 51, 'B26-0001', 'h', 'From LegiScan')`)
