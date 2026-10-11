@@ -47,7 +47,9 @@ export interface PeopleMatch<A extends PersonFacts, B extends PersonFacts> {
   matched: PersonMatch<A, B>[]
   /** New people who weren't each other's one candidate with anyone, left unmatched with their candidates. */
   ambiguous: { person: B; candidates: A[] }[]
+  /** Every old person left unmatched, an ambiguity's candidates included, so matched plus unmatched is everyone. */
   unmatchedFrom: A[]
+  /** New people left unmatched, other than the ambiguous ones. */
   unmatchedTo: B[]
 }
 
@@ -131,6 +133,7 @@ export function matchPeople<A extends PersonFacts, B extends PersonFacts>(from: 
 
   const freeFrom = new Set(from)
   const freeTo = new Set(to)
+  const matchedFrom = new Set<A>()
   const matched: PersonMatch<A, B>[] = []
   const ambiguous: PeopleMatch<A, B>['ambiguous'] = []
   for (const tier of ['full', 'initial', 'last'] as const) {
@@ -155,9 +158,10 @@ export function matchPeople<A extends PersonFacts, B extends PersonFacts>(from: 
       if (fo.chamber && fp.chamber) on.push('chamber')
       if (fo.district && fp.district) on.push('district')
       matched.push({ from: o, to: person, name: tier, on, weak: !(on.includes('chamber') && on.includes('district')) })
+      matchedFrom.add(o)
       freeFrom.delete(o)
       freeTo.delete(person)
     }
   }
-  return { matched, ambiguous, unmatchedFrom: [...freeFrom], unmatchedTo: [...freeTo] }
+  return { matched, ambiguous, unmatchedFrom: from.filter(p => !matchedFrom.has(p)), unmatchedTo: [...freeTo] }
 }

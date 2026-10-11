@@ -91,6 +91,8 @@ describe('people matching', () => {
     expect(result.matched).toEqual([])
     expect(result.ambiguous.map(a => [a.person.id, a.candidates.map(c => c.id)])).toEqual([[-1, [1, 2]]])
     expect(result.unmatchedTo.map(p => p.id)).toEqual([-2])
+    // Still reported unmatched, so the operator's counts add up.
+    expect(result.unmatchedFrom.map(p => p.id)).toEqual([1, 2])
   })
 
   it('prefers whole names to initials, so two Whites stay apart', () => {
