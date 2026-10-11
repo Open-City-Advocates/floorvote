@@ -29,6 +29,10 @@ GitHub shares one number space across issues and PRs, so a bare `#42` may be eit
 
 Create a GitHub issue.
 
+## Writing acceptance criteria
+
+Write acceptance criteria against the inputs the code will see in production, not idealized ones. If behavior depends on time windows, IDs, counts, or optional data, name the realistic case: timestamps that drift by seconds between scheduled runs, a cursor that's missing on first run, a manual trigger at an arbitrary time, a value that's absent. An agent tests what the criteria describe. Criteria that only describe clean boundaries get code that only works on clean boundaries (see #369's review: exact day counts that real cron runs never produce).
+
 ## When a skill says "fetch the relevant ticket"
 
 Run `gh issue view <number> --comments`.
