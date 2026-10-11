@@ -56,6 +56,12 @@ describe('eventMatchesRules', () => {
     expect(eventMatchesRules(event(), rules({ committees: [health] }), PRIORITIZED)).toBe(true)
   })
 
+  it('compares event types without regard to case, and kinds exactly', () => {
+    expect(eventMatchesRules(event(), rules({ kinds: ['roundtable'] }), NONE)).toBe(true)
+    expect(eventMatchesRules(event(), rules({ committees: [{ ...youth, kind: 'ROUNDTABLE' }] }), NONE)).toBe(true)
+    expect(eventMatchesRules(event(), rules({ kinds: ['Hearing'] }), NONE)).toBe(false)
+  })
+
   it('selects an event with a tracked bill on its agenda only when the rule says so', () => {
     expect(eventMatchesRules(event(), rules({ trackedBills: true }), TRACKED)).toBe(true)
     expect(eventMatchesRules(event(), rules({ trackedBills: true }), NONE)).toBe(false)

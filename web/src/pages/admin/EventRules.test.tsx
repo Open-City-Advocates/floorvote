@@ -104,6 +104,28 @@ describe('Calendar events settings', () => {
     expect(within(preview()).getByText(/a prioritized bill is on the agenda/)).toBeInTheDocument()
   })
 
+  it('keeps kinds and event types apart, in the lists and in a committee\'s narrowing', async () => {
+    const spy = mockApi({ rules: { committees: [{ ...HOUSING, kind: 'Roundtable' }, { ...COW, kind: 'meeting' }], kinds: ['hearing', 'Meeting'], topics: [], trackedBills: false } })
+    render(<MemoryRouter><EventRules /></MemoryRouter>)
+    expect(await screen.findByLabelText('All hearings')).toBeChecked()
+    expect(screen.getByLabelText('All meetings')).not.toBeChecked()
+    expect(screen.getByLabelText('Meeting')).toBeChecked()
+    // Every type under a chosen kind is chosen with it.
+    expect(screen.getByLabelText('Roundtable')).toBeChecked()
+    expect(screen.getByLabelText('Roundtable')).toBeDisabled()
+    expect(screen.getByLabelText('Which Committee on Housing events')).toHaveValue('type:Roundtable')
+    expect(screen.getByLabelText('Which Committee of the Whole events')).toHaveValue('kind:meeting')
+
+    fireEvent.change(screen.getByLabelText('Which Committee on Housing events'), { target: { value: 'kind:hearing' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(spy).toHaveBeenCalledWith('/admin/event-rules', expect.objectContaining({ method: 'PUT' })))
+    const put = spy.mock.calls.find(([, init]) => init?.method === 'PUT')!
+    expect(JSON.parse(String(put[1]!.body)).rules).toMatchObject({
+      committees: [{ committeeId: HOUSING.committeeId, kind: 'hearing' }, { committeeId: COW.committeeId, kind: 'meeting' }],
+      kinds: ['hearing', 'Meeting'],
+    })
+  })
+
   it('refuses a topic without keywords', async () => {
     const spy = mockApi({ rules: { committees: [], kinds: [], topics: [], trackedBills: false } })
     render(<MemoryRouter><EventRules /></MemoryRouter>)
@@ -125,8 +147,9 @@ describe('Calendar events settings', () => {
 
   it('says there is nothing to choose when no covered state has body events', async () => {
     configState.capabilities = {}
-    mockApi({ hasBodyEvents: false, committees: [], kinds: [], events: [] })
+    const spy = mockApi({ hasBodyEvents: false, committees: [], kinds: [], events: [] })
     render(<MemoryRouter><EventRules /></MemoryRouter>)
     expect(await screen.findByText(/nothing to choose here yet/)).toBeInTheDocument()
+    expect(spy).not.toHaveBeenCalled()
   })
 })

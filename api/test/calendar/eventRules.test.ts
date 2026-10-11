@@ -162,6 +162,8 @@ describe('event rules', () => {
     await sync()
     await saveRules({ committees: [], kinds: ['Meeting'], topics: [], trackedBills: false })
     expect(await calendarUids()).toEqual([MEETING])
+    await saveRules({ committees: [], kinds: ['roundtable'], topics: [], trackedBills: false })
+    expect(await calendarUids()).toEqual([ROUNDTABLE])
     await saveRules({ committees: [], kinds: [], topics: [{ name: 'Housing agencies', keywords: ['housing authority'] }], trackedBills: false })
     expect(await calendarUids()).toEqual([ROUNDTABLE])
     await saveRules({ committees: [], kinds: [], topics: [], trackedBills: true })

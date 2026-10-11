@@ -29,11 +29,16 @@ interface Loaded {
   optionsError: string | null
 }
 
-/** Form state. A committee maps to '' (every event) or one kind or event type. */
+/**
+ * Form state. Kinds and event types are kept apart, though the rules store
+ * both in `kinds`, so a type named like a kind can't be mistaken for it. A
+ * committee maps to '' (every event), 'kind:<kind>', or 'type:<event type>'.
+ */
 interface FormState {
   mode: 'all' | 'rules'
   committees: Map<string, string>
   kinds: Set<string>
+  types: Set<string>
   topics: { name: string; keywords: string }[]
   trackedBills: boolean
 }
@@ -41,11 +46,16 @@ interface FormState {
 const KIND_LABELS: Record<string, string> = { hearing: 'Hearings', markup: 'Markups', meeting: 'Meetings' }
 const kindLabel = (kind: string) => KIND_LABELS[kind] ?? kind.charAt(0).toUpperCase() + kind.slice(1)
 
-function toForm(rules: Rules | null): FormState {
+/** The kinds a rule value may name: central's and the events', and the generic ones. */
+const kindNames = (kinds: Kind[]) => new Set([...Object.keys(KIND_LABELS), ...kinds.map(k => k.kind)])
+
+function toForm(rules: Rules | null, kinds: Set<string>): FormState {
+  const narrowing = (value: string | undefined) => value ? `${kinds.has(value) ? 'kind' : 'type'}:${value}` : ''
   return {
     mode: rules ? 'rules' : 'all',
-    committees: new Map((rules?.committees ?? []).map(c => [c.committeeId, c.kind ?? ''])),
-    kinds: new Set(rules?.kinds ?? []),
+    committees: new Map((rules?.committees ?? []).map(c => [c.committeeId, narrowing(c.kind)])),
+    kinds: new Set((rules?.kinds ?? []).filter(k => kinds.has(k))),
+    types: new Set((rules?.kinds ?? []).filter(k => !kinds.has(k))),
     topics: (rules?.topics ?? []).map(t => ({ name: t.name, keywords: t.keywords.join('\n') })),
     trackedBills: rules ? rules.trackedBills : true,
   }
@@ -53,11 +63,12 @@ function toForm(rules: Rules | null): FormState {
 
 function toRules(f: FormState, committees: Committee[]): Rules {
   return {
-    committees: [...f.committees].map(([committeeId, kind]) => {
+    committees: [...f.committees].map(([committeeId, narrowing]) => {
       const name = committees.find(c => c.committeeId === committeeId)?.name ?? committeeId
+      const kind = narrowing.slice(narrowing.indexOf(':') + 1)
       return kind ? { committeeId, name, kind } : { committeeId, name }
     }),
-    kinds: [...f.kinds],
+    kinds: [...new Set([...f.kinds, ...f.types])],
     topics: f.topics
       .map(t => ({ name: t.name.trim(), keywords: t.keywords.split('\n').map(k => k.trim()).filter(Boolean) }))
       .filter(t => t.name || t.keywords.length > 0),
@@ -81,15 +92,18 @@ export function EventRules() {
   const hasBodyEvents = useHasBodyEvents()
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [form, setForm] = useState<FormState>(() => toForm(null))
+  const [form, setForm] = useState<FormState>(() => toForm(null, kindNames([])))
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null)
 
+  // Nothing to load while no covered state has body events: the page only says so.
+  const offered = !configLoading && hasBodyEvents
   useEffect(() => {
+    if (!offered) return
     apiFetch<Loaded>('/admin/event-rules')
-      .then(d => { setLoaded(d); setForm(toForm(d.rules)) })
+      .then(d => { setLoaded(d); setForm(toForm(d.rules, kindNames(d.kinds))) })
       .catch(() => setLoadError('Could not load the calendar event settings.'))
-  }, [])
+  }, [offered])
 
   function edit(patch: Partial<FormState>) {
     setForm(f => ({ ...f, ...patch }))
@@ -136,7 +150,8 @@ export function EventRules() {
   const fieldset: React.CSSProperties = { border: 'none', padding: 0, margin: '0 0 20px' }
   const linkButton: React.CSSProperties = { background: 'none', border: 'none', padding: 0, fontSize: fontSize.sm, cursor: 'pointer' }
   const multiState = new Set((loaded?.committees ?? []).map(c => c.state).filter(Boolean)).size > 1
-  const narrowings = (loaded?.kinds ?? []).flatMap(k => [{ value: k.kind, text: `${kindLabel(k.kind)} only` }, ...k.types.map(t => ({ value: t, text: `${t} only` }))])
+  const listedKinds = loaded?.kinds ?? []
+  const listedTypes = [...new Set(listedKinds.flatMap(k => k.types))]
 
   return (
     <div style={PAGE}>
@@ -152,7 +167,7 @@ export function EventRules() {
           Your calendar includes the legislature's own calendar for the states you cover: hearings, roundtables, and meetings, including the ones with no bill attached. Choose which of them reach your calendar. Events update hourly. An event with a prioritized bill on its agenda always shows, and so do a prioritized bill's own hearings and deadlines.
         </div>
 
-        {!configLoading && !hasBodyEvents && !loaded?.hasBodyEvents ? (
+        {!configLoading && !hasBodyEvents ? (
           <div style={hint}>None of the states you cover has a legislative calendar FloorVote reads, so there's nothing to choose here yet.</div>
         ) : (
           <>
@@ -179,24 +194,31 @@ export function EventRules() {
                       <legend style={label}>Committees: every event they hold</legend>
                       {loaded.committees.length === 0 && <div style={hint}>No committees are listed yet.</div>}
                       <div style={grid}>
-                        {loaded.committees.map(c => {
+                        {loaded.committees.map((c, i) => {
                           const on = form.committees.has(c.committeeId)
                           const name = multiState && c.state ? `${c.name} (${c.state})` : c.name
                           return (
                             <div key={c.committeeId} style={checkRow}>
-                              <input type="checkbox" id={`erc-${c.committeeId}`} checked={on} disabled={demoLocked}
+                              <input type="checkbox" id={`erc-${i}`} checked={on} disabled={demoLocked}
                                 onChange={e => {
                                   const committees = new Map(form.committees)
                                   if (e.target.checked) committees.set(c.committeeId, '')
                                   else committees.delete(c.committeeId)
                                   edit({ committees })
                                 }} />
-                              <label htmlFor={`erc-${c.committeeId}`} style={{ flex: 1 }}>{name}</label>
-                              {on && narrowings.length > 0 && (
+                              <label htmlFor={`erc-${i}`} style={{ flex: 1 }}>{name}</label>
+                              {on && listedKinds.length > 0 && (
                                 <select aria-label={`Which ${c.name} events`} value={form.committees.get(c.committeeId) ?? ''} style={select} disabled={demoLocked}
                                   onChange={e => { const committees = new Map(form.committees); committees.set(c.committeeId, e.target.value); edit({ committees }) }}>
                                   <option value="">All events</option>
-                                  {narrowings.map(n => <option key={n.value} value={n.value}>{n.text}</option>)}
+                                  <optgroup label="Kinds">
+                                    {listedKinds.map(k => <option key={k.kind} value={`kind:${k.kind}`}>{kindLabel(k.kind)} only</option>)}
+                                  </optgroup>
+                                  {listedTypes.length > 0 && (
+                                    <optgroup label="Event types">
+                                      {listedTypes.map(t => <option key={t} value={`type:${t}`}>{t} only</option>)}
+                                    </optgroup>
+                                  )}
                                 </select>
                               )}
                             </div>
@@ -206,20 +228,29 @@ export function EventRules() {
                     </fieldset>
 
                     <fieldset style={fieldset}>
-                      <legend style={label}>Kinds and event types: every one, whichever committee holds it</legend>
-                      {loaded.kinds.map(k => (
-                        <div key={k.kind} style={{ marginBottom: 6 }}>
-                          <div style={checkRow}>
-                            <input type="checkbox" id={`erk-${k.kind}`} checked={form.kinds.has(k.kind)} disabled={demoLocked}
+                      <legend style={label}>Kinds: every event of the kind, whichever committee holds it</legend>
+                      <div style={grid}>
+                        {listedKinds.map((k, i) => (
+                          <div key={k.kind} style={checkRow}>
+                            <input type="checkbox" id={`erk-${i}`} checked={form.kinds.has(k.kind)} disabled={demoLocked}
                               onChange={e => { const kinds = new Set(form.kinds); if (e.target.checked) kinds.add(k.kind); else kinds.delete(k.kind); edit({ kinds }) }} />
-                            <label htmlFor={`erk-${k.kind}`} style={{ fontWeight: fontWeight.medium }}>All {kindLabel(k.kind).toLowerCase()}</label>
+                            <label htmlFor={`erk-${i}`}>All {kindLabel(k.kind).toLowerCase()}</label>
                           </div>
-                          <div style={{ ...grid, paddingLeft: 24 }}>
-                            {k.types.map(t => (
+                        ))}
+                      </div>
+                    </fieldset>
+
+                    <fieldset style={fieldset}>
+                      <legend style={label}>Event types: the legislature's own names, whichever committee holds them</legend>
+                      {listedKinds.filter(k => k.types.length > 0).map((k, i) => (
+                        <div key={k.kind} style={{ marginBottom: 6 }}>
+                          <div style={{ ...hint, marginTop: 0 }}>{kindLabel(k.kind)}</div>
+                          <div style={grid}>
+                            {k.types.map((t, j) => (
                               <div key={t} style={checkRow}>
-                                <input type="checkbox" id={`ert-${t}`} checked={form.kinds.has(k.kind) || form.kinds.has(t)} disabled={demoLocked || form.kinds.has(k.kind)}
-                                  onChange={e => { const kinds = new Set(form.kinds); if (e.target.checked) kinds.add(t); else kinds.delete(t); edit({ kinds }) }} />
-                                <label htmlFor={`ert-${t}`}>{t}</label>
+                                <input type="checkbox" id={`ert-${i}-${j}`} checked={form.kinds.has(k.kind) || form.types.has(t)} disabled={demoLocked || form.kinds.has(k.kind)}
+                                  onChange={e => { const types = new Set(form.types); if (e.target.checked) types.add(t); else types.delete(t); edit({ types }) }} />
+                                <label htmlFor={`ert-${i}-${j}`}>{t}</label>
                               </div>
                             ))}
                           </div>
@@ -253,7 +284,7 @@ export function EventRules() {
                       <input type="checkbox" id="er-tracked" checked={form.trackedBills} onChange={e => edit({ trackedBills: e.target.checked })} disabled={demoLocked} />
                       <label htmlFor="er-tracked">Any event whose agenda lists a bill we track</label>
                     </div>
-                    <div style={hint}>The week-ahead email lists the events these choices select, and any with a prioritized bill on the agenda.</div>
+                    <div style={hint}>The week-ahead email lists the events these choices select, and any with a prioritized bill on the agenda. A hidden event also drops out of your calendar feed.</div>
                   </>
                 )}
 
