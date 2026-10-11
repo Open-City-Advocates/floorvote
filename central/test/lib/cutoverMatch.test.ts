@@ -82,6 +82,17 @@ describe('people matching', () => {
     }
   })
 
+  it('leaves an ambiguous name\'s candidates out of the looser tiers too', () => {
+    // The unplaced Pat Smith could be either, so the senator named only "Smith" isn't guessed at.
+    const result = matchPeople(
+      [legiscan(1, 'Pat Smith', 2, 'SD-001'), legiscan(2, 'Pat Smith', 1, 'HD-002')],
+      [{ id: -1, name: 'Pat Smith' }, { id: -2, name: 'Smith', role: 'Senator', roleId: 2 }],
+    )
+    expect(result.matched).toEqual([])
+    expect(result.ambiguous.map(a => [a.person.id, a.candidates.map(c => c.id)])).toEqual([[-1, [1, 2]]])
+    expect(result.unmatchedTo.map(p => p.id)).toEqual([-2])
+  })
+
   it('prefers whole names to initials, so two Whites stay apart', () => {
     const result = matchPeople(
       [{ id: 1, name: 'Robert White' }, { id: 2, name: 'Trayon White' }],

@@ -45,7 +45,7 @@ export interface PersonMatch<A extends PersonFacts, B extends PersonFacts> {
 
 export interface PeopleMatch<A extends PersonFacts, B extends PersonFacts> {
   matched: PersonMatch<A, B>[]
-  /** New people with more than one equally good candidate, left unmatched. */
+  /** New people who weren't each other's one candidate with anyone, left unmatched with their candidates. */
   ambiguous: { person: B; candidates: A[] }[]
   unmatchedFrom: A[]
   unmatchedTo: B[]
@@ -114,7 +114,8 @@ function sameName(tier: Tier, a: { first: string | null; last: string }, b: { fi
  * disagree rule a pair out. Names are tried closest first (whole names, then
  * last name and first initial, then last name alone where a record has no
  * first name), and a pair counts only when each is the other's one candidate,
- * so two Smiths in one chamber match no one. Maryland's feed names members by
+ * so two Smiths in one chamber match no one. People left out that way are out
+ * of the looser tiers too, on both sides. Maryland's feed names members by
  * last name alone and Virginia's has no districts, so their matches are weak:
  * reported as such, and still kept.
  */
@@ -133,24 +134,19 @@ export function matchPeople<A extends PersonFacts, B extends PersonFacts>(from: 
   const matched: PersonMatch<A, B>[] = []
   const ambiguous: PeopleMatch<A, B>['ambiguous'] = []
   for (const tier of ['full', 'initial', 'last'] as const) {
-    for (const person of [...freeTo]) {
-      // Left out as ambiguous earlier in this tier.
-      if (!freeTo.has(person)) continue
-      const candidates = [...freeFrom].filter(o => related(tier, o, person))
+    // Each tier reads who is still free at its start, so the order people
+    // are listed in decides nothing.
+    const candidatesOf = new Map([...freeTo].map(person => [person, [...freeFrom].filter(o => related(tier, o, person))]))
+    const fits = new Map<A, number>()
+    for (const candidates of candidatesOf.values()) for (const o of candidates) fits.set(o, (fits.get(o) ?? 0) + 1)
+    for (const [person, candidates] of candidatesOf) {
       if (candidates.length === 0) continue
-      if (candidates.length > 1) {
+      // Not each other's one candidate: the new person and every candidate are
+      // left out, so a looser tier can't guess between them either.
+      if (candidates.length > 1 || fits.get(candidates[0])! > 1) {
         ambiguous.push({ person, candidates })
         freeTo.delete(person)
-        continue
-      }
-      // Every new person the one candidate would fit is left out alike, so
-      // which of them comes first decides nothing.
-      const other = [...freeTo].filter(n => related(tier, candidates[0], n))
-      if (other.length > 1) {
-        for (const n of other) {
-          ambiguous.push({ person: n, candidates })
-          freeTo.delete(n)
-        }
+        for (const o of candidates) freeFrom.delete(o)
         continue
       }
       const o = candidates[0]
