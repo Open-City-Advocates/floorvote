@@ -98,6 +98,7 @@ export default withMermaid(
           text: 'Contributing',
           link: '/contributing/',
           items: [
+            { text: 'Adding a data provider', link: '/contributing/providers' },
             { text: 'State coverage', link: '/contributing/state-coverage' },
           ],
         },
