@@ -2,7 +2,7 @@
 
 This guide is for a downstream fork that runs DC from the Council's LIMS in production and wants to run upstream FloorVote instead. It was written for, and rehearsed on, the Open-City-Advocates fork (`oca-production` at `dfb763d`, October 2, 2026). That fork's DC work is @anotherpanacea's (#206, #214, #216, #217, #218, and #254–#259), and upstream's provider model (#283) is built from it, so most of the fork's DC code now has an upstream home. Another fork that runs its own features on top of upstream can use the same steps.
 
-Upgrade to an upstream release that includes the provider model: `main` once #303 merges, `provider-model` until then.
+Upgrade to an upstream release that includes the provider model: `main` once #358 merges (closing #303), `provider-model` until then. The commands below call it `<ref>`.
 
 ## What Comes Through Unchanged
 
@@ -34,7 +34,7 @@ Start a fresh branch from upstream and cherry-pick only what is yours. Don't mer
 ```bash
 git remote add upstream https://github.com/floorvote/floorvote.git   # once
 git fetch upstream
-git worktree add ../floorvote-upgrade upstream/main
+git worktree add ../floorvote-upgrade upstream/<ref>   # main, or provider-model until #358 merges
 cd ../floorvote-upgrade
 git checkout -b upgrade-to-upstream
 git cherry-pick -x <sha>   # each fork-only commit, oldest first
@@ -62,8 +62,9 @@ What to keep from `oca-production`:
 When porting what you keep:
 
 - **The directory refresh ran inside the old LIMS sync** (`runLimsSync`). Upstream's LIMS provider doesn't run it, so give it a cron job of its own in `central/src/index-legiscan.ts`, beside the provider jobs. Select DC's legislators by `people.provider = 'lims'`, not by id range. Until it runs, the `council_*` tables and the seated and term columns go stale. Nothing is lost.
+- **So did the term refresh.** `people.term_start` and `people.term_end`, and the "sworn in" and "leaving" rows of `council_changes`, came from the old sync's `upsertMembers` and `diffTerms` (`central/src/cron/sync-lims.ts`), not from the directory code. Upstream's LIMS provider reads the same Members call but keeps no term dates. Port that part into the directory job: fetch each Council Period's members, write only `term_start` and `term_end` by `people_id`, and record the changes. Without it, a special election leaves the People page and hearing briefs with stale terms, and nothing says so.
 - **Instances reach central only through the tenant surface allowlist** (`central/src/lib/tenantSurface.ts`), which denies everything else. Add each fork-only route an instance calls, such as `GET /api/bills/council-directory`, and list it in the caller test beside it. Register the route ahead of `/bills/:id`, which would otherwise answer for it.
-- **Council rows become body events.** Upstream's mirror takes over each `source = 'council'` row as `source = 'body'`, under the same id and UID. Code that selects `source = 'council'`, as the fork's hearing briefs (`deepAnalysis.ts`, `deepApi.ts`) and event popover do, must select `'body'` instead, or it finds nothing once the mirror has run. Existing rows that point at a Council event's id stay valid.
+- **Council rows become body events.** Upstream's mirror takes over each `source = 'council'` row as `source = 'body'`, under the same id and UID. Code that selects `source = 'council'`, as the fork's hearing briefs (`deepAnalysis.ts`, `deepApi.ts`) and event popover do, must select `source IN ('body', 'council')` instead, or it finds nothing once the mirror has run. The mirror only takes over rows in its window (a month back and four ahead), so older Council rows stay `'council'` for good. Existing rows that point at a Council event's id stay valid.
 - **Key what you keep to upstream's ids.** Point CRM and analysis rows at instance bill ids, central `people_id` (LIMS keeps its packed range), and committees by the central `committee_id` instances get from `body-event-options`, not by display names. Build and parse bill handles with the shared helpers (`shared/billHandle.ts`), never by matching `legiscan:`: a later release renames handles to a neutral prefix (#305). Hearing UIDs keep their form for good.
 - **Nothing may write `council_events` or read `lims_records`.** Migration 0029 drops `lims_records`, and `council_events` is left only for you to drop.
 
@@ -82,17 +83,18 @@ Wrangler records each applied file by name in `d1_migrations` and applies every 
 ## Before You Deploy
 
 1. **Configuration.** Your gitignored `central/wrangler.toml` already names `src/index-legiscan.ts` and `migrations-legiscan`. Keep the `LIMS_API_KEY` secret (claiming DC for LIMS needs it), `LIMS_STATES = "DC"` for now (a safety net for DC's ownership row, below), the hourly cron, and `LIMS_INGESTOR_QUEUE` with its consumer at `max_concurrency = 1` (LIMS answers 429 above about two concurrent requests). Compare the rest with `central/wrangler.example.toml`. Deploy central before the instances. Each instance's footer credit comes from central now (DC's from the LIMS provider's own declaration), so the LIMS credit is there when the tenant upgrades. Each instance can then drop `DATA_SOURCES = "lims"`, and one that still sets it is unaffected. Its `PROVIDER` var is no longer read. Keep your deep analysis vars if you ported that feature.
-2. **Rehearse on copies.** Export each database, read-only, from your production checkout (so wrangler finds the bindings), then run the rehearsal from your upgrade branch:
+2. **Rehearse on copies.** Export each database, read-only, from your production checkout (so wrangler finds the bindings), into a directory outside both checkouts: the exports hold members' emails and sign-in history, and `.gitignore` doesn't cover `*.sql`. A D1 export holds up the database's other queries while it runs, so start it away from the top of the hour. Then run the rehearsal from your upgrade branch, with absolute paths:
 
    ```bash
-   cd central && npx wrangler d1 export <central-db> --remote --env legiscan --output ../central.sql
-   cd ../api && npx wrangler d1 export <tenant-db> --remote --env <tenant> --output ../tenant-<tenant>.sql
+   EXPORTS=~/floorvote-exports && mkdir -p "$EXPORTS"
+   cd central && npx wrangler d1 export <central-db> --remote --env legiscan --output "$EXPORTS/central.sql"
+   cd ../api && npx wrangler d1 export <tenant-db> --remote --env <tenant> --output "$EXPORTS/tenant-<tenant>.sql"
    # from the upgrade branch:
    git fetch upstream
-   npx tsx scripts/rehearse-fork-upgrade.ts --central central.sql --instance tenant-<tenant>.sql
+   npx tsx scripts/rehearse-fork-upgrade.ts --central "$EXPORTS/central.sql" --instance "$EXPORTS/tenant-<tenant>.sql"
    ```
 
-   Pass `--instance` once for each instance. The script tells upstream's migration files from the ones you cherry-picked by reading `upstream/main`, so it checks your own tables and columns too. Pass `--upstream-ref upstream/provider-model` until #303 merges, or whatever ref you built the branch from. If git can't read the ref, the script stops and shows git's error rather than guessing which files are yours. On a plain upstream checkout with none of your files, pass `--upstream-ref HEAD`. A pending file that isn't at the ref is listed as your own, so a file there that isn't yours means the ref is stale or wrong. Each copy takes every pending upstream migration in memory, and the script checks what this guide says comes through unchanged, then notes what to expect for your data. It only reads the exports, and writes nothing unless you pass `--save <dir>`. It exits 1 if any check fails, and each failure says what to look at. The exports hold your data, so delete them when you're done.
+   Pass `--instance` once for each instance. The script tells upstream's migration files from the ones you cherry-picked by reading `upstream/main`, so it checks your own tables and columns too. Pass `--upstream-ref upstream/provider-model` until #358 merges, or whatever ref you built the branch from. If git can't read the ref, the script stops and shows git's error rather than guessing which files are yours. On a plain upstream checkout with none of your files, pass `--upstream-ref HEAD`. A pending file that isn't at the ref is listed as your own, so a file there that isn't yours means the ref is stale or wrong. Each copy takes every pending upstream migration in memory, and the script checks what this guide says comes through unchanged, then notes what to expect for your data. It only reads the exports, and writes nothing unless you pass `--save <dir>`. It exits 1 if any check fails, and each failure says what to look at. The exports hold your data, so delete them when you're done.
 
 3. **The DC preflight.** The script runs it, and you can run it alone, read-only:
 
@@ -164,9 +166,21 @@ Deploy central, claim DC, then deploy every instance, all before the next top of
   WHERE state = 'DC' AND provider = 'legiscan' AND bill_id >= 1000000000 AND bill_id < 2000000000;
   UPDATE bills SET provider = 'lims'
   WHERE state = 'DC' AND provider = 'legiscan' AND bill_id >= 1000000000 AND bill_id < 2000000000;
+  UPDATE sessions SET provider = 'lims'
+  WHERE state = 'DC' AND provider = 'legiscan' AND session_id >= 1000000000 AND session_id < 2000000000;
+  UPDATE people SET provider = 'lims'
+  WHERE provider = 'legiscan' AND people_id >= 1000000000 AND people_id < 2000000000;
   ```
 
-  If instances really track LegiScan DC bills outside LIMS's ranges (the preflight wasn't 0), move DC with a cutover instead, starting with its dry run (`docs/internal/sync-pipeline.md`, "Moving a state to another provider (cutover)").
+  The old code writes sessions and people in that window too, so give those back as well.
+
+  If instances really track LegiScan DC bills outside LIMS's ranges (the preflight wasn't 0), move DC with a cutover instead, starting with its dry run (`docs/internal/sync-pipeline.md`, "Moving a state to another provider (cutover)"). A cutover can't move a LegiScan bill whose LIMS copy an instance already holds: the dry run lists it as a conflict, and with nothing else to move the cutover is refused. Check in each instance named that it holds the LIMS copy (its handle is `legiscan:` plus an id from 1000000000), then unlink the LegiScan copy in central, and claim DC:
+
+  ```sql
+  DELETE FROM bill_tenants WHERE tenant_id = '<tenant>' AND bill_id IN (<the conflicting LegiScan bill ids>);
+  ```
+
+  The instance keeps its row for the LegiScan copy, which stops updating.
 
 - **Every Council event shows** after an hour. The carry-over is waiting for central's committee list. The instance logs "[event-rules] central options unavailable" when `GET /api/tenants/<tenant>/body-event-options` fails. An admin can save the carried-over rules by hand from the settings page.
 - **Hearing briefs find no events.** Code selecting `source = 'council'` wasn't ported (see "Build Your Upgrade Branch From Upstream").
