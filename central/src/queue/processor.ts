@@ -80,9 +80,15 @@ async function processBill(msg: BillMessage, env: Env, db: Db): Promise<void> {
     .from(bills).where(eq(bills.billId, msg.billId)).get()
   const provider = getProvider(known?.provider ?? DEFAULT_PROVIDER_ID)
 
-  if (msg.firstIngestFor && (known?.provider !== msg.firstIngestFor || !known.carriedFrom)) {
-    console.log(`[processor-ls] bill ${msg.billId} needs no first ${msg.firstIngestFor} ingest now ` +
-      `(${known?.provider !== msg.firstIngestFor ? `it syncs from ${known?.provider ?? 'nowhere'}` : 'it had one'}); skipped`)
+  // A moved bill's message from a provider it has since moved off, or an
+  // untracked bill's first ingest that has already happened (types.ts).
+  const queuedBy = msg.firstIngestFor ?? msg.queuedBy
+  if (queuedBy && known?.provider !== queuedBy) {
+    console.log(`[processor-ls] bill ${msg.billId} now syncs from ${known?.provider ?? 'nowhere'}; skipping its ${queuedBy} ingest`)
+    return
+  }
+  if (msg.firstIngestFor && !known?.carriedFrom) {
+    console.log(`[processor-ls] bill ${msg.billId} already had its first ${msg.firstIngestFor} ingest; skipped`)
     return
   }
 

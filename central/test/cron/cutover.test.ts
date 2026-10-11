@@ -852,6 +852,36 @@ describe('a moved bill no instance tracks', () => {
     expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0001)).toEqual({ carried_from: null })
   })
 
+  it('is still ingested for a new keyword match queued before its first ingest ran', async () => {
+    const run = makeEnv()
+    expect((await cutover(run, '?confirm=true')).status).toBe(200)
+    const first = queued(run.limsQueue).find(b => b.billId === B0001)
+    // While the queue drains, the instance adds a keyword the bill matches,
+    // and the next pass queues it as tracked.
+    await env.DB.prepare(`INSERT INTO keyword_registry (tenant_id, keyword) VALUES ('oca', 'rent stabilized')`).run()
+    const next = makeEnv()
+    const { runSnapshotSync } = await import('../../src/cron/sync-snapshots')
+    const { lims } = await import('../../src/providers/lims')
+    await runSnapshotSync(lims, next.env, drizzle(env.DB, { schema }), { force: true })
+    const matched = queued(next.limsQueue).find(b => b.billId === B0001)
+    expect(matched).toEqual({ billId: B0001, queuedBy: 'lims' })
+
+    // The earlier first ingest runs, and clears carried_from.
+    const ingest = async (body: unknown, r: Run) => {
+      const m = { body, ack: vi.fn(), retry: vi.fn() }
+      await processIngestorQueue({ messages: [m] } as any, r.env, drizzle(env.DB, { schema }))
+      expect(m.ack).toHaveBeenCalled()
+    }
+    await ingest(first, run)
+    expect(await row('SELECT carried_from FROM bills WHERE bill_id = ?', B0001)).toEqual({ carried_from: null })
+
+    // The match's message still runs, so the instance hears of the match.
+    const after = makeEnv()
+    await ingest(matched, after)
+    expect(calls.filter(u => u.endsWith('LegislationDetails/B26-0001'))).toHaveLength(2)
+    expect(sentToTenant(after)).toContainEqual(expect.objectContaining({ billId: toHandle(B0001), matchType: 'keyword' }))
+  })
+
   it('isn\'t queued by LegiScan after an undo, so it costs no getBill', async () => {
     const run = makeEnv()
     expect((await cutover(run, '?confirm=true')).status).toBe(200)

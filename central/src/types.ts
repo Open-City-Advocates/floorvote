@@ -111,13 +111,19 @@ export type BillMessage = {
    */
   calendarRecheck?: string
   /**
-   * The provider whose sync queued this while the bill was waiting for its
-   * first ingest since a cutover moved it there (cron/sync.ts). The ingest is
-   * skipped, with no provider call, once that first ingest has happened or
-   * the bill has moved on to another provider. So a pass that queues the bill
-   * again while an earlier message waits costs nothing, and after an undo the
-   * previous provider's own sync queues the bill on its own queue, rather than
-   * this message spending its calls from this one.
+   * The provider whose sync queued this, for a bill waiting for its first
+   * ingest since a cutover moved it there (cron/sync.ts). The ingest is
+   * skipped, with no provider call, once the bill has moved on to another
+   * provider: after an undo, the previous provider's own sync queues it on
+   * its own queue, rather than this message spending its calls from this one.
+   */
+  queuedBy?: string
+  /**
+   * As `queuedBy`, for an untracked bill queued only for that first ingest.
+   * It is also skipped once the bill has had that ingest, so a pass that
+   * queues the bill again while an earlier message waits costs nothing. A
+   * tracked bill's message never is: it may also be for a new keyword match,
+   * which instances must hear of.
    */
   firstIngestFor?: string
 }

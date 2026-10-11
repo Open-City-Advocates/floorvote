@@ -425,15 +425,17 @@ export async function applyMasterList(
   }
 
   // Untracked first ingests go last, so the bills instances track don't wait
-  // behind them. A moved bill's message names this provider, so a copy queued
-  // while an earlier one waits, or one left over after an undo, is skipped
-  // without a provider call (queue/processor.ts), and the provider the bill
-  // has then queues its own.
+  // behind them. A moved bill's message names this provider, so one left over
+  // after an undo is skipped without a provider call (queue/processor.ts), and
+  // the provider the bill has then queues its own. An untracked one's is also
+  // skipped once the bill has had its first ingest, so a copy queued while an
+  // earlier one waits costs nothing.
   const queueIds = [...toQueue].sort((a, b) => Number(untrackedFirst.has(a)) - Number(untrackedFirst.has(b)))
   for (let i = 0; i < queueIds.length; i += 100) {
     await ingestorQueue.sendBatch(
       queueIds.slice(i, i + 100)
-        .map<IngestorMessage>(billId => (carried.has(billId) ? { billId, firstIngestFor: session.provider } : { billId }))
+        .map<IngestorMessage>(billId => (untrackedFirst.has(billId) ? { billId, firstIngestFor: session.provider }
+          : carried.has(billId) ? { billId, queuedBy: session.provider } : { billId }))
         .map(body => ({ body }))
     )
   }
