@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { PROVIDERS, getProvider } from '../../src/providers'
 import { stagePosition } from '../../../shared/statusStages'
 import { EXTRA_DISPLAYS } from '../../../shared/providerExtras'
@@ -71,6 +71,17 @@ describe('the codes each provider writes', () => {
     for (const [code, s] of Object.entries(lims)) expect(limsStatusCode(s.label), s.label).toBe(Number(code))
     expect(limsStatusCode('')).toBe(100)
     expect(limsStatusCode('Something LIMS added later')).toBe(100)
+  })
+
+  it('warns when it meets a status name it doesn\'t list', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    limsStatusCode('Something LIMS added later')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Something LIMS added later'))
+    warn.mockClear()
+    limsStatusCode('')
+    limsStatusCode('Not Applicable')
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
   })
 })
 

@@ -401,6 +401,11 @@ export function lisStatus(rec: LisRecord, sessionCode: string): number {
   // pending again, so the history says which way it went.
   const carry = lisCarry(rec, sessionCode)
   if (carry.out || (yes(b.Carried_over) && !carry.into)) return LIS_STATUS.continuedToNextSession
+  // The LIS copies a carried-in bill's flags from the session it came from, so
+  // until the bill moves in this session, Failed and Passed_* describe the old
+  // one (HB 1238 of 2027 arrives Failed: defeated in a 2026 committee, then
+  // continued).
+  if (carry.into && thisSessionHistory(rec, sessionCode).length === 0) return LIS_STATUS.continuedFromLastSession
   if (yes(b.Failed)) return LIS_STATUS.failed
   if (yes(b.Passed)) return LIS_STATUS.passedGeneralAssembly
   const origin = b.Bill_id.startsWith('S') ? 'S' : 'H'
