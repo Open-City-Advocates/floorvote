@@ -107,8 +107,6 @@ EMAIL_PROVIDER = "cloudflare"
 # For one release only, these older vars still seed a state's claim on the
 # first sync, when the state has none. Remove them once the claim exists.
 # LIMS_STATES = "DC"
-# MGA_STATES = "MD"
-# LIS_STATES = "VA"
 
 [env.legiscan.triggers]
 crons = ["0 * * * *"]

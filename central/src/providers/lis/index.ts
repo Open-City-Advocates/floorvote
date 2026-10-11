@@ -13,15 +13,14 @@ import type { Provider, ProviderContext, ProviderPerson, ProviderRecord, Provide
  * further calls. Ids come from central's id table. The files need no key, and
  * their requests aren't logged as API calls.
  */
-export const lis: Provider<'LIS_STATES'> = {
+export const lis: Provider = {
   id: 'lis',
   // The publisher, as members know it, like "Maryland General Assembly".
   // "LIS" is the name of the system, which members don't need to know.
   displayName: 'Virginia General Assembly',
   coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: true, billText: false },
-  envKeys: ['LIS_STATES'],
+  envKeys: [],
   states: [LIS_STATE],
-  statesEnvKey: 'LIS_STATES',
 
   /**
    * The sessions the LIS has published for this year and next: the regular

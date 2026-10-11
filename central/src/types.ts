@@ -36,17 +36,6 @@ export type Env = {
    * Falls back to INGESTOR_QUEUE when unset.
    */
   LIMS_INGESTOR_QUEUE?: Queue
-  /**
-   * "MD" to seed Maryland's ownership row for the General Assembly's open data
-   * (src/providers/mga) on the first sync, when MD has no row. Kept for one release.
-   */
-  MGA_STATES?: string
-  /**
-   * "VA" to seed Virginia's ownership row for the Legislative Information
-   * System's data files (src/providers/lis) on the first sync, when VA has no
-   * row. Kept for one release.
-   */
-  LIS_STATES?: string
   ADMIN_SECRET: string
   OPERATOR_NAME: string
   RESEND_API_KEY?: string
