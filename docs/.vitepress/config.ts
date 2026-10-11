@@ -93,7 +93,13 @@ export default withMermaid(
         // Flat top-level links — each of these is a single page, so a section
         // wrapper would add a heading with one child under it.
         { text: 'Architecture', link: '/architecture/' },
-        { text: 'Contributing', link: '/contributing/' },
+        {
+          text: 'Contributing',
+          link: '/contributing/',
+          items: [
+            { text: 'State Coverage', link: '/contributing/state-coverage' },
+          ],
+        },
         { text: 'Security', link: '/security/' },
       ],
       socialLinks: [

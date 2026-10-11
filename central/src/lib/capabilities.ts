@@ -1,4 +1,4 @@
-import { DEFAULT_PROVIDER_ID, findProvider, getProvider, type Provider } from '../providers'
+import { DEFAULT_PROVIDER_ID, findProvider, getProvider, listedCapabilities, type Provider } from '../providers'
 import { ownerOf, type StateOwners } from './stateProviders'
 
 /**
@@ -15,10 +15,8 @@ export interface Capabilities {
 }
 
 export function providerCapabilities(provider: Provider): Capabilities {
-  return {
-    bodyEvents: !!provider.listBodyEvents,
-    deadlines: Object.values(provider.vocabulary.eventTypes).some(t => t.kind === 'deadline'),
-  }
+  const { bodyEvents, deadlines } = listedCapabilities(provider)
+  return { bodyEvents, deadlines }
 }
 
 /** A state's capabilities, from its owner in `owners`. */

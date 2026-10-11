@@ -7,7 +7,7 @@ import { legiscan } from './legiscan'
 import { lims } from './lims'
 import { mga } from './mga'
 import { lis } from './lis'
-import type { Provider } from './types'
+import type { ListedCapabilities, Provider } from './types'
 
 export type * from './types'
 
@@ -27,4 +27,21 @@ export function getProvider(id: string): Provider {
 /** The provider with this id, or undefined for an id central doesn't know. */
 export function findProvider(id: string | null | undefined): Provider | undefined {
   return PROVIDERS.find(p => p.id === id)
+}
+
+/**
+ * What a provider supplies, for the State coverage page. Read from the
+ * provider's code wherever code shows it, so the page can't claim what a
+ * provider doesn't do. lib/capabilities.ts reads `bodyEvents` and `deadlines`
+ * from here too, so the page and what tenants receive come from one place.
+ */
+export function listedCapabilities(provider: Provider): ListedCapabilities {
+  return {
+    bills: true,
+    memberVotes: provider.coverage.memberVotes,
+    bodyEvents: !!provider.listBodyEvents,
+    billText: provider.coverage.billText,
+    extras: Object.keys(provider.vocabulary.extras ?? {}).length > 0,
+    deadlines: Object.values(provider.vocabulary.eventTypes).some(t => t.kind === 'deadline'),
+  }
 }
