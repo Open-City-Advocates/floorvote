@@ -76,7 +76,7 @@ beforeEach(async () => {
   await db.insert(schema.keywordRegistry).values([{ tenantId: 'oca', keyword: 'neglect' }, { tenantId: 'oca', keyword: 'behavioral health' }])
 })
 
-describe('runLimsSync', () => {
+describe('the DC sync pass', () => {
   it('does nothing without a LIMS key', async () => {
     const db = drizzle(env.DB, { schema })
     const { env: e } = makeEnv({ LIMS_API_KEY: undefined })
@@ -283,7 +283,7 @@ describe('details refresh bookkeeping', () => {
   })
 })
 
-describe('review fixes', () => {
+describe('status changes, ownership, and the previous Council Period', () => {
   async function passAndIngest(db: any) {
     const run = makeEnv()
     await runLimsSync(run.env, db)
@@ -357,7 +357,7 @@ describe('review fixes', () => {
   })
 })
 
-describe('Codex review fixes', () => {
+describe('refreshing the details of tracked bills', () => {
   async function passAndIngest(db: any) {
     const run = makeEnv()
     await runLimsSync(run.env, db)

@@ -434,7 +434,7 @@ describe('deadlines', () => {
   })
 })
 
-describe('review fixes', () => {
+describe('hearing wordings, cancellations, names, and votes', () => {
   it('puts roundtables and other hearing wordings on the calendar, but not notices or cancellations', async () => {
     const rec = {
       ...bulk['PR26-0808'],
