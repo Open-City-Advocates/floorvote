@@ -45,7 +45,6 @@ function makeEnv(extra: Record<string, unknown> = {}) {
     ingestor, tenantQueue,
     env: {
       ...(env as any),
-      MGA_STATES: 'MD',
       INGESTOR_QUEUE: ingestor,
       [tenantQueueBindingName('team')]: tenantQueue,
       ...extra,
@@ -70,6 +69,7 @@ beforeEach(async () => {
   const db = drizzle(env.DB, { schema })
   await db.insert(schema.tenants).values({ tenantId: 'team', name: 'Team', stateCoverage: '["MD"]', active: true })
   await db.insert(schema.keywordRegistry).values([{ tenantId: 'team', keyword: 'cost recovery' }])
+  await db.insert(schema.stateProviders).values({ state: 'MD', provider: 'mga', previousProvider: 'legiscan' })
 })
 
 describe('Maryland session refresh', () => {
@@ -130,9 +130,10 @@ describe('Maryland session refresh', () => {
 })
 
 describe('the Maryland sync', () => {
-  it('does nothing unless MGA_STATES names MD', async () => {
+  it('does nothing until MD is claimed for the MGA', async () => {
     const db = drizzle(env.DB, { schema })
-    expect(await runSnapshotSync(mgaProvider, makeEnv({ MGA_STATES: '' }).env, db)).toEqual([])
+    await db.delete(schema.stateProviders)
+    expect(await runSnapshotSync(mgaProvider, makeEnv().env, db)).toEqual([])
     expect(mga.getMgaSession).not.toHaveBeenCalled()
   })
 
@@ -175,15 +176,6 @@ describe('the Maryland sync', () => {
     await runSync(makeEnv().env, db)
     expect(legiscan.getMasterListBySession).not.toHaveBeenCalled()
     expect(legiscan.getMasterListRaw).not.toHaveBeenCalled()
-  })
-
-  it('leaves Maryland on LegiScan while LegiScan Maryland bills are linked to tenants', async () => {
-    const db = drizzle(env.DB, { schema })
-    await db.insert(schema.bills).values({ billId: 77, changeHash: 'x', sessionId: 2200, state: 'MD', stateId: 20, billNumber: 'HB9', title: 'T' })
-    await db.insert(schema.billTenants).values({ billId: 77, tenantId: 'team', matchType: 'keyword' })
-    expect(await runSnapshotSync(mgaProvider, makeEnv().env, db)).toEqual([])
-    expect(mga.getMgaSession).not.toHaveBeenCalled()
-    expect(await db.select().from(schema.stateProviders).all()).toEqual([])
   })
 })
 

@@ -229,7 +229,7 @@ export const lims: Provider<'LIMS_API_KEY' | 'LIMS_STATES' | 'LIMS_CATEGORIES'> 
 async function limsRecord(rec: LimsBulkRecord): Promise<ProviderRecord | null> {
   const billId = limsBillId(rec.legislationNumber)
   if (billId === null) {
-    console.warn(`[sync-lims] skipping unrecognised measure number "${rec.legislationNumber}"`)
+    console.warn(`[lims] skipping unrecognised measure number "${rec.legislationNumber}"`)
     return null
   }
   return { billId, nativeKey: clean(rec.legislationNumber), raw: rec, hash: await bulkHash(rec) }

@@ -14,7 +14,7 @@ import type { Provider, ProviderRecord, SyncSession } from '../sdk'
  * come from central's id table. The data needs no key, and its requests
  * aren't logged as API calls.
  */
-export const mga: Provider<'MGA_STATES'> = {
+export const mga: Provider = {
   id: 'mga',
   displayName: 'Maryland General Assembly',
   attribution: {
@@ -23,9 +23,8 @@ export const mga: Provider<'MGA_STATES'> = {
     note: 'Legislative data comes from the Maryland General Assembly\'s public data.',
   },
   coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: false, billText: true },
-  envKeys: ['MGA_STATES'],
+  envKeys: [],
   states: [MGA_STATE],
-  statesEnvKey: 'MGA_STATES',
 
   /**
    * The sessions the MGA has published for this year and next: the regular

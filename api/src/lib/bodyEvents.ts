@@ -29,12 +29,13 @@ import type { AppDb, Env } from '../types'
  * The same call brings the capabilities of the states the instance covers
  * (`state_capabilities`, which GET /config serves), so features gate on what a
  * state's data can do, not on its name. An instance whose states have no body
- * events asks once a day, in case one gains them.
+ * events asks every hour like any other, so a state claimed after the
+ * instance's first sync shows its events within the hour. That costs one
+ * central call an hour.
  *
  * It also brings the attribution of the providers those states come from
- * (`data_attribution`, which GET /config serves for the footer's data credit).
- * Central sends it with each pass, so a claim reaches the footer within the
- * day at most.
+ * (`data_attribution`, which GET /config serves for the footer's data credit),
+ * so a claim reaches the footer within the hour too.
  */
 
 /** What a covered state's data can do (central/src/lib/capabilities.ts). A state left out has none. */
@@ -68,8 +69,13 @@ export interface CentralBodyEvent {
 
 export const CAPABILITIES_KEY = 'state_capabilities'
 export const ATTRIBUTION_KEY = 'data_attribution'
-/** How long the capabilities stand when no covered state has body events. */
-const CAPABILITIES_MAX_AGE_MS = 24 * 60 * 60 * 1000
+/**
+ * How long the capabilities stand when no covered state has body events. Short
+ * of the hourly job's interval, so every run asks: a state claimed after the
+ * instance's first sync would otherwise wait out a long cache. The cost is one
+ * central call an hour per instance.
+ */
+const CAPABILITIES_MAX_AGE_MS = 30 * 60 * 1000
 
 /** The window mirrored: a month back and four ahead, around the months central reads (last month through three ahead). */
 const WINDOW_BACK_DAYS = 31
@@ -164,15 +170,14 @@ export interface BodyEventSyncResult {
 /**
  * Mirror the body events of the instance's covered states, and record the
  * capabilities central sends with them. Null when no covered state has body
- * events and the capabilities are less than a day old, so nothing was asked.
+ * events and the capabilities are less than half an hour old, so nothing was asked.
  * Throws when central doesn't answer, or answers without its events and
  * capabilities, leaving every event as it was.
  */
 export async function syncBodyEvents(env: Env, db: AppDb): Promise<BodyEventSyncResult | null> {
   const known = await readStateCapabilities(db)
-  const knownAttribution = await readStateAttribution(db)
   const anyBodyEvents = (caps: Record<string, StateCapabilities> | undefined) => Object.values(caps ?? {}).some(c => c.bodyEvents)
-  if (known && knownAttribution && !anyBodyEvents(known.data) && Date.now() - Date.parse(known.cachedAt) < CAPABILITIES_MAX_AGE_MS) return null
+  if (known && !anyBodyEvents(known.data) && Date.now() - Date.parse(known.cachedAt) < CAPABILITIES_MAX_AGE_MS) return null
 
   const from = isoDay(-WINDOW_BACK_DAYS)
   const to = isoDay(WINDOW_AHEAD_DAYS)
@@ -189,7 +194,7 @@ export async function syncBodyEvents(env: Env, db: AppDb): Promise<BodyEventSync
   await db.insert(associationConfig).values({ key: CAPABILITIES_KEY, value: cache })
     .onConflictDoUpdate({ target: associationConfig.key, set: { value: cache } })
 
-  // A central that predates attribution sends none: keep what we have, and ask again next hour.
+  // A central that predates attribution sends none: keep what we have.
   const attribution = cleanAttribution(body.attribution)
   if (attribution) {
     const credit = JSON.stringify({ data: attribution, cachedAt: new Date().toISOString() }) // ts-write-ok: cache metadata inside a JSON config blob, never SQL-sorted

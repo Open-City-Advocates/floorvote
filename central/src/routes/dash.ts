@@ -8,10 +8,12 @@ import { getSettingNumber } from '../lib/settings'
 import { nowDb } from '../lib/dbTime'
 import { fetchAiUsage } from '../lib/aiGatewayAnalytics'
 
-// LIMS calls are logged to api_call_log too (callType 'lims:*') so they show up
-// in call history, but they are not LegiScan calls and must not count against
-// the LegiScan monthly budget these panels report.
-const legiscanCallsOnly = sql`${schema.apiCallLog.callType} NOT LIKE 'lims:%'`
+// Other providers' calls are logged to api_call_log too (callType '<provider
+// id>:<operation>', such as 'lims:Members'), but they are not LegiScan calls.
+// Every dashboard query uses this filter, so the dashboard shows only LegiScan
+// calls and they never count against the LegiScan monthly budget. LegiScan's own operation names
+// (getBill, getMasterListRaw, ...) have no colon.
+const legiscanCallsOnly = sql`${schema.apiCallLog.callType} NOT LIKE '%:%'`
 
 export const dashRoutes = new Hono<DashEnv>()
 

@@ -163,15 +163,6 @@ export function councilPeriodName(cp: LimsCouncilPeriod): string {
   return `${cp.startDate.slice(0, 4)}-${cp.endDate.slice(0, 4)} Council Period ${cp.councilPeriodId}`
 }
 
-export function councilPeriodSession(cp: LimsCouncilPeriod) {
-  return {
-    session_id: limsSessionId(cp.councilPeriodId),
-    session_name: councilPeriodName(cp),
-    year_start: Number(cp.startDate.slice(0, 4)),
-    year_end: Number(cp.endDate.slice(0, 4)),
-  }
-}
-
 // ── BulkData → SyncEntry ────────────────────────────────────────────────
 
 /**
