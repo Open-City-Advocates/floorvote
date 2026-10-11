@@ -227,9 +227,19 @@ export interface ProviderCoverage {
   readonly maintainers: readonly string[]
   /** `stable` once the provider has run in production for a legislative session. */
   readonly status: 'experimental' | 'stable'
-  /** Whether the provider supplies how each member voted. Code can't show it, since a measure's roll calls carry it or a vote dataset does. */
+  /**
+   * Whether the provider supplies how each member voted. Code can't show it,
+   * since a measure's roll calls carry it or a vote dataset does. Each
+   * provider's mapping test asserts it against its recorded fixtures (LegiScan
+   * has none, so a test checks it against `listVoteDatasets`).
+   */
   readonly memberVotes: boolean
-  /** Whether bills have their text (not only a link to the legislature's site). Code can't show it either. */
+  /**
+   * Whether bills have text core can fetch and show: stored text, or a
+   * document core downloads from the legislature's link (Maryland's PDFs). Not
+   * true of a provider that only links a bill to a page. Asserted like
+   * `memberVotes`.
+   */
   readonly billText: boolean
 }
 

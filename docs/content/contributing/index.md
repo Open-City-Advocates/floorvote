@@ -56,7 +56,7 @@ The full rules live in the [`Developing` section of `AGENTS.md`](https://github.
 
 ## Data providers
 
-Bill data comes from LegiScan by default, and some legislatures also have a direct provider. [State Coverage](/contributing/state-coverage) lists the providers that exist for each state, what each supplies, and who maintains it. The page is generated from the providers' own declarations. After changing a provider's `coverage` or `states`, run `npm run gen:state-coverage` and commit the result.
+Bill data comes from LegiScan by default, and some legislatures also have a direct provider. [State coverage](/contributing/state-coverage) lists the providers that exist for each state, what each supplies, and who maintains it. The page is generated from the providers' own declarations. After changing a provider's `coverage` or `states`, run `npm run gen:state-coverage` and commit the result.
 
 ## Licensing and sign-off
 
