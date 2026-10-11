@@ -140,7 +140,8 @@ const READ_CHUNK = 5_000
  * The provider context a plan reads with. It writes nothing but the API
  * call log, which records every call a plan spends: `ids` answers from the id
  * table as it stands, and hands out negative placeholders for keys it doesn't
- * hold, which only the cutover mints.
+ * hold, which only the cutover mints. `knownIds` answers the same way, so a
+ * key the plan handed a placeholder is known from then on, as it would be once minted.
  */
 async function planContext(provider: Provider, env: Env, db: Db) {
   const base = providerContext(provider, env, db, { reason: 'cutover' })
@@ -163,6 +164,15 @@ async function planContext(provider: Provider, env: Env, db: Db) {
           provisional.set(id, { kind, key })
         }
         out.set(key, id)
+      }
+      return out
+    },
+    // As the real knownIds would after the plan's ids: placeholders included.
+    async knownIds(kind, keys) {
+      const out = new Map<string, number>()
+      for (const key of keys) {
+        const id = known.get(`${kind}\n${key}`)
+        if (id !== undefined) out.set(key, id)
       }
       return out
     },
