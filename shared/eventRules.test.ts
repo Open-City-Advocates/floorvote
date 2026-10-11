@@ -119,6 +119,20 @@ describe('rulesFromCouncilCalendar', () => {
     })
   })
 
+  it('keeps every event of a committee the fork narrowed to two kinds', () => {
+    // A team that chose Health's oversight hearings and its roundtables: a rule
+    // holds one kind per committee, so the committee broadens rather than lose one.
+    const r = rulesFromCouncilCalendar({
+      include: [{ committee: 'Health', type: 'Oversight Hearing' }, { committee: 'Health', type: 'Roundtable' }],
+    }, committees)!
+    expect(r.committees).toEqual([health])
+    expect(eventMatchesRules(event({ committeeId: health.committeeId, kind: 'hearing', type: 'Roundtable', title: 'Health roundtable' }), r, NONE)).toBe(true)
+    // The same kind twice stays narrowed.
+    expect(rulesFromCouncilCalendar({
+      include: [{ committee: 'Health', type: 'Roundtable' }, { committee: 'Health', type: 'Roundtable' }],
+    }, committees)!.committees).toEqual([{ ...health, kind: 'Roundtable' }])
+  })
+
   it('keeps only each committee\'s id and name from central\'s list', () => {
     expect(rulesFromCouncilCalendar({ include: [{ committee: 'Health' }] }, [{ ...health, chamber: 'C', state: 'DC' } as typeof health])!.committees)
       .toEqual([health])
