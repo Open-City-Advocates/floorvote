@@ -34,14 +34,18 @@ export function BillChoiceLinks({ choices }: { choices: BillChoice[] }) {
  * Shown on a bill reached by a URL that older links used for other bills too:
  * /MD/2026/HB5 was also the address of the 2026 Special Session 1's HB5 before
  * special sessions had their own slug. Points to those bills, so a reader
- * following an old link isn't left on the wrong one without knowing.
+ * following an old link isn't left on the wrong one without knowing. Most
+ * readers arrive by a current link, so it leads with the other bill, and the
+ * old-link reason comes second.
  */
 export function OtherSessionNotice({ choices }: { choices: BillChoice[] }) {
   if (choices.length === 0) return null
+  const one = choices.length === 1
   return (
     <div role="note" style={{ background: color.bgInfo, borderRadius: radius.md, padding: '8px 12px', margin: '0 0 12px', fontSize: fontSize.sm, color: color.textSlate }}>
-      <div style={{ marginBottom: 4 }}>Older links to this address may have meant {choices.length === 1 ? 'this bill' : 'one of these bills'} instead:</div>
+      <div style={{ marginBottom: 4 }}>{one ? 'Another bill is' : 'Other bills are'} also numbered {choices[0].billNumber}:</div>
       <BillChoiceLinks choices={choices} />
+      <div style={{ marginTop: 4 }}>Older links to this page may have meant {one ? 'it' : 'one of them'}.</div>
     </div>
   )
 }

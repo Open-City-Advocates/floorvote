@@ -10,7 +10,7 @@ describe('OtherSessionNotice', () => {
   // too before special sessions had their own slug.
   it('links to the bill an older link to this address may have meant', () => {
     render(<MemoryRouter><OtherSessionNotice choices={[SPECIAL_1]} /></MemoryRouter>)
-    expect(screen.getByRole('note')).toHaveTextContent(/older links to this address may have meant this bill/i)
+    expect(screen.getByRole('note')).toHaveTextContent(/^Another bill is also numbered HB5:.*Older links to this page may have meant it\.$/)
     expect(screen.getByRole('link', { name: 'HB5, 2026 Special Session 1 (MD)' })).toHaveAttribute('href', '/MD/2026-s1/HB5')
   })
 
