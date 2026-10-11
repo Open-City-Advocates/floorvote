@@ -290,16 +290,17 @@ describe('the week-ahead email', () => {
 })
 
 describe('deadlines', () => {
-  it('show for every tracked bill, while its hearings show only once it has a priority', async () => {
+  it('show on the calendar and feed for prioritized bills only, as hearings do', async () => {
     const tracked = await seedBill({ billNumber: 'B26-0100', state: 'DC', priority: null, matchType: 'keyword', externalId: 'legiscan:1' })
-    const untracked = await seedBill({ billNumber: 'B26-0101', state: 'DC', priority: null, matchType: null, externalId: 'legiscan:2' })
-    await seedCalendarEvent(tracked, { uid: 'deadline-1@test', kind: 'deadline', date: isoDay(8), description: 'Mayor\'s response due' })
-    await seedCalendarEvent(tracked, { uid: 'hearing-1@test', kind: 'hearing', date: isoDay(8), description: 'Public Hearing on B26-0100' })
-    await seedCalendarEvent(untracked, { uid: 'deadline-2@test', kind: 'deadline', date: isoDay(8), description: 'Mayor\'s response due' })
+    await seedCalendarEvent(billId, { uid: 'deadline-1@test', kind: 'deadline', date: isoDay(8), description: 'Mayor\'s response due' })
+    await seedCalendarEvent(tracked, { uid: 'deadline-2@test', kind: 'deadline', date: isoDay(8), description: 'Mayor\'s response due' })
+    await seedCalendarEvent(tracked, { uid: 'hearing-2@test', kind: 'hearing', date: isoDay(8), description: 'Public Hearing on B26-0100' })
     const uids = await calendarUids()
     expect(uids).toContain('deadline-1@test')
-    expect(uids).not.toContain('hearing-1@test')
     expect(uids).not.toContain('deadline-2@test')
-    expect(await feed()).toContain('UID:deadline-1@test')
+    expect(uids).not.toContain('hearing-2@test')
+    const ics = await feed()
+    expect(ics).toContain('UID:deadline-1@test')
+    expect(ics).not.toContain('UID:deadline-2@test')
   })
 })
