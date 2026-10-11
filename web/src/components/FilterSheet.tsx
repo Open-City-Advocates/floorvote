@@ -4,6 +4,7 @@ import { COUNT_BADGE } from '../lib/chipStyles'
 import type { SubjectGroup } from '../pages/BillList/FilterPanel'
 import type { CustomFieldDef } from '../pages/BillList/types'
 import { FilterSheetVirtualList } from './FilterSheetVirtualList'
+import { useStageFilterUseful } from '../lib/capabilities'
 import { filterDimensionLabel, isFilterDimensionVisible, type FilterDimensionContext } from '../lib/filterDimensions'
 import { filterableCustomFields } from '../lib/customFieldFilters'
 import { buildActiveFilterGroups } from '../pages/BillList/activeFilterGroups'
@@ -260,6 +261,7 @@ export function FilterSheet({
 
   // The sheet always opens on the dimension list (level 1), never mid-drill —
   // reset whenever it transitions from closed to open.
+  const stageUseful = useStageFilterUseful()
   const [dimension, setDimension] = useState<DimensionKey | null>(null)
   const { headingRef, rowRef, clearHistory } = useDrilldownFocus(dimension, isOpen)
   useEffect(() => {
@@ -285,7 +287,8 @@ export function FilterSheet({
 
   if (!isOpen) return null
 
-  const filterDimensionCtx: FilterDimensionContext = { uniqueStates, isAdmin, isMultiState, hasDrafts: hasDrafts ?? false, draftsActive: drafts }
+  const filterDimensionCtx: FilterDimensionContext = { uniqueStates, isAdmin, isMultiState, hasDrafts: hasDrafts ?? false, draftsActive: drafts, stageUseful, stageActive: stages.length > 0 }
+  const stageVisible = isFilterDimensionVisible('stage', filterDimensionCtx)
   const stateVisible = isFilterDimensionVisible('state', filterDimensionCtx)
   const newMatchesVisible = isFilterDimensionVisible('newMatches', filterDimensionCtx)
   const draftsVisible = isFilterDimensionVisible('drafts', filterDimensionCtx)
@@ -590,7 +593,7 @@ export function FilterSheet({
                 {statusOptions.length > 0 && (
                   <DimensionRow label={STATIC_DIMENSION_LABELS.status} selectedCount={statuses.length} onClick={() => setDimension('status')} buttonRef={rowRef('status')} />
                 )}
-                {stageOptions.length > 0 && (
+                {stageVisible && stageOptions.length > 0 && (
                   <DimensionRow label={STATIC_DIMENSION_LABELS.stage} selectedCount={stages.length} onClick={() => setDimension('stage')} buttonRef={rowRef('stage')} />
                 )}
                 {priorityOptions.length > 0 && (

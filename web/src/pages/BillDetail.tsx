@@ -37,7 +37,7 @@ import { color, radius, fontSize, fontWeight, shadow } from '../styles/tokens'
 import { TAG_CHIP, TAG_CHIP_HOVERED } from '../lib/tagChipStyle'
 import { CARD } from '../lib/cardStyle'
 import { COUNT_BADGE, displayName, ROLE_CHIP, TOOLTIP_STYLE, sortRoles } from '../lib/chipStyles'
-import { SECTION_LABEL, CHROME_TEXT, FONT_SANS, FORM_LABEL } from '../lib/textStyles'
+import { SECTION_LABEL, CHROME_TEXT, FONT_SANS, FORM_LABEL, SR_ONLY } from '../lib/textStyles'
 import { HoverTooltip } from '../components/HoverTooltip'
 import { SubjectsTrigger, SubjectsPanel } from '../components/SubjectsDisclosure'
 import { ChangeHistoryTooltip, type ChangeRecord } from '../components/ChangeHistoryTooltip'
@@ -1286,13 +1286,14 @@ export function BillDetail() {
             })()}
           />
           {bill.isDraft ? <DraftChip /> : (() => {
-            const chip = <StatusChip status={decodeStatus(bill.status)} onClick={() => navigate(`/bills?status=${encodeURIComponent(bill.status)}`)} />
-            // The hover bubble is for pointers; the info button reaches keyboard and screen-reader users.
+            const chip = <StatusChip status={decodeStatus(bill.status)} describedBy={statusExplainer ? 'bill-status-explainer' : undefined} onClick={() => navigate(`/bills?status=${encodeURIComponent(bill.status)}`)} />
+            // The hover bubble is for pointers (it opens below, clear of the viewport's top edge).
+            // The same text sits in a visually hidden span that the chip points to for screen readers.
             return statusExplainer
-              ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                  <HoverTooltip text={statusExplainer} maxWidth={320}>{chip}</HoverTooltip>
-                  <InfoTooltip text={statusExplainer} maxWidth={320} align="center" label={`About the status "${decodeStatus(bill.status)}"`} />
-                </span>
+              ? <>
+                  <HoverTooltip text={statusExplainer} placement="bottom" maxWidth={320}>{chip}</HoverTooltip>
+                  <span id="bill-status-explainer" style={SR_ONLY}>{statusExplainer}</span>
+                </>
               : chip
           })()}
           {bill.session && (
@@ -1598,9 +1599,9 @@ export function BillDetail() {
           const metaItems: React.ReactNode[] = []
           const typeExplainer = billTypeExplainer(stateLabels, bill.billType)
           if (bodyLabel) metaItems.push(typeExplainer
-            ? <span key="body" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                <HoverTooltip text={typeExplainer} maxWidth={320}><span>{bodyLabel}</span></HoverTooltip>
-                <InfoTooltip text={typeExplainer} maxWidth={320} align="center" label={`About "${bodyLabel}"`} />
+            ? <span key="body" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
+                <HoverTooltip text={typeExplainer} placement="bottom" maxWidth={320}><span>{bodyLabel}</span></HoverTooltip>
+                <span id="bill-type-explainer" style={SR_ONLY}>{typeExplainer}</span>
               </span>
             : <span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>)
           // The bill's next deadline (an executive's time to act, a review

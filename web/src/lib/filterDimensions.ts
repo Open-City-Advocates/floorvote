@@ -85,6 +85,12 @@ export interface FilterDimensionContext {
    *  active, even if that filter combined with others now matches zero
    *  drafts — otherwise a user has no way to turn it back off except Reset. */
   draftsActive: boolean
+  /** Whether some covered state's provider fills in the in-committee statuses
+   *  (`useStageFilterUseful`). Absent counts as true. */
+  stageUseful?: boolean
+  /** Whether a Stage filter is applied (from a saved view or URL). Keeps the
+   *  dimension visible so the filter can still be seen and turned off. */
+  stageActive?: boolean
 }
 
 export interface FilterDimensionDef {
@@ -118,8 +124,9 @@ export const FILTER_DIMENSIONS: readonly FilterDimensionDef[] = [
   { key: 'drafts',     label: 'Drafts',        kind: 'toggle',  scope: 'workflow', isVisible: ctx => ctx.hasDrafts || ctx.draftsActive },
   { key: 'status',     label: 'Status',        kind: 'options', scope: 'bill',   isVisible: () => true },
   // A status's common stage (Introduced, In committee, ..., Enacted), which
-  // compares bills across states whose status names differ.
-  { key: 'stage',      label: 'Stage',         kind: 'options', scope: 'bill',   isVisible: () => true },
+  // compares bills across states whose status names differ. Hidden when every
+  // covered state is on LegiScan, which almost never reports in-committee.
+  { key: 'stage',      label: 'Stage',         kind: 'options', scope: 'bill',   isVisible: ctx => ctx.stageUseful !== false || !!ctx.stageActive },
   { key: 'session',    label: 'Session year',  kind: 'options', scope: 'bill',   isVisible: () => true },
   { key: 'position',   label: 'Position',      kind: 'options', scope: 'bill',   isVisible: () => true },
   { key: 'priority',   label: 'Priority',      kind: 'options', scope: 'bill',   isVisible: () => true },

@@ -177,6 +177,14 @@ const MD_LABELS = {
   ],
 }
 
+// The hover bubble is the one position:fixed copy of the text; the other is the
+// visually hidden description screen readers get.
+const bubbleWith = (text: string) => screen.getAllByText(text).find(el => el.style.position === 'fixed')
+const RECT = { top: 10, bottom: 30, left: 100, right: 200, width: 100, height: 20, x: 100, y: 10, toJSON: () => ({}) } as DOMRect
+
+// A state whose labels list no bill types.
+const NJ_LABELS = { ...DC_LABELS, state: 'NJ', calendarName: null, statuses: [] }
+
 function renderBillDetail(overrides: Record<string, unknown>) {
   const bill = { ...BILL, ...overrides }
   routerMock.loaderData = bill
@@ -186,6 +194,7 @@ function renderBillDetail(overrides: Record<string, unknown>) {
     if (path === '/bills/labels?state=DC') return DC_LABELS as never
     if (path === '/bills/labels?state=VA') return VA_LABELS as never
     if (path === '/bills/labels?state=MD') return MD_LABELS as never
+    if (path === '/bills/labels?state=NJ') return NJ_LABELS as never
     if (path === '/config/custom-fields') return [] as never
     return {} as never
   })
@@ -203,13 +212,25 @@ describe('the status chip on a bill page', () => {
     renderBillDetail({ state: 'DC', billNumber: 'B26-0400', status: 'Under Mayoral Review' })
     await waitFor(() => {
       fireEvent.pointerEnter(screen.getByText('Under Mayoral Review'), { pointerType: 'mouse' })
-      expect(screen.getByText(EXPLAINER)).toBeInTheDocument()
+      expect(bubbleWith(EXPLAINER)).toBeDefined()
     })
   })
 
-  it('reaches keyboard and screen-reader users through an info button', async () => {
+  it('opens the hover bubble below the chip, so it can\'t clip past the top of the page', async () => {
+    renderBillDetail({ state: 'DC', billNumber: 'B26-0403', status: 'Under Mayoral Review' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Under Mayoral Review' })).toHaveAccessibleDescription(EXPLAINER))
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(RECT)
+    fireEvent.pointerEnter(screen.getByText('Under Mayoral Review'), { pointerType: 'mouse' })
+    const bubble = bubbleWith(EXPLAINER)!
+    expect(bubble.style.top).toBe('36px')
+    expect(bubble.style.transform).not.toContain('translateY')
+  })
+
+  it('has no info button; screen readers get the explainer through aria-describedby', async () => {
     renderBillDetail({ state: 'DC', billNumber: 'B26-0401', status: 'Under Mayoral Review' })
-    expect(await screen.findByRole('button', { name: 'About the status "Under Mayoral Review"' })).toBeInTheDocument()
+    // Re-queried each time: the chip is re-created once the labels arrive.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Under Mayoral Review' })).toHaveAccessibleDescription(EXPLAINER))
+    expect(screen.queryByRole('button', { name: /^About / })).toBeNull()
   })
 
   it('shows no explainer for a status the state\'s labels don\'t list', async () => {
@@ -250,13 +271,28 @@ describe('deadlines and explainers on a bill page', () => {
     await waitFor(() => expect(screen.getAllByRole('button', { name: 'About "Public Hearing"' }).length).toBeGreaterThan(0))
     await waitFor(() => {
       fireEvent.pointerEnter(screen.getByText('Council Emergency Bill'), { pointerType: 'mouse' })
-      expect(screen.getByText(TYPE_EXPLAINER)).toBeInTheDocument()
+      expect(bubbleWith(TYPE_EXPLAINER)).toBeDefined()
     })
   })
 
-  it('reaches keyboard and screen-reader users with the bill type\'s explainer too', async () => {
+  it('opens the bill type\'s hover bubble below, with no info button and a described label', async () => {
     renderBillDetail({ state: 'MD', billNumber: 'B26-0402', body: 'C', billType: 'Emergency Bill', status: 'Introduced', calendar })
-    expect(await screen.findByRole('button', { name: 'About "Council Emergency Bill"' })).toBeInTheDocument()
+    await waitFor(() => expect(document.getElementById('bill-type-explainer')).toHaveTextContent(TYPE_EXPLAINER))
+    const label = screen.getByText('Council Emergency Bill')
+    expect(screen.queryByRole('button', { name: 'About "Council Emergency Bill"' })).toBeNull()
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(RECT)
+    fireEvent.pointerEnter(label, { pointerType: 'mouse' })
+    expect(bubbleWith(TYPE_EXPLAINER)!.style.top).toBe('36px')
+  })
+
+  it('renders a bill type with no explainer as plain text: no hover bubble, no description', async () => {
+    const spy = renderBillDetail({ state: 'NJ', billNumber: 'HB 2', body: 'C', billType: 'B', status: 'Introduced' })
+    await waitFor(() => expect(spy).toHaveBeenCalledWith('/bills/labels?state=NJ'))
+    const label = await screen.findByText('Council bill')
+    expect(label).not.toHaveAttribute('aria-describedby')
+    expect(document.getElementById('bill-type-explainer')).toBeNull()
+    fireEvent.pointerEnter(label, { pointerType: 'mouse' })
+    expect(Array.from(document.body.querySelectorAll('span')).some(el => el.style.position === 'fixed')).toBe(false)
   })
 
   it('shows no deadline chip for a bill without upcoming deadlines', async () => {
