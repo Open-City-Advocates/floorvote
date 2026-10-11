@@ -205,7 +205,7 @@ configRouter.get('/', async (c) => {
   // provider's: the CC BY credit never lapses on an upgrade.
   const attribution = knownAttribution && knownAttribution.providers.length > 0
     ? knownAttribution
-    : { providers: [{ id: 'legiscan', ...LEGISCAN_ATTRIBUTION }], states: {} }
+    : { providers: [{ id: 'legiscan', ...LEGISCAN_ATTRIBUTION }] }
 
   const tagTaxonomy = taxonomyItems.map(t => t.name)
 

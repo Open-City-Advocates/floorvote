@@ -5,7 +5,7 @@ import { hearingUid } from './hearingUid'
 import { nowDb } from './dbTime'
 import { applyEventRules, bodyEventFacets, centralOptions, loadEventRules, optionCommittees } from './eventRules'
 import { httpUrl } from '../../../shared/httpUrl'
-import type { DataAttribution } from '../../../shared/dataAttribution'
+import type { Attribution, ProviderCredit } from '../../../shared/dataAttribution'
 import type { AppDb, Env } from '../types'
 
 /**
@@ -66,17 +66,6 @@ export interface CentralBodyEvent {
   covers: { billId: string; identityKey: string }[]
 }
 
-/** The credit for one provider as central sends it (central/src/lib/attribution.ts). */
-export interface ProviderCredit extends DataAttribution {
-  id: string
-}
-
-/** The providers the instance's covered states come from, and each state's provider. */
-export interface StateAttribution {
-  providers: ProviderCredit[]
-  states: Record<string, string>
-}
-
 export const CAPABILITIES_KEY = 'state_capabilities'
 export const ATTRIBUTION_KEY = 'data_attribution'
 /** How long the capabilities stand when no covered state has body events. */
@@ -101,12 +90,12 @@ export async function readStateCapabilities(db: AppDb): Promise<{ data: Record<s
   }
 }
 
-/**
- * The attribution central last sent, or null before it has. Credits that
- * aren't a name, note, and http(s) link are dropped, since the footer renders
- * them as links.
- */
-export async function readStateAttribution(db: AppDb): Promise<StateAttribution | null> {
+/** The longest name and note an instance shows, so a bad answer can't fill the footer. */
+const CREDIT_NAME_MAX = 200
+const CREDIT_NOTE_MAX = 500
+
+/** The attribution central last sent, or null before it has (see `cleanAttribution`). */
+export async function readStateAttribution(db: AppDb): Promise<Attribution | null> {
   const row = await db.select().from(associationConfig).where(eq(associationConfig.key, ATTRIBUTION_KEY)).get()
   if (!row) return null
   try {
@@ -116,19 +105,30 @@ export async function readStateAttribution(db: AppDb): Promise<StateAttribution 
   }
 }
 
-function cleanAttribution(value: unknown): StateAttribution | null {
-  const raw = value as { providers?: unknown; states?: unknown } | null
-  if (!raw || !Array.isArray(raw.providers) || !raw.states || typeof raw.states !== 'object' || Array.isArray(raw.states)) return null
-  const text = (v: unknown) => typeof v === 'string' && v.trim() ? v : null
+/**
+ * What an instance accepts as attribution: credits that have an id, a name, a
+ * note, and an http(s) link, since the footer renders them as links. Names
+ * and notes are cut to a sensible length. A credit whose license is present
+ * but has no name or http(s) link is dropped whole, not shown without it: the
+ * license link is the credit CC BY asks for. Null when the value isn't a list
+ * of providers.
+ */
+function cleanAttribution(value: unknown): Attribution | null {
+  const raw = value as { providers?: unknown } | null
+  if (!raw || !Array.isArray(raw.providers)) return null
+  const text = (v: unknown, max: number) => typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null
   const providers: ProviderCredit[] = []
   for (const p of raw.providers as Record<string, any>[]) {
-    const id = text(p?.id), name = text(p?.name), note = text(p?.note), url = httpUrl(p?.url)
+    const id = text(p?.id, 64), name = text(p?.name, CREDIT_NAME_MAX), note = text(p?.note, CREDIT_NOTE_MAX), url = httpUrl(p?.url)
     if (!id || !name || !note || !url) continue
-    const licenseUrl = httpUrl(p.license?.url)
-    const licenseName = text(p.license?.name)
-    providers.push({ id, name, url, note, ...(licenseUrl && licenseName ? { license: { name: licenseName, url: licenseUrl } } : {}) })
+    if (p.license == null) {
+      providers.push({ id, name, url, note })
+      continue
+    }
+    const licenseName = text(p.license.name, CREDIT_NAME_MAX), licenseUrl = httpUrl(p.license.url)
+    if (licenseName && licenseUrl) providers.push({ id, name, url, note, license: { name: licenseName, url: licenseUrl } })
   }
-  return { providers, states: raw.states as Record<string, string> }
+  return { providers }
 }
 
 /**

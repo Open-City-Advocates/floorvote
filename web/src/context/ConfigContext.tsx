@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { apiFetch } from '../lib/api'
-import type { DataAttribution } from '../../../shared/dataAttribution'
+import type { Attribution } from '../../../shared/dataAttribution'
 
 export interface OperatorConfig {
   name: string
@@ -29,10 +29,9 @@ export interface AppConfig {
   operator?: OperatorConfig
   /**
    * The providers the covered states' data comes from, each with the credit it
-   * declares, and each covered state's provider. The footer credits every one.
-   * Absent = LegiScan's.
+   * declares. The footer credits every one. Absent = LegiScan's.
    */
-  attribution?: StateAttribution
+  attribution?: Attribution
   accountDeletionEnabled?: boolean
   /**
    * What each covered state's data can do, by state, from the provider central
@@ -40,11 +39,6 @@ export interface AppConfig {
    * a state's name.
    */
   capabilities?: Record<string, StateCapabilities>
-}
-
-export interface StateAttribution {
-  providers: (DataAttribution & { id: string })[]
-  states: Record<string, string>
 }
 
 export interface StateCapabilities {

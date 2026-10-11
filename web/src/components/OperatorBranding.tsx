@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PRODUCT_NAME, SOURCE_URL, LICENSE_NAME, LICENSE_URL } from '../../../shared/brand'
-import { LEGISCAN_ATTRIBUTION, type DataAttribution } from '../../../shared/dataAttribution'
+import { LEGISCAN_ATTRIBUTION, type DataAttribution, type ProviderCredit } from '../../../shared/dataAttribution'
 import { legalDocsVisible } from '../lib/legalVisibility'
 import { useDemo } from '../context/DemoContext'
 import { useConfig, type OperatorConfig } from '../context/ConfigContext'
@@ -28,7 +28,8 @@ const LICENSE_NOTE = `${PRODUCT_NAME} is free software licensed under the ${LICE
 // would reach sighted users only. These ids tie an SR_ONLY copy to each link
 // via aria-describedby, so a screen reader announces the same explanation.
 const LICENSE_NOTE_ID = 'footer-license-note'
-const dataNoteId = (providerId: string) => `footer-data-note-${providerId}`
+// The id comes from central, so it is cut down to what is safe in an id attribute and an aria-describedby list.
+const dataNoteId = (providerId: string) => `footer-data-note-${providerId.replace(/[^A-Za-z0-9_-]/g, '-')}`
 
 // What the footer credits until the config says otherwise: LegiScan's, the
 // default provider's.
@@ -79,7 +80,7 @@ export function OperatorBranding({
   sourceUrl?: string
   showTerms?: boolean
   showPrivacy?: boolean
-  dataCredits?: (DataAttribution & { id: string })[]
+  dataCredits?: ProviderCredit[]
 } = {}) {
   const { config } = useConfig()
   const { demoMode } = useDemo()

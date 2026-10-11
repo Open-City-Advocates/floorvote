@@ -15,6 +15,17 @@ export interface DataAttribution {
   license?: { name: string; url: string }
 }
 
+/** One provider's credit as an instance receives it. */
+export interface ProviderCredit extends DataAttribution {
+  /** The provider's id. */
+  id: string
+}
+
+/** The credits an instance shows: one per provider that owns a state it covers (GET /config `attribution`). */
+export interface Attribution {
+  providers: ProviderCredit[]
+}
+
 /**
  * LegiScan's credit. It is the default provider's, so an instance that has
  * not heard from central yet shows it: LegiScan's CC BY 4.0 license asks for

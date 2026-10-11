@@ -14,13 +14,12 @@ describe('what an instance credits for the states it covers', () => {
         note: expect.stringContaining('Creative Commons Attribution 4.0'),
         license: { name: 'CC BY 4.0', url: 'https://creativecommons.org/licenses/by/4.0/' },
       }],
-      states: { TX: 'legiscan' },
     })
   })
 
   it('credits the owner of each covered state, and no one it does not own', () => {
     const owners = owned(['DC', 'lims'], ['MD', 'mga'])
-    expect(coverageAttribution(owners, ['DC'])).toMatchObject({ states: { DC: 'lims' }, providers: [{ id: 'lims', name: 'DC Council LIMS' }] })
+    expect(coverageAttribution(owners, ['DC'])).toMatchObject({ providers: [{ id: 'lims', name: 'DC Council LIMS' }] })
     expect(ids(coverageAttribution(owners, ['MD', 'DC']))).toEqual(['lims', 'mga'])
     expect(ids(coverageAttribution(owners, ['TX', 'MD']))).toEqual(['legiscan', 'mga'])
   })
@@ -32,13 +31,11 @@ describe('what an instance credits for the states it covers', () => {
 
   it('credits the default provider for every state, and each owner, when an instance covers all states', () => {
     expect(ids(coverageAttribution(owned(), ['*']))).toEqual(['legiscan'])
-    const a = coverageAttribution(owned(['DC', 'lims']), ['*'])
-    expect(ids(a)).toEqual(['legiscan', 'lims'])
-    expect(a.states).toEqual({ DC: 'lims' })
+    expect(ids(coverageAttribution(owned(['DC', 'lims']), ['*']))).toEqual(['legiscan', 'lims'])
   })
 
   it('treats an owner central has no code for as the default provider', () => {
-    expect(coverageAttribution(owned(['DC', 'gone']), ['DC'])).toMatchObject({ states: { DC: 'legiscan' }, providers: [{ id: 'legiscan' }] })
+    expect(coverageAttribution(owned(['DC', 'gone']), ['DC'])).toMatchObject({ providers: [{ id: 'legiscan' }] })
   })
 })
 

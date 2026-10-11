@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { OperatorBranding } from './OperatorBranding'
 import { ConfigContext, type AppConfig } from '../context/ConfigContext'
 import { SOURCE_URL, LICENSE_URL } from '../../../shared/brand'
-import type { DataAttribution } from '../../../shared/dataAttribution'
+import type { ProviderCredit } from '../../../shared/dataAttribution'
 
 const full = { name: 'Example Org', url: 'https://example.org/elections', contactEmails: ['ops@example.org'] }
 
@@ -184,8 +184,8 @@ describe('OperatorBranding data credit by provider', () => {
   const md = { id: 'mga', name: 'Maryland General Assembly', url: 'https://mgaleg.maryland.gov', note: 'From the General Assembly.' }
 
   // Through ConfigContext, as GET /config feeds it.
-  function renderWithConfig(providers: (DataAttribution & { id: string })[] | undefined) {
-    const config = { associationName: '', state: '', states: [], sessions: [], attribution: providers && { providers, states: {} } } as unknown as AppConfig
+  function renderWithConfig(providers: ProviderCredit[] | undefined) {
+    const config = { associationName: '', state: '', states: [], sessions: [], attribution: providers && { providers } } as unknown as AppConfig
     return render(
       <MemoryRouter>
         <ConfigContext.Provider value={{ config, multiState: false, loading: false }}>
@@ -214,6 +214,13 @@ describe('OperatorBranding data credit by provider', () => {
     expect(screen.getByRole('link', { name: 'Maryland General Assembly' })).toHaveAttribute('href', 'https://mgaleg.maryland.gov')
     expect(screen.getByText('From the General Assembly.')).toBeInTheDocument() // the screen-reader copy of the note
     expect(screen.queryByRole('link', { name: 'LegiScan' })).toBeNull()
+  })
+
+  it('makes a provider id safe to use as an element id, so the note still describes the link', () => {
+    renderWithConfig([{ ...dc, id: 'li ms"x' }])
+    const describedBy = screen.getByRole('link', { name: 'DC Council LIMS' }).getAttribute('aria-describedby')
+    expect(describedBy).toBe('footer-data-note-li-ms-x')
+    expect(document.getElementById(describedBy!)).toHaveTextContent('From the Council.')
   })
 
   it('credits LegiScan when the config carries no attribution, or none that names a provider', () => {

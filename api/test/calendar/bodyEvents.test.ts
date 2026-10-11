@@ -19,7 +19,7 @@ const HEARING_UID = hearingUid(HANDLE, IDENTITY, 'bpc-test')
 const CAPABLE = { DC: { bodyEvents: true, deadlines: true } }
 const LIMS_CREDIT = { id: 'lims', name: 'DC Council LIMS', url: 'https://lims.dccouncil.gov', note: 'Legislative data comes from the Council of the District of Columbia\'s LIMS.' }
 const LEGISCAN_CREDIT = { id: 'legiscan', name: 'LegiScan', url: 'https://legiscan.com', note: 'From LegiScan.', license: { name: 'CC BY 4.0', url: 'https://creativecommons.org/licenses/by/4.0/' } }
-const DC_ATTRIBUTION = { providers: [LIMS_CREDIT], states: { DC: 'lims' } }
+const DC_ATTRIBUTION = { providers: [LIMS_CREDIT] }
 
 function bodyEvent(o: Partial<CentralBodyEvent> = {}): CentralBodyEvent {
   return {
@@ -240,16 +240,16 @@ describe('data attribution', () => {
   const configAttribution = async () => (await (await SELF.fetch('http://localhost/api/config', { headers: { Cookie: `session=${token}` } })).json() as any).attribution
 
   it('credits LegiScan on GET /config until central has answered', async () => {
-    expect(await configAttribution()).toMatchObject({ providers: [{ id: 'legiscan', name: 'LegiScan', url: 'https://legiscan.com', license: { name: 'CC BY 4.0' } }], states: {} })
+    expect(await configAttribution()).toMatchObject({ providers: [{ id: 'legiscan', name: 'LegiScan', url: 'https://legiscan.com', license: { name: 'CC BY 4.0' } }] })
   })
 
   it('reaches GET /config from the body-event sync, as central declares it', async () => {
     await sync()
     expect(await configAttribution()).toEqual(DC_ATTRIBUTION)
     // A claim moves a state to another provider, and the next answer says so.
-    central.attribution = { providers: [LEGISCAN_CREDIT, LIMS_CREDIT], states: { DC: 'lims', MD: 'legiscan' } }
+    central.attribution = { providers: [LEGISCAN_CREDIT, LIMS_CREDIT] }
     await sync()
-    expect(await configAttribution()).toEqual({ providers: [LEGISCAN_CREDIT, LIMS_CREDIT], states: { DC: 'lims', MD: 'legiscan' } })
+    expect(await configAttribution()).toEqual({ providers: [LEGISCAN_CREDIT, LIMS_CREDIT] })
   })
 
   it('keeps what it has when central sends none', async () => {
@@ -274,17 +274,41 @@ describe('data attribution', () => {
     central.attribution = {
       providers: [
         { ...LIMS_CREDIT, url: 'javascript:alert(1)' },
-        { ...LEGISCAN_CREDIT, license: { name: 'CC BY 4.0', url: 'javascript:alert(1)' } },
+        { ...LEGISCAN_CREDIT, id: 'ok', license: undefined },
         { id: 'x', name: 'No note', url: 'https://example.test' },
       ],
-      states: {},
     }
     await sync()
-    const credits = (await configAttribution()).providers
-    expect(credits).toEqual([{ id: 'legiscan', name: 'LegiScan', url: 'https://legiscan.com', note: 'From LegiScan.' }])
-    central.attribution = { providers: [{ ...LIMS_CREDIT, url: '/relative' }], states: {} }
+    expect((await configAttribution()).providers).toEqual([{ id: 'ok', name: 'LegiScan', url: 'https://legiscan.com', note: 'From LegiScan.' }])
+    central.attribution = { providers: [{ ...LIMS_CREDIT, url: '/relative' }] }
     await sync()
     expect((await configAttribution()).providers[0]).toMatchObject({ id: 'legiscan', license: { name: 'CC BY 4.0' } })
+  })
+
+  it('drops the whole credit, not just its license, when the license has no usable link', async () => {
+    central.attribution = {
+      providers: [
+        { ...LEGISCAN_CREDIT, license: { name: 'CC BY 4.0', url: 'javascript:alert(1)' } },
+        { ...LEGISCAN_CREDIT, id: 'nameless', license: { url: 'https://creativecommons.org/licenses/by/4.0/' } },
+        LIMS_CREDIT,
+      ],
+    }
+    await sync()
+    expect(await configAttribution()).toEqual(DC_ATTRIBUTION)
+  })
+
+  it('accepts an http link, and cuts a name and note to a sensible length', async () => {
+    central.attribution = { providers: [{ id: 'long', name: 'N'.repeat(300), url: 'http://legislature.example.test', note: 'T'.repeat(900) }] }
+    await sync()
+    expect((await configAttribution()).providers).toEqual([{ id: 'long', name: 'N'.repeat(200), url: 'http://legislature.example.test', note: 'T'.repeat(500) }])
+  })
+
+  it('serves LegiScan\'s credit when the stored attribution is corrupt', async () => {
+    const db = getDb(env.DB)
+    for (const value of ['not json', '{"data":"x"}', '{"data":{"providers":"x"}}', 'null']) {
+      await db.insert(associationConfig).values({ key: 'data_attribution', value }).onConflictDoUpdate({ target: associationConfig.key, set: { value } })
+      expect((await configAttribution()).providers).toEqual([expect.objectContaining({ id: 'legiscan', name: 'LegiScan' })])
+    }
   })
 
   it('ignores DATA_SOURCES, which an earlier release read from the instance\'s own settings', async () => {
