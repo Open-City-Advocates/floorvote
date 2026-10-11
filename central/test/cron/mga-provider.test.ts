@@ -19,7 +19,7 @@ vi.stubGlobal('fetch', fetchMock)
 import { mga } from '../../src/providers/mga'
 import { toHandle } from '../../src/lib/billHandle'
 import { tenantQueueBindingName } from '../../src/lib/tenantQueue'
-import { mainSeam, resetCentral } from '../helpers/mainSeam'
+import { mainSeam, resetCentral, type Run } from '../helpers/mainSeam'
 
 const FILE = 'https://mgaleg.maryland.gov/2026RS/misc/billsmasterlist/legislation.json'
 const PDF = '%PDF-1.7\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n'
