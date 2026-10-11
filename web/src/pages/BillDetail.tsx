@@ -52,6 +52,7 @@ import { COMMENT_STYLE } from '../../../shared/commentStyle'
 import { billDisplayTitle } from '../../../shared/billTitle'
 import { getScrollContainer } from '../lib/scrollUtils'
 import { billUrl } from '../lib/sessionSlug'
+import { OtherSessionNotice, billChoicesFrom, type BillChoice } from '../components/BillChoices'
 import { todayIso } from '../lib/calendarGrid'
 import { safeDate, safeTime } from '../lib/dates'
 import { ExternalLinkIcon } from '../components/ExternalLinkIcon'
@@ -398,6 +399,8 @@ type BillDetailData = {
   externalId: string | null
   billNumber: string
   sessionSlug?: string | null
+  /** Other bills older links to this URL may have meant (resolve routes only). */
+  otherSessionMatches?: BillChoice[]
   title: string
   state: string
   status: string
@@ -531,8 +534,10 @@ export async function billDetailLoader({ params, request }: LoaderFunctionArgs) 
     // Anything already shaped as a Response is a router instruction — pass it
     // through rather than reclassifying it as a 500.
     if (err instanceof Response) throw err
+    // More than one bill answers to this URL: hand BillDetailError the
+    // candidates, as JSON so the router parses them into the error's data.
     if (err instanceof ApiError && err.status === 409) {
-      throw new Response('This bill number exists in multiple states. Please use a state-prefixed URL (e.g. /RI/2026/HB0209).', { status: 409 })
+      throw new Response(JSON.stringify({ candidates: billChoicesFrom(err.body?.candidates) }), { status: 409, headers: { 'Content-Type': 'application/json' } })
     }
     if (err instanceof ApiError && err.status === 401) {
       throw redirect('/login')
@@ -1472,6 +1477,8 @@ export function BillDetail() {
             ) : null}
           </div>
         )}
+
+        <OtherSessionNotice choices={bill.otherSessionMatches ?? []} />
 
         {bill.isDraft && isAdmin && editingDraftField === 'title' ? (
           <div style={{ marginBottom: 4 }}>

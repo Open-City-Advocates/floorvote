@@ -9,8 +9,9 @@ vi.mock('../components/AcceptTerms', () => ({ AcceptTerms: () => <div>accept ter
 vi.mock('react-router-dom', () => ({
   useRouteError: () => routeError.current,
   useRevalidator: () => ({ revalidate, state: 'idle' }),
-  isRouteErrorResponse: (e: unknown) => e instanceof Response,
-  Link: ({ children }: { children: React.ReactNode }) => React.createElement('a', null, children),
+  // The router hands the error page a thrown Response as { status, data }.
+  isRouteErrorResponse: (e: unknown) => e instanceof Response || (!!e && typeof e === 'object' && 'status' in e && 'data' in e),
+  Link: ({ children, to }: { children: React.ReactNode; to: string }) => React.createElement('a', { href: to }, children),
 }))
 
 import { BillDetailError } from './BillDetailError'
@@ -32,9 +33,22 @@ describe('BillDetailError', () => {
     expect(screen.queryByText(/failed to load bill/i)).not.toBeInTheDocument()
   })
 
-  it('keeps the ambiguous-bill guidance on a 409', () => {
+  it('says more than one bill answers on a 409, with guidance when it has no candidates', () => {
     renderFor(409)
-    expect(screen.getByText(/exists in multiple states/i)).toBeInTheDocument()
+    expect(screen.getByText(/more than one bill answers to this link/i)).toBeInTheDocument()
+    expect(screen.getByText(/with its state and session/i)).toBeInTheDocument()
+  })
+
+  // An old /MD/2026/HB5 link from before special sessions had their own slug
+  // can mean bills in two special sessions. Link to each, by its session.
+  it("links to each bill a 409's link could mean", () => {
+    routeError.current = { status: 409, data: { candidates: [
+      { state: 'MD', sessionSlug: '2026-s1', session: '2026 Special Session 1', billNumber: 'HB5' },
+      { state: 'MD', sessionSlug: '2026-s2', session: '2026 Special Session 2', billNumber: 'HB5' },
+    ] } }
+    render(<BillDetailError />)
+    expect(screen.getByText('HB5, 2026 Special Session 1 (MD)').getAttribute('href')).toBe('/MD/2026-s1/HB5')
+    expect(screen.getByText('HB5, 2026 Special Session 2 (MD)').getAttribute('href')).toBe('/MD/2026-s2/HB5')
   })
 
   it('still reports a genuine failure on a 500', () => {
