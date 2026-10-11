@@ -674,6 +674,40 @@ describe('processCentralNotification', () => {
     expect(texts[0].stateLink).toBe('https://legisinfo.ri.gov/HB100.html')
   })
 
+  it('drops the texts central no longer lists, as after a cutover to another provider', async () => {
+    const db = getDb(env.DB)
+    const msg: TenantQueueMessage = { tenantId: 'test-org', billId: BILL_ID }
+    await processCentralNotification(msg, testEnv as any, db)
+    // Stored a while ago.
+    await db.update(billTexts).set({ updatedAt: '2026-01-01 00:00:00' })
+
+    // The bill's new provider has its own document, and central cleared the old one.
+    const newText = { docId: 'lims-doc-1', note: 'Introduction', date: '2026-01-02', links: [{ url: 'https://lims.dccouncil.gov/1.pdf', mediaType: 'application/pdf' }] }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/text')) return Promise.resolve({ ok: true, json: async () => ({ type: 'html', content: '<p>New text</p>' }) })
+      return Promise.resolve({ ok: true, json: async () => ({ ...fakeCentralBill, texts: [newText], updatedAt: '2026-02-01T00:00:00Z' }) })
+    }))
+    await processCentralNotification(msg, testEnv as any, db)
+    const bill = await db.select().from(bills).get()
+    expect((await db.select().from(billTexts).where(eq(billTexts.billId, bill!.id)).all()).map(t => t.docId)).toEqual(['lims-doc-1'])
+  })
+
+  it('keeps a text another run stored from a newer copy of the bill than the one it read', async () => {
+    const db = getDb(env.DB)
+    const msg: TenantQueueMessage = { tenantId: 'test-org', billId: BILL_ID }
+    await processCentralNotification(msg, testEnv as any, db)
+    // While this run waits on central, another stores a text from a newer copy.
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/text')) return { ok: true, json: async () => ({ type: 'html', content: '<p>Bill text</p>' }) }
+      const bill = await db.select().from(bills).get()
+      await db.insert(billTexts).values({ id: 'newer', billId: bill!.id, docId: 'newer-doc', type: 'Engrossed', date: '2026-02-01', updatedAt: '2999-01-01 00:00:00' })
+      return { ok: true, json: async () => ({ ...fakeCentralBill, updatedAt: '2026-02-01T00:00:00Z' }) }
+    }))
+    await processCentralNotification(msg, testEnv as any, db)
+    const bill = await db.select().from(bills).get()
+    expect((await db.select().from(billTexts).where(eq(billTexts.billId, bill!.id)).all()).map(t => t.docId).sort()).toEqual(['newer-doc', 'ver-uuid-001'])
+  })
+
   it('emits bill_updated feed event when AI-processed bill has status change', async () => {
     const db = getDb(env.DB)
     await db.insert(associationConfig).values({ key: 'keywords', value: JSON.stringify(['election']) })

@@ -1,4 +1,4 @@
-import { asc, eq } from 'drizzle-orm'
+import { asc, eq, sql } from 'drizzle-orm'
 import { apiCallLog, people } from '../db/schema'
 import { nowDb } from './dbTime'
 import { knownProviderIds, providerIdsFor } from './providerIds'
@@ -27,10 +27,17 @@ export function providerContext(
     today: nowDb().slice(0, 10),
     ids: (kind, nativeKeys) => providerIdsFor(db, provider.id, kind, nativeKeys),
     knownIds: (kind, nativeKeys) => knownProviderIds(db, provider.id, kind, nativeKeys),
+    // People a cutover carried over (lib/carriedIds.ts) come last, so a
+    // provider that indexes them by name, latest first (LIMS), keeps giving a
+    // legislator the id instances already have, even once the provider lists
+    // them under a new id of its own (a new Council Period, say).
     people: () => db.select({ peopleId: people.peopleId, name: people.name, role: people.role })
       .from(people)
       .where(eq(people.provider, provider.id))
-      .orderBy(asc(people.peopleId))
+      .orderBy(
+        asc(sql`EXISTS (SELECT 1 FROM cutover_people cp JOIN cutovers c ON c.id = cp.cutover_id
+          WHERE cp.people_id = ${people.peopleId} AND c.to_provider = ${provider.id} AND c.undone_at IS NULL)`),
+        asc(people.peopleId))
       .all(),
   }
 }

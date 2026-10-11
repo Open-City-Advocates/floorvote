@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono'
 import { drizzle } from 'drizzle-orm/d1'
-import { eq, and, isNull, inArray, desc } from 'drizzle-orm'
+import { eq, and, isNull, inArray, asc, desc } from 'drizzle-orm'
 import { matchesUnion } from '../lib/keywords'
 import * as schema from '../db/schema'
 import { secretsMatch } from '../lib/auth'
@@ -11,6 +11,7 @@ import { bodyEventDetails, bodyEventOptions, calendarCoverage, type BodyEventDet
 import { coverageCapabilities } from '../lib/capabilities'
 import { listStateOwnership } from '../lib/stateProviders'
 import { DEFAULT_PROVIDER_ID, findProvider, getProvider } from '../providers'
+import { ownerOfState } from '../lib/stateProviders'
 import { getTenantQueue, tenantQueueBindingName } from '../lib/tenantQueue'
 import { deliverBatchToTenant } from '../lib/tenantDelivery'
 import { ensureQueue, resolveQueueId, queuesRestEnabled } from '../lib/queuesRest'
@@ -47,7 +48,9 @@ tenantsRoutes.get('/current-session/:state', async (c) => {
     })
     .from(schema.sessions)
     .where(and(eq(schema.sessions.state, state), eq(schema.sessions.special, 0)))
-    .orderBy(desc(schema.sessions.yearStart))
+    // Of two providers' sessions for one year (a cutover leaves the old one
+    // marked ended), the one still in progress.
+    .orderBy(desc(schema.sessions.yearStart), asc(schema.sessions.sineDie))
     .limit(1)
     .get()
   if (!row) return c.json({ error: 'no session for state' }, 404)
@@ -218,6 +221,21 @@ tenantsRoutes.post('/seed-session/:tenantId', async (c) => {
 
   const db = drizzle(c.env.DB, { schema })
 
+  // Only the provider that owns the session's state (state_providers) links
+  // its bills. Another provider's session there (such as the LegiScan session
+  // a cutover moved DC off) would hand the tenant copies of bills it already
+  // holds from the owner, which nothing syncs any more.
+  const sessRow = await db.select({ state: schema.sessions.state, provider: schema.sessions.provider })
+    .from(schema.sessions).where(eq(schema.sessions.sessionId, sessionId)).get()
+  if (!sessRow) return c.json({ error: `session ${sessionId} not found` }, 404)
+  const owner = await ownerOfState(db, sessRow.state)
+  if (owner !== sessRow.provider) {
+    return c.json({
+      error: `${sessRow.state} syncs from ${owner}, and session ${sessionId} is ${sessRow.provider}'s. Seed one of ${owner}'s sessions instead.`,
+      owner,
+    }, 409)
+  }
+
   // Load keyword union for this tenant
   const kwRows = await db.select({ keyword: schema.keywordRegistry.keyword })
     .from(schema.keywordRegistry)
@@ -254,14 +272,19 @@ tenantsRoutes.post('/seed-session/:tenantId', async (c) => {
 
   // Bulk-insert bill_tenants — INSERT OR IGNORE so existing rows ('keyword', 'manual')
   // are never overwritten. D1 does not support WHERE in ON CONFLICT DO UPDATE.
-  // D1 HTTP API limit: 100 bound params per query. Each row binds 3 (bill_id, tenant_id,
-  // match_type), so max 33 rows per batch — use 30 to stay safely under.
-  const INSERT_CHUNK = 30
-  for (let i = 0; i < sessionBills.length; i += INSERT_CHUNK) {
-    const slice = sessionBills.slice(i, i + INSERT_CHUNK)
-    await db.insert(schema.billTenants)
-      .values(slice.map(b => ({ billId: b.billId, tenantId, matchType: null as string | null })))
-      .onConflictDoNothing()
+  // One statement for the page, with the ids as one JSON parameter (D1 binds at
+  // most 100 parameters), written only while the session's provider still owns
+  // its state, as the sync's links are (insertLinkWhileOwner).
+  await c.env.DB.prepare(`
+    INSERT INTO bill_tenants (bill_id, tenant_id, notified_at, match_type)
+    SELECT value, ?1, NULL, NULL FROM json_each(?2)
+    WHERE COALESCE((SELECT provider FROM state_providers WHERE state = ?3), ?4) = ?5
+    ON CONFLICT DO NOTHING`)
+    .bind(tenantId, JSON.stringify(sessionBills.map(b => b.billId)), sessRow.state, DEFAULT_PROVIDER_ID, sessRow.provider)
+    .run()
+  // The state changed provider during the request: link and send nothing more.
+  if (await ownerOfState(db, sessRow.state) !== sessRow.provider) {
+    return c.json({ error: `${sessRow.state} changed provider during the seed; nothing was sent`, offset }, 409)
   }
 
   // Promote null rows to 'keyword' for keyword-matching bills.
@@ -305,11 +328,9 @@ tenantsRoutes.post('/seed-session/:tenantId', async (c) => {
   // never polled the state and the bills sat static. mergeCoverage is additive,
   // and /register also merges, so this isn't reverted by the tenant's next register.
   if (offset === 0) {
-    const sessRow = await db.select({ state: schema.sessions.state })
-      .from(schema.sessions).where(eq(schema.sessions.sessionId, sessionId)).get()
     const covRow = await db.select({ stateCoverage: schema.tenants.stateCoverage })
       .from(schema.tenants).where(eq(schema.tenants.tenantId, tenantId)).get()
-    if (sessRow?.state && covRow) {
+    if (covRow) {
       let cov: string[] | null = null
       try { cov = JSON.parse(covRow.stateCoverage) } catch { cov = null }
       const merged = JSON.stringify(mergeCoverage(cov, [sessRow.state]))

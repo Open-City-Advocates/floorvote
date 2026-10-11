@@ -1,5 +1,5 @@
 import { eq, and, isNull, sql } from 'drizzle-orm'
-import { DEFAULT_PROVIDER_ID, getProvider, type CentralMeasure, type MeasureRef, type Provider } from '../providers'
+import { DEFAULT_PROVIDER_ID, findProvider, getProvider, type CentralMeasure, type MeasureRef, type Provider } from '../providers'
 import {
   bills, billHistory, billSponsors, billTexts, billSupplements, billAmendments,
   billSasts, billSubjects, billReferrals, billTenants,
@@ -7,9 +7,11 @@ import {
 } from '../db/schema'
 import { detectChanges, type BillSnapshot, type ChangeRecord } from '../lib/detect-changes'
 import {
-  calendarBlockEvents, logCalendarChanges, planCalendarPull, planCalendarRecheck, readCalendarRows, writeCalendarRows,
-  type CalendarChange, type CalendarRow,
+  calendarBlockEvents, carryCalendar, logCalendarChanges, planCalendarPull, planCalendarRecheck, readCalendarRows, writeCalendarRows,
+  type CalendarChange, type CalendarPlan, type CalendarRow,
 } from '../lib/billCalendar'
+import { carriedPeopleIds, measureWithCarriedPeople } from '../lib/carriedIds'
+import { clearProviderData } from '../lib/cutover'
 import { calendarCoverage } from '../lib/bodyEvents'
 import type { Env, Db, IngestorMessage, BillMessage, NotificationMessage, CalendarBlock } from '../types'
 import { personRow } from '../lib/people'
@@ -23,6 +25,12 @@ import { toHandle } from '../lib/billHandle'
 import { replaceBillExtras } from '../lib/billExtras'
 import { upsertCommittees } from '../lib/committees'
 import { httpUrl } from '../../../shared/httpUrl'
+
+/**
+ * How many ingests of a bill a cutover moved may come with no calendar at
+ * all before its carry-over stops waiting for one (lib/cutover.ts).
+ */
+const MAX_CARRY_WAITS = 3
 
 export async function processIngestorQueue(
   batch: MessageBatch<IngestorMessage>,
@@ -164,7 +172,7 @@ export type IngestOptions = {
  * rows record that provider.
  */
 export async function ingestMeasure(
-  bill: CentralMeasure,
+  measure: CentralMeasure,
   provider: Provider,
   env: Env,
   db: Db,
@@ -176,16 +184,49 @@ export async function ingestMeasure(
   // --- Change detection ---
   // Read existing bill to check change_hash and build before-snapshot
   const existingBillRow = await db
-    .select({ changeHash: bills.changeHash, status: bills.status, title: bills.title, description: bills.description })
+    .select({
+      changeHash: bills.changeHash, status: bills.status, title: bills.title, description: bills.description,
+      provider: bills.provider, carriedFrom: bills.carriedFrom, carriedWaits: bills.carriedWaits,
+    })
     .from(bills)
-    .where(eq(bills.billId, bill.bill_id))
+    .where(eq(bills.billId, measure.bill_id))
     .get()
+
+  // A cutover moved the bill to another provider while this ingest ran: the
+  // bill's new provider writes it now, so this one writes nothing.
+  if (existingBillRow && existingBillRow.provider !== provider.id) {
+    console.warn(`[processor-ls] bill ${measure.bill_id} now syncs from ${existingBillRow.provider}; dropping its ${provider.id} ingest`)
+    return
+  }
+  // A legislator a cutover matched keeps their person id (lib/carriedIds.ts).
+  // Only a snapshot provider can be cut over to.
+  const bill = provider.snapshot ? measureWithCarriedPeople(measure, await carriedPeopleIds(db, provider.id)) : measure
+
+  // The first ingest of a bill a cutover moved here (lib/cutover.ts). Its rows
+  // still hold the previous provider's data, so this ingest replaces them
+  // without telling instances about any change, and carries the bill's
+  // calendar entries over under the identities instances know.
+  const carriedFrom = existingBillRow?.carriedFrom
+    ? findProvider(existingBillRow.carriedFrom) ?? provider
+    : null
+  // A measure with no calendar at all is no evidence about the bill's
+  // entries, so the carry-over waits for one that has a calendar, up to
+  // MAX_CARRY_WAITS ingests, and then carries the entries over to nothing.
+  const carryWaits = !!carriedFrom && bill.calendar === undefined && (existingBillRow?.carriedWaits ?? 0) < MAX_CARRY_WAITS - 1
+  if (carriedFrom) {
+    console.log(`[processor-ls] first ${provider.id} ingest of bill ${bill.bill_id} since its cutover from ${carriedFrom.id}: no changes sent`)
+    if (bill.calendar === undefined && !carryWaits) {
+      console.warn(`[processor-ls] bill ${bill.bill_id} came from ${provider.id} with no calendar ${MAX_CARRY_WAITS} times since its cutover; ` +
+        `cancelling its ${carriedFrom.id} calendar entries`)
+    }
+    await clearProviderData(env.DB, [bill.bill_id])
+  }
 
   let detectedChanges: ChangeRecord[] = []
   let calendarChanges: CalendarChange[] = []
   let priorCalendar: CalendarRow[] = []
 
-  if (existingBillRow) {
+  if (existingBillRow && !carriedFrom) {
     // Read before-snapshot from child tables
     const [historyRows, textRows, supplementRows, amendmentRows, voteRows, sponsorRows, priorCalRows] = await Promise.all([
       db.select({ seq: billHistory.seq }).from(billHistory).where(eq(billHistory.billId, bill.bill_id)).all(),
@@ -224,34 +265,34 @@ export async function ingestMeasure(
     }
 
     detectedChanges = detectChanges(snapshot, bill, provider)
-
-    // Write change records
-    if (detectedChanges.length > 0) {
-      for (const change of detectedChanges) {
-        await db.insert(billChangeLog).values({
-          id:         crypto.randomUUID(),
-          billId:     bill.bill_id,
-          changeType: change.changeType,
-          oldValue:   change.oldValue ?? null,
-          newValue:   change.newValue ?? null,
-          detail:     change.detail ?? null,
-          detectedAt: now,
-        })
-      }
-    }
   }
 
   // This pull's effect on the bill's calendar. A new bill's entries are all
-  // new, and like its other data they aren't reported as changes.
-  const calendarPlan = planCalendarPull(provider, bill.bill_id, priorCalendar, bill.calendar, bill.change_hash, now)
-  if (existingBillRow) {
-    calendarChanges = calendarPlan.changes
-    await logCalendarChanges(db, bill.bill_id, calendarChanges, now)
+  // new, and like its other data they aren't reported as changes. Nor is a
+  // cutover's carry-over. While a carry-over waits, instances' calendars are
+  // left as they are.
+  let calendarPlan: CalendarPlan | null
+  if (carriedFrom && !carryWaits) {
+    const incoming = bill.calendar ?? []
+    const carry = carryCalendar(carriedFrom, provider, await readCalendarRows(db, bill.bill_id), incoming, now)
+    const pulled = planCalendarPull(provider, bill.bill_id, carry.rows, incoming, bill.change_hash, now)
+    const writes = new Map([...carry.writes, ...pulled.writes].map(r => [r.id, r]))
+    calendarPlan = { ...pulled, writes: [...writes.values()], changes: [] }
+  } else if (carryWaits) {
+    calendarPlan = null
+  } else {
+    calendarPlan = planCalendarPull(provider, bill.bill_id, priorCalendar, bill.calendar, bill.change_hash, now)
+    if (existingBillRow) calendarChanges = calendarPlan.changes
   }
   // --- End change detection ---
 
-  // Upsert core bill row
-  await db.insert(bills).values({
+  // Upsert core bill row. It writes only while the row is still this
+  // provider's: a cutover (or its undo) that landed before this point gave
+  // the bill to another provider, and this ingest then writes nothing. One
+  // that lands after it leaves the rest of this ingest writing, which the
+  // other provider's quiet first ingest clears up (see the carried_from
+  // update below).
+  const written = await db.insert(bills).values({
     billId:             bill.bill_id,
     changeHash:         bill.change_hash,
     sessionId:          bill.session_id,
@@ -296,10 +337,30 @@ export async function ingestMeasure(
       progressJson:       bill.progress ? JSON.stringify(bill.progress) : null,
       currentBody:        bill.current_body,
       currentBodyId:      bill.current_body_id,
-      updatedAt:          detectedChanges.length > 0 ? now : sql`updated_at`,
+      // A cutover's first ingest changes the bill's data without reporting a
+      // change, so instances still see it moved and fetch it again.
+      updatedAt:          detectedChanges.length > 0 || carriedFrom ? now : sql`updated_at`,
       textsFetchedAt:     now,
     },
-  })
+    setWhere: eq(bills.provider, provider.id),
+  }).returning({ billId: bills.billId })
+  if (written.length === 0) {
+    console.warn(`[processor-ls] bill ${bill.bill_id} changed provider during its ${provider.id} ingest; nothing written`)
+    return
+  }
+
+  for (const change of detectedChanges) {
+    await db.insert(billChangeLog).values({
+      id:         crypto.randomUUID(),
+      billId:     bill.bill_id,
+      changeType: change.changeType,
+      oldValue:   change.oldValue ?? null,
+      newValue:   change.newValue ?? null,
+      detail:     change.detail ?? null,
+      detectedAt: now,
+    })
+  }
+  await logCalendarChanges(db, bill.bill_id, calendarChanges, now)
 
   // Replace child rows
   await db.delete(billHistory).where(eq(billHistory.billId, bill.bill_id))
@@ -371,7 +432,7 @@ export async function ingestMeasure(
   }
 
   // Calendar rows are updated in place, never deleted (lib/billCalendar.ts).
-  await writeCalendarRows(db, calendarPlan.writes)
+  if (calendarPlan) await writeCalendarRows(db, calendarPlan.writes)
 
   // The provider's extras. Display only: change detection above never sees
   // them, so an extra changing alone notifies no one.
@@ -525,10 +586,28 @@ export async function ingestMeasure(
   // thousands, and one query each would pass D1's per-invocation query limit.
   if (memberVotes.length > 0) await writeMemberVotes(env.DB, memberVotes, { replace: true })
 
-  const calendarBlock: CalendarBlock = {
+  // Only once everything above is written does a cutover's first ingest stop
+  // being one, so an ingest that fails partway is retried as quiet as it began.
+  // An undo that landed after this ingest's upsert gave the bill back to its
+  // previous provider while this one kept writing: the bill now holds this
+  // provider's data, so it is carried from this provider, and the previous
+  // one's next ingest is the quiet one that replaces it.
+  if (carriedFrom) {
+    const stillOurs = sql`${bills.provider} = ${provider.id}`
+    await db.update(bills)
+      .set(carryWaits
+        ? {
+            carriedFrom: sql`CASE WHEN ${stillOurs} THEN ${bills.carriedFrom} ELSE ${provider.id} END`,
+            carriedWaits: sql`CASE WHEN ${stillOurs} THEN COALESCE(${bills.carriedWaits}, 0) + 1 ELSE NULL END`,
+          }
+        : { carriedFrom: sql`CASE WHEN ${stillOurs} THEN NULL ELSE ${provider.id} END`, carriedWaits: null })
+      .where(and(eq(bills.billId, bill.bill_id), eq(bills.carriedFrom, existingBillRow!.carriedFrom!)))
+  }
+
+  const calendarBlock: CalendarBlock | undefined = calendarPlan ? {
     events: calendarBlockEvents(provider, calendarPlan.live, await calendarCoverage(db, provider, bill.bill_id, calendarPlan.live)),
     changes: calendarChanges,
-  }
+  } : undefined
   await notifyTenants(bill.bill_id, env, db, now, forceMetadata, forceAI, detectedChanges, calendarBlock, interactive)
 }
 
