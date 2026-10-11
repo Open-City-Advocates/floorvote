@@ -1,0 +1,16 @@
+[
+  {
+    "Number": "HB 1",
+    "Title": "Public Library Hours Act",
+    "Status": "Introduced",
+    "StatusDate": "2026-01-14",
+    "Url": "https://legislature.example/bills/2026/HB1"
+  },
+  {
+    "Number": "SB 7",
+    "Title": "Road Salt Storage Act",
+    "Status": "Passed Senate",
+    "StatusDate": "2026-02-20",
+    "Url": "https://legislature.example/bills/2026/SB7"
+  }
+]

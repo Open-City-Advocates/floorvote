@@ -3,20 +3,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { drizzle } from 'drizzle-orm/d1'
 import { eq } from 'drizzle-orm'
 import * as schema from '../../src/db/schema'
-import { setupLsDb } from '../helpers/setupLsDb'
 import sampleRaw from '../fixtures/mga/2026RS-sample.json?raw'
 
 // Maryland from the General Assembly's session file at the main seam (#300):
 // the recorded file in, with the network stubbed at fetch, and central's bill
 // API, its labels, and the notifications queued for tenants out.
-vi.mock('../../src/lib/rateLimitedFetch', () => ({
-  // Unpaced, so each request doesn't cost the test a second.
-  rateLimitedFetch: async (url: string, init: RequestInit | undefined, opts: { onRequest?: () => void }) => {
-    const res = await fetch(url, init)
-    opts.onRequest?.()
-    return res
-  },
-}))
+vi.mock('../../src/lib/rateLimitedFetch', () => import('../helpers/unpacedFetch'))
 vi.mock('../../src/lib/sync-schedule', async () => {
   const actual = await vi.importActual<typeof import('../../src/lib/sync-schedule')>('../../src/lib/sync-schedule')
   return { ...actual, getCurrentEtHour: vi.fn(() => 5) }
@@ -24,11 +16,10 @@ vi.mock('../../src/lib/sync-schedule', async () => {
 const fetchMock = vi.fn()
 vi.stubGlobal('fetch', fetchMock)
 
-import { runSnapshotSync } from '../../src/cron/sync-snapshots'
-import { processIngestorQueue } from '../../src/queue/processor'
 import { mga } from '../../src/providers/mga'
 import { toHandle } from '../../src/lib/billHandle'
 import { tenantQueueBindingName } from '../../src/lib/tenantQueue'
+import { mainSeam, resetCentral } from '../helpers/mainSeam'
 
 const FILE = 'https://mgaleg.maryland.gov/2026RS/misc/billsmasterlist/legislation.json'
 const PDF = '%PDF-1.7\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n'
@@ -47,72 +38,14 @@ function serve(records: Rec[], etag: string | null = '"v1"') {
   file = { etag, answer: () => json(records, etag ? { ETag: etag } : {}) }
 }
 
-function makeEnv() {
-  const ingestor = { sendBatch: vi.fn().mockResolvedValue(undefined), send: vi.fn() }
-  const tenantQueue = { sendBatch: vi.fn().mockResolvedValue(undefined), send: vi.fn().mockResolvedValue(undefined) }
-  return {
-    ingestor, tenantQueue,
-    env: {
-      ...(env as any),
-      INGESTOR_QUEUE: ingestor,
-      ADMIN_SECRET: 'test-secret',
-      [tenantQueueBindingName('mdteam')]: tenantQueue,
-    },
-  }
-}
-type Run = ReturnType<typeof makeEnv>
-
-const sentToTenant = (run: Run) => [
-  ...run.tenantQueue.send.mock.calls.map(c => c[0]),
-  ...run.tenantQueue.sendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body)),
-]
-/** Every message queued for the ingestor: ingests, and calendar rechecks (#295). */
-const queuedBodies = (run: Run) => run.ingestor.sendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body))
-/** The bills queued for an ingest. */
-const queuedIds = (run: Run) => queuedBodies(run).filter((b: any) => b.calendarRecheck === undefined).map((b: any) => b.billId as number)
+const seam = mainSeam(mga, { tenantId: 'mdteam' })
+const { makeRun, queued, queuedIds, sentToTenant, central, getJson, sync, syncAndIngest, ingest } = seam
 const fileRequests = () => calls.filter(c => c.method === 'GET' && c.url === FILE)
-
-async function central(method: string, path: string, run: Run, body?: unknown) {
-  const { app } = await import('../../src/index-legiscan')
-  return app.fetch(new Request(`http://central/api${path}`, {
-    method,
-    headers: { 'x-admin-secret': 'test-secret', 'content-type': 'application/json' },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  }), run.env)
-}
-
-async function getJson(path: string, run = makeEnv()) {
-  const res = await central('GET', path, run)
-  expect(res.status).toBe(200)
-  return res.json() as Promise<any>
-}
-
-async function claim(provider: string, run = makeEnv()) {
-  return central('POST', '/admin/state-providers/MD', run, { provider })
-}
-
-async function billId(number: string): Promise<number> {
-  const db = drizzle(env.DB, { schema })
-  const row = await db.select().from(schema.bills).where(eq(schema.bills.billNumber, number)).get()
-  if (!row) throw new Error(`no bill ${number}`)
-  return row.billId
-}
-
-/** The hourly Maryland sync, then the ingest of every bill it queued. */
-async function syncAndIngest(run = makeEnv()) {
-  const db = drizzle(env.DB, { schema })
-  await runSnapshotSync(mga, run.env, db)
-  const messages = queuedBodies(run).map((body: any) => ({ body, ack: vi.fn(), retry: vi.fn() }))
-  if (messages.length > 0) await processIngestorQueue({ messages } as any, run.env, db)
-  for (const m of messages) expect(m.retry).not.toHaveBeenCalled()
-  return { run, messages }
-}
+const claim = (provider: string) => seam.claim('MD', provider)
+const billId = (number: string) => seam.billIdOf(number)
 
 beforeEach(async () => {
-  vi.useFakeTimers({ toFake: ['Date'] })
-  vi.setSystemTime(new Date('2026-09-28T09:00:00Z'))   // 5 ET
-  await setupLsDb()
-  vi.clearAllMocks()
+  await resetCentral()
   serve(sample())
   calls = []
   fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -129,9 +62,7 @@ beforeEach(async () => {
     if (url.startsWith('https://mgaleg.maryland.gov/2026RS/bills/')) return new Response(PDF, { headers: { 'content-type': 'application/pdf' } })
     throw new Error(`no network in this test: ${method} ${url}`)
   })
-  const db = drizzle(env.DB, { schema })
-  await db.insert(schema.tenants).values({ tenantId: 'mdteam', name: 'MD Team', stateCoverage: '["MD"]', active: true })
-  await db.insert(schema.keywordRegistry).values(['cost recovery', 'tax'].map(keyword => ({ tenantId: 'mdteam', keyword })))
+  await seam.addTenant('MD', ['cost recovery', 'tax'])
 })
 
 afterEach(() => {
@@ -140,8 +71,8 @@ afterEach(() => {
 
 describe('Maryland from the General Assembly', () => {
   it('stays on LegiScan until Maryland is claimed', async () => {
-    const run = makeEnv()
-    expect(await runSnapshotSync(mga, run.env, drizzle(env.DB, { schema }))).toEqual([])
+    const run = makeRun()
+    expect(await sync(run)).toEqual([])
     expect(calls).toEqual([])
   })
 
@@ -217,11 +148,8 @@ describe('Maryland from the General Assembly', () => {
     await claim('mga')
     await syncAndIngest()
     // Ingest the records no keyword matched too.
-    const db = drizzle(env.DB, { schema })
-    const messages = (await db.select({ id: schema.bills.billId }).from(schema.bills).all())
-      .map(r => ({ body: { billId: r.id }, ack: vi.fn(), retry: vi.fn() }))
-    await processIngestorQueue({ messages } as any, makeEnv().env, db)
-    for (const m of messages) expect(m.retry).not.toHaveBeenCalled()
+    const all = await drizzle(env.DB, { schema }).select({ id: schema.bills.billId }).from(schema.bills).all()
+    for (const m of await ingest(all.map(r => r.id))) expect(m.retry).not.toHaveBeenCalled()
 
     const labels = await getJson('/bills/labels?state=MD')
     const types = new Set(labels.billTypes.map((t: any) => t.value.toLowerCase()))
@@ -329,7 +257,7 @@ describe('Maryland hearings on the calendar', () => {
 
     // The next pass finds SB 2 unchanged (a 304), and its recheck counts the second miss.
     const second = await syncAndIngest()
-    expect(queuedBodies(second.run)).toEqual([{ billId: await billId('SB2'), calendarRecheck: expect.any(String) }])
+    expect(queued(second.run)).toEqual([{ billId: await billId('SB2'), calendarRecheck: expect.any(String) }])
     expect(calendarOf(second.run, handle).flatMap((c: any) => c.changes))
       .toEqual([expect.objectContaining({ changeType: 'hearing_cancelled', identityKey: 'id:2026RS/SB0002/S/secondary' })])
     expect((await getJson(`/bills/${handle}`)).calendar.map((e: any) => e.description))
@@ -354,7 +282,7 @@ describe('Maryland hearings on the calendar', () => {
 
     // The next pass finds SB 2 unchanged (a 304), and its recheck counts the second miss.
     const second = await syncAndIngest()
-    expect(queuedBodies(second.run)).toEqual([{ billId: await billId('SB2'), calendarRecheck: expect.any(String) }])
+    expect(queued(second.run)).toEqual([{ billId: await billId('SB2'), calendarRecheck: expect.any(String) }])
     expect(calendarOf(second.run, handle).flatMap((c: any) => c.changes))
       .toEqual([expect.objectContaining({ changeType: 'hearing_cancelled', identityKey: 'id:2026RS/SB0002/S/primary' })])
     expect((await getJson(`/bills/${handle}`)).calendar).toEqual([])
@@ -369,8 +297,8 @@ describe('reading the session file with its ETag', () => {
     const before = await getJson(`/bills/${toHandle(await billId('HB1'))}`)
 
     calls = []
-    const run = makeEnv()
-    const reports = await runSnapshotSync(mga, run.env, drizzle(env.DB, { schema }))
+    const run = makeRun()
+    const reports = await sync(run)
     expect(fileRequests().map(c => c.ifNoneMatch)).toEqual(['"v1"'])
     // The stored records stand in for the file, and nothing in them changed.
     expect(reports).toEqual([expect.objectContaining({ records: sample().length, queued: 0 })])
@@ -387,10 +315,10 @@ describe('reading the session file with its ETag', () => {
     await db.insert(schema.keywordRegistry).values({ tenantId: 'second', keyword: 'tax' })
 
     calls = []
-    const run = makeEnv()
+    const run = makeRun()
     const secondQueue = { sendBatch: vi.fn().mockResolvedValue(undefined), send: vi.fn().mockResolvedValue(undefined) }
     run.env[tenantQueueBindingName('second')] = secondQueue
-    await runSnapshotSync(mga, run.env, db)
+    await sync(run)
     expect(fileRequests().map(c => c.ifNoneMatch)).toEqual(['"v1"'])
 
     const links = await db.select().from(schema.billTenants).where(eq(schema.billTenants.tenantId, 'second')).all()
@@ -410,13 +338,13 @@ describe('reading the session file with its ETag', () => {
     changed.find(r => r.BillNumber === 'SB0002')!.Status = 'In the Senate - Favorable Report by Finance'
     serve(changed, '"v2"')
     // The pass queues SB 2, and its ingest never lands.
-    const failed = makeEnv()
-    await runSnapshotSync(mga, failed.env, drizzle(env.DB, { schema }))
+    const failed = makeRun()
+    await sync(failed)
     expect(queuedIds(failed)).toEqual([await billId('SB2')])
 
     calls = []
-    const run = makeEnv()
-    await runSnapshotSync(mga, run.env, drizzle(env.DB, { schema }))
+    const run = makeRun()
+    await sync(run)
     expect(fileRequests().map(c => c.ifNoneMatch)).toEqual(['"v2"'])
     expect(queuedIds(run)).toEqual([await billId('SB2')])
   })
@@ -429,13 +357,13 @@ describe('reading the session file with its ETag', () => {
     changed.find(r => r.BillNumber === 'SB0002')!.Status = 'In the Senate - Favorable Report by Finance'
     serve(changed, '"v2"')
     calls = []
-    const run = makeEnv()
-    await runSnapshotSync(mga, run.env, drizzle(env.DB, { schema }))
+    const run = makeRun()
+    await sync(run)
     expect(fileRequests().map(c => c.ifNoneMatch)).toEqual(['"v1"'])
     expect(queuedIds(run)).toEqual([await billId('SB2')])
 
     calls = []
-    await runSnapshotSync(mga, makeEnv().env, drizzle(env.DB, { schema }))
+    await sync(makeRun())
     expect(fileRequests().map(c => c.ifNoneMatch)).toEqual(['"v2"'])
   })
 
@@ -444,7 +372,7 @@ describe('reading the session file with its ETag', () => {
     await syncAndIngest()
 
     calls = []
-    expect((await central('POST', '/admin/providers/mga/sync', makeEnv())).status).toBe(200)
+    expect((await central('POST', '/admin/providers/mga/sync', makeRun())).status).toBe(200)
     expect(fileRequests().map(c => c.ifNoneMatch)).toEqual([null])
 
     // Back to LegiScan and then to the MGA again: the first pass after the claim reads in full.
@@ -453,7 +381,7 @@ describe('reading the session file with its ETag', () => {
     expect((await claim('legiscan')).status).toBe(200)
     expect((await claim('mga')).status).toBe(200)
     calls = []
-    await runSnapshotSync(mga, makeEnv().env, db)
+    await sync(makeRun())
     expect(fileRequests().map(c => c.ifNoneMatch)).toEqual([null])
   })
 
@@ -463,7 +391,7 @@ describe('reading the session file with its ETag', () => {
     // Instances track Maryland bills now, so only a cutover could move the state.
     expect((await claim('legiscan')).status).toBe(409)
     calls = []
-    await runSnapshotSync(mga, makeEnv().env, drizzle(env.DB, { schema }))
+    await sync(makeRun())
     expect(fileRequests().map(c => c.ifNoneMatch)).toEqual(['"v1"'])
   })
 
@@ -472,20 +400,20 @@ describe('reading the session file with its ETag', () => {
     await claim('mga')
     await syncAndIngest()
     calls = []
-    await runSnapshotSync(mga, makeEnv().env, drizzle(env.DB, { schema }))
+    await sync(makeRun())
     expect(fileRequests().map(c => c.ifNoneMatch)).toEqual([null])
   })
 
   it('stores no ETag from a pass that lost Maryland to a claim midway', async () => {
     await claim('mga')
     const db = drizzle(env.DB, { schema })
-    const run = makeEnv()
+    const run = makeRun()
     file.answer = async () => {
       // Instances hold no Maryland bills yet, so the claim goes through mid-pass.
       expect((await claim('legiscan', run)).status).toBe(200)
       return json(sample(), { ETag: '"v1"' })
     }
-    await runSnapshotSync(mga, run.env, db)
+    await sync(run)
     expect(queuedIds(run)).toEqual([])
     expect((await db.select().from(schema.sessions).where(eq(schema.sessions.provider, 'mga')).all()).map(s => s.snapshotEtag))
       .toEqual([null])
@@ -526,8 +454,8 @@ describe('Maryland fails closed', () => {
   ] as [string, () => Response][])('changes nothing when the session file answers with %s', async (_what, answer) => {
     const before = await baseline()
     file.answer = answer
-    const run = makeEnv()
-    await expect(runSnapshotSync(mga, run.env, drizzle(env.DB, { schema }))).rejects.toThrow(/MGA/)
+    const run = makeRun()
+    await expect(sync(run)).rejects.toThrow(/MGA/)
     expect(queuedIds(run)).toEqual([])
     expect(sentToTenant(run)).toEqual([])
     expect(await getJson(`/bills/${toHandle(await billId('HB1'))}`)).toEqual(before.bill)
@@ -540,8 +468,8 @@ describe('Maryland fails closed', () => {
   ] as [string, () => Response][])('reads %s as nothing new, never as bills removed', async (_what, answer) => {
     const before = await baseline()
     file.answer = answer
-    const run = makeEnv()
-    await runSnapshotSync(mga, run.env, drizzle(env.DB, { schema }))
+    const run = makeRun()
+    await sync(run)
     expect(queuedIds(run)).toEqual([])
     expect(sentToTenant(run)).toEqual([])
     expect(await getJson(`/bills/${toHandle(await billId('HB1'))}`)).toEqual(before.bill)
@@ -566,8 +494,8 @@ describe('Maryland fails closed', () => {
       calls.push({ method: init?.method ?? 'GET', url: String(input), ifNoneMatch: null })
       return new Response('busy', { status: 503 })
     })
-    const run = makeEnv()
-    await expect(runSnapshotSync(mga, run.env, drizzle(env.DB, { schema }))).rejects.toThrow(/MGA/)
+    const run = makeRun()
+    await expect(sync(run)).rejects.toThrow(/MGA/)
     expect(sentToTenant(run)).toEqual([])
     expect(await getJson('/bills/sessions?state=MD')).toEqual(before.sessions)
     expect(await getJson(`/bills/${toHandle(await billId('HB1'))}`)).toEqual(before.bill)

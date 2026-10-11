@@ -2,7 +2,6 @@ import { env } from 'cloudflare:test'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { drizzle } from 'drizzle-orm/d1'
 import * as schema from '../../src/db/schema'
-import { setupLsDb } from '../helpers/setupLsDb'
 import bulkRaw from '../fixtures/lims/bulk-records.json?raw'
 import details0400Raw from '../fixtures/lims/details-B26-0400.json?raw'
 import detailsHnRaw from '../fixtures/lims/details-HN26-0171.json?raw'
@@ -12,14 +11,7 @@ import membersRaw from '../fixtures/lims/members-26.json?raw'
 // DC from LIMS at the main seam (#294): LIMS's recorded responses in, with the
 // network stubbed at fetch, and central's bill API, its labels, and the
 // notifications queued for tenants out.
-vi.mock('../../src/lib/rateLimitedFetch', () => ({
-  // Unpaced, so each LIMS call doesn't cost the test a second. Each attempt is still logged.
-  rateLimitedFetch: async (url: string, init: RequestInit | undefined, opts: { onRequest?: () => void }) => {
-    const res = await fetch(url, init)
-    opts.onRequest?.()
-    return res
-  },
-}))
+vi.mock('../../src/lib/rateLimitedFetch', () => import('../helpers/unpacedFetch'))
 vi.mock('../../src/lib/sync-schedule', async () => {
   const actual = await vi.importActual<typeof import('../../src/lib/sync-schedule')>('../../src/lib/sync-schedule')
   return { ...actual, getCurrentEtHour: vi.fn(() => 5) }
@@ -27,12 +19,10 @@ vi.mock('../../src/lib/sync-schedule', async () => {
 const fetchMock = vi.fn()
 vi.stubGlobal('fetch', fetchMock)
 
-import { runSnapshotSync } from '../../src/cron/sync-snapshots'
-import { processIngestorQueue } from '../../src/queue/processor'
 import { lims } from '../../src/providers/lims'
 import { limsBillId, limsPeopleId } from '../../src/providers/lims/ids'
 import { toHandle } from '../../src/lib/billHandle'
-import { tenantQueueBindingName } from '../../src/lib/tenantQueue'
+import { mainSeam, resetCentral, type Run } from '../helpers/mainSeam'
 
 const LIMS = 'https://lims.dccouncil.gov/api/v2/PublicData/'
 const PDF = '%PDF-1.7\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n'
@@ -69,70 +59,21 @@ function recordedFeed(): Record<string, () => Response> {
   return routes
 }
 
-function makeEnv() {
-  const limsQueue = { sendBatch: vi.fn().mockResolvedValue(undefined), send: vi.fn() }
-  const ingestor = { sendBatch: vi.fn().mockResolvedValue(undefined), send: vi.fn() }
-  const tenantQueue = { sendBatch: vi.fn().mockResolvedValue(undefined), send: vi.fn().mockResolvedValue(undefined) }
-  return {
-    limsQueue, ingestor, tenantQueue,
-    env: {
-      ...(env as any),
-      LIMS_API_KEY: 'lims-key',
-      LIMS_INGESTOR_QUEUE: limsQueue,
-      INGESTOR_QUEUE: ingestor,
-      [tenantQueueBindingName('oca')]: tenantQueue,
-    },
-  }
-}
-type Run = ReturnType<typeof makeEnv>
+// LIMS's ingests go to its own queue (`run.queue`, LIMS_INGESTOR_QUEUE), not INGESTOR_QUEUE.
+const seam = mainSeam(lims, { tenantId: 'oca', env: { LIMS_API_KEY: 'lims-key' } })
+const { makeRun, queuedIds, sentToTenant, central, getJson, sync, syncAndIngest } = seam
 
-const sentToTenant = (run: Run) => [
-  ...run.tenantQueue.send.mock.calls.map(c => c[0]),
-  ...run.tenantQueue.sendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body)),
-]
-const queuedIds = (run: Run) => run.limsQueue.sendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body.billId as number))
-
-async function central(method: string, path: string, run: Run, body?: unknown) {
-  const { app } = await import('../../src/index-legiscan')
-  return app.fetch(new Request(`http://central/api${path}`, {
-    method,
-    headers: { 'x-admin-secret': 'test-secret', 'content-type': 'application/json' },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  }), run.env)
+async function claimDc() {
+  expect((await seam.claim('DC')).status).toBe(200)
 }
 
-async function getJson(path: string, run = makeEnv()) {
-  const res = await central('GET', path, run)
-  expect(res.status).toBe(200)
-  return res.json() as Promise<any>
-}
-
-async function claimDc(run = makeEnv()) {
-  const res = await central('POST', '/admin/state-providers/DC', run, { provider: 'lims' })
-  expect(res.status).toBe(200)
-}
-
-/** The hourly LIMS sync, then every message it queued: each bill's ingest, or a calendar recheck. */
-async function syncAndIngest(run = makeEnv()) {
-  const db = drizzle(env.DB, { schema })
-  await runSnapshotSync(lims, run.env, db)
-  const messages = run.limsQueue.sendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body))
-    .map(body => ({ body, ack: vi.fn(), retry: vi.fn() }))
-  if (messages.length > 0) await processIngestorQueue({ messages } as any, run.env, db)
-  return { run, messages }
-}
-
-async function ingest(billId: number, run = makeEnv()) {
-  const message = { body: { billId }, ack: vi.fn(), retry: vi.fn() }
-  await processIngestorQueue({ messages: [message] } as any, run.env, drizzle(env.DB, { schema }))
-  return message
+/** One ingest of a bill, and its message, unchecked. */
+async function ingest(billId: number, run = makeRun()) {
+  return (await seam.ingest(billId, run))[0]
 }
 
 beforeEach(async () => {
-  vi.useFakeTimers({ toFake: ['Date'] })
-  vi.setSystemTime(new Date('2026-09-28T09:00:00Z'))   // 5 ET
-  await setupLsDb()
-  vi.clearAllMocks()
+  await resetCentral()
   feed = recordedFeed()
   calls = []
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
@@ -142,9 +83,7 @@ beforeEach(async () => {
     if (url.startsWith('https://lims.dccouncil.gov/downloads/')) return new Response(PDF, { headers: { 'content-type': 'application/pdf' } })
     throw new Error(`no network in this test: ${url}`)
   })
-  const db = drizzle(env.DB, { schema })
-  await db.insert(schema.tenants).values({ tenantId: 'oca', name: 'OCA', stateCoverage: '["DC"]', active: true })
-  await db.insert(schema.keywordRegistry).values(['neglect', 'behavioral health', 'youth rehabilitation'].map(keyword => ({ tenantId: 'oca', keyword })))
+  await seam.addTenant('DC', ['neglect', 'behavioral health', 'youth rehabilitation'])
 })
 
 afterEach(() => {
@@ -153,8 +92,8 @@ afterEach(() => {
 
 describe('DC from LIMS', () => {
   it('stays off until DC is claimed, even with the LIMS key set', async () => {
-    const run = makeEnv()
-    expect(await runSnapshotSync(lims, run.env, drizzle(env.DB, { schema }))).toEqual([])
+    const run = makeRun()
+    expect(await sync(run)).toEqual([])
     expect(calls).toEqual([])
     expect((await getJson('/bills/labels?state=DC')).calendarName).toBeNull()
   })
@@ -285,21 +224,21 @@ describe('DC from LIMS', () => {
     await db.insert(schema.bills).values({ billId: 2_000_001, sessionId: 2100, state: 'DC', stateId: 51, billNumber: 'B1', changeHash: 'h', title: 't', provider: 'legiscan' } as any)
     await db.insert(schema.billTenants).values({ billId: 2_000_001, tenantId: 'oca', matchType: 'manual' })
 
-    const dry = await central('POST', '/admin/reingest-tenant/oca?provider=lims', makeEnv())
+    const dry = await central('POST', '/admin/reingest-tenant/oca?provider=lims', makeRun())
     expect(await dry.json()).toMatchObject({ provider: 'lims', matched: 3, wouldQueue: 3, dryRun: true })
-    const run = makeEnv()
+    const run = makeRun()
     const res = await central('POST', '/admin/reingest-tenant/oca?provider=lims&confirm=true', run)
     expect(await res.json()).toMatchObject({ provider: 'lims', queued: 3, dryRun: false })
     expect(queuedIds(run).sort()).toEqual([B0400, HN, REPROG].sort())
     expect(run.ingestor.sendBatch).not.toHaveBeenCalled()
-    expect((await central('POST', '/admin/reingest-tenant/oca?provider=nope', makeEnv())).status).toBe(400)
+    expect((await central('POST', '/admin/reingest-tenant/oca?provider=nope', makeRun())).status).toBe(400)
 
     // Without its key, LIMS can't ingest anything, so nothing is queued.
-    const unkeyed = makeEnv()
+    const unkeyed = makeRun()
     unkeyed.env.LIMS_API_KEY = undefined
     const refused = await central('POST', '/admin/reingest-tenant/oca?provider=lims&confirm=true', unkeyed)
     expect(refused.status).toBe(409)
-    expect(unkeyed.limsQueue.sendBatch).not.toHaveBeenCalled()
+    expect(unkeyed.queue.sendBatch).not.toHaveBeenCalled()
   })
 })
 
@@ -377,9 +316,9 @@ describe('DC from LIMS fails closed', () => {
   ] as [string, () => Response][])('changes nothing when BulkData answers with %s', async (_what, answer) => {
     const before = await baseline()
     feed['BulkData/1/26'] = answer
-    const run = makeEnv()
-    await expect(runSnapshotSync(lims, run.env, drizzle(env.DB, { schema }))).rejects.toThrow(/LIMS/)
-    expect(run.limsQueue.sendBatch).not.toHaveBeenCalled()
+    const run = makeRun()
+    await expect(sync(run)).rejects.toThrow(/LIMS/)
+    expect(run.queue.sendBatch).not.toHaveBeenCalled()
     expect(sentToTenant(run)).toEqual([])
     expect(await getJson(`/bills/${toHandle(B0400)}`)).toEqual(before.bill)
   })
@@ -390,9 +329,9 @@ describe('DC from LIMS fails closed', () => {
   ] as [string, () => Response][])('reads BulkData answering with %s as nothing new, never as measures removed', async (_what, answer) => {
     const before = await baseline()
     for (const id of Object.values(CATEGORY_IDS)) feed[`BulkData/${id}/26`] = answer
-    const run = makeEnv()
-    await runSnapshotSync(lims, run.env, drizzle(env.DB, { schema }))
-    expect(run.limsQueue.sendBatch).not.toHaveBeenCalled()
+    const run = makeRun()
+    await sync(run)
+    expect(run.queue.sendBatch).not.toHaveBeenCalled()
     expect(sentToTenant(run)).toEqual([])
     expect(await getJson(`/bills/${toHandle(B0400)}`)).toEqual(before.bill)
   })
@@ -404,10 +343,10 @@ describe('DC from LIMS fails closed', () => {
     const before = await baseline()
     feed['CouncilPeriods'] = answer
     calls = []
-    const run = makeEnv()
-    await expect(runSnapshotSync(lims, run.env, drizzle(env.DB, { schema }))).rejects.toThrow(/LIMS/)
+    const run = makeRun()
+    await expect(sync(run)).rejects.toThrow(/LIMS/)
     expect(calls.filter(u => u.includes('/BulkData/'))).toEqual([])
-    expect(run.limsQueue.sendBatch).not.toHaveBeenCalled()
+    expect(run.queue.sendBatch).not.toHaveBeenCalled()
     expect(sentToTenant(run)).toEqual([])
     expect(await getJson('/bills/sessions?state=DC')).toEqual(before.sessions)
     expect(await getJson(`/bills/${toHandle(B0400)}`)).toEqual(before.bill)
@@ -417,8 +356,8 @@ describe('DC from LIMS fails closed', () => {
     const before = await baseline()
     feed['CouncilPeriods'] = () => json([])
     calls = []
-    const run = makeEnv()
-    await runSnapshotSync(lims, run.env, drizzle(env.DB, { schema }))
+    const run = makeRun()
+    await sync(run)
     expect(await getJson('/bills/sessions?state=DC')).toEqual(before.sessions)
     // The stored period still syncs.
     expect(calls.some(u => u.endsWith('/BulkData/1/26'))).toBe(true)
@@ -431,9 +370,9 @@ describe('DC from LIMS fails closed', () => {
   ] as [string, () => Response][])('changes nothing when Members answers with %s', async (_what, answer) => {
     const before = await baseline()
     feed['Members/26'] = answer
-    const run = makeEnv()
-    await expect(runSnapshotSync(lims, run.env, drizzle(env.DB, { schema }))).rejects.toThrow(/LIMS/)
-    expect(run.limsQueue.sendBatch).not.toHaveBeenCalled()
+    const run = makeRun()
+    await expect(sync(run)).rejects.toThrow(/LIMS/)
+    expect(run.queue.sendBatch).not.toHaveBeenCalled()
     expect(sentToTenant(run)).toEqual([])
     expect(await getJson(`/bills/${toHandle(B0400)}`)).toEqual(before.bill)
   })
@@ -442,8 +381,8 @@ describe('DC from LIMS fails closed', () => {
     const before = await baseline()
     feed['Members/26'] = () => json(null)
     calls = []
-    const run = makeEnv()
-    await runSnapshotSync(lims, run.env, drizzle(env.DB, { schema }))
+    const run = makeRun()
+    await sync(run)
     expect(calls.some(u => u.endsWith('/BulkData/1/26'))).toBe(true)
     expect(sentToTenant(run)).toEqual([])
     expect(await getJson(`/bills/${toHandle(B0400)}`)).toEqual(before.bill)
@@ -465,7 +404,7 @@ describe('DC from LIMS fails closed', () => {
   ] as [string, () => Response][])('keeps the bill as it was when LegislationDetails answers with %s', async (_what, answer) => {
     const before = await baseline()
     feed['LegislationDetails/B26-0400'] = answer
-    const run = makeEnv()
+    const run = makeRun()
     const message = await ingest(B0400, run)
     expect(message.retry).toHaveBeenCalled()
     expect(message.ack).not.toHaveBeenCalled()
@@ -546,7 +485,8 @@ describe('DC calendar entries', () => {
 
   it('puts DC\'s deadlines on the calendar as deadline entries', async () => {
     await claimDc()
-    const { run } = await syncAndIngest()
+    // B26-0769 has no recorded details here, so its ingest retries. This test is about B26-0400.
+    const { run } = await syncAndIngest(makeRun(), { allowRetries: true })
     expect(await billCalendar(B0400)).toContainEqual(['deadline', '2026-04-28', 'Mayor\'s response due'])
     expect(lastCalendar(run, B0400).events).toContainEqual(expect.objectContaining({
       identityKey: 'id:deadline:mayor-response', kind: 'deadline', description: 'Mayor\'s response due',
@@ -565,7 +505,7 @@ describe('DC calendar entries', () => {
     await env.DB.prepare('UPDATE bill_calendar SET identity_key = NULL').run()
     await env.DB.prepare(`UPDATE bill_calendar SET description = description || ' (2)', event_hash = 'old-hash' WHERE bill_id = ? AND date = '2026-11-06'`).bind(B0769).run()
 
-    const run = makeEnv()
+    const run = makeRun()
     await ingest(B0769, run)
     const calendar = lastCalendar(run, B0769)
     expect(keys(calendar)).toEqual(['1|public hearing on b26-0769', '1|public hearing on b26-0769 (2)'])
