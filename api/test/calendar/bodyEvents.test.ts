@@ -219,15 +219,22 @@ describe('state capabilities', () => {
     expect(config.capabilities).toEqual(CAPABLE)
   })
 
-  it('are asked for once a day while no covered state has body events', async () => {
+  it('are asked for every hour while no covered state has body events, so a newly claimed state shows within the hour', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-10-10T12:00:00Z'))
     central = { capabilities: {}, events: [] }
     expect(await sync()).not.toBeNull()
     expect(await sync()).toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    vi.setSystemTime(new Date('2026-10-11T12:30:00Z'))
+    vi.setSystemTime(new Date('2026-10-10T12:29:00Z'))
+    expect(await sync()).toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    vi.setSystemTime(new Date('2026-10-10T12:31:00Z'))
     expect(await sync()).not.toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(2)
+    vi.setSystemTime(new Date('2026-10-10T13:31:00Z'))
+    central = { capabilities: CAPABLE, events: [bodyEvent()] }
+    expect((await sync())?.upserted).toBe(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 })

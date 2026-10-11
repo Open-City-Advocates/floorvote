@@ -331,21 +331,18 @@ describe('seeding ownership from the old env vars (one release)', () => {
 
   it('writes each row once when every job runs at the same time in the first hour', async () => {
     const log = vi.spyOn(console, 'log')
-    const { env: e } = makeEnv({ LIMS_STATES: 'DC', MGA_STATES: 'MD' })
+    const { env: e } = makeEnv({ LIMS_STATES: 'DC' })
 
-    await Promise.all([runSync(e, db), runSnapshotSync(limsProvider, e, db), runSnapshotSync(mgaProvider, e, db)])
+    await Promise.all([runSync(e, db), runSnapshotSync(limsProvider, e, db), runSnapshotSync(limsProvider, e, db)])
 
-    expect((await ownership(e)).states).toEqual([
-      expect.objectContaining({ state: 'DC', provider: 'lims' }),
-      expect.objectContaining({ state: 'MD', provider: 'mga' }),
-    ])
+    expect((await ownership(e)).states).toEqual([expect.objectContaining({ state: 'DC', provider: 'lims' })])
     expect(logged(log, /DC now syncs from lims, seeded from LIMS_STATES/)).toHaveLength(1)
-    expect(logged(log, /MD now syncs from mga, seeded from MGA_STATES/)).toHaveLength(1)
-    expect(legiscanStates()).toEqual([])
+    expect(legiscanStates()).toEqual(['MD'])
   })
 
   it('decides each state on its own: a refused DC never holds up Maryland', async () => {
-    const { env: e, limsQueue } = makeEnv({ LIMS_STATES: 'DC', MGA_STATES: 'MD' })
+    const { env: e, limsQueue } = makeEnv({ LIMS_STATES: 'DC' })
+    await db.insert(schema.stateProviders).values({ state: 'MD', provider: 'mga', previousProvider: 'legiscan' })
     await trackLegiscanDcBill(9001, 'oca', 'keyword')
 
     const mdPasses = await runSnapshotSync(mgaProvider, e, db)

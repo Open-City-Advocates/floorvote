@@ -173,28 +173,20 @@ async function writeClaim(db: Db, state: string, providerId: string, owner: stri
 }
 
 /**
- * Drop the snapshot ETags stored for a state's sessions, so the first pass of
- * its new owner reads each file in full rather than taking a 304 from an ETag
+ * Drop the snapshot ETags stored for a state's sessions, as one raw D1
+ * statement that writes only while `condition` holds, so the first pass of its
+ * new owner reads each file in full rather than taking a 304 from an ETag
  * stored the last time it owned the state. (A 304 pass still matches the
- * stored records to instances, so this keeps a new owner from trusting
- * records it stored long ago.) Anything that changes a state's owner calls
- * this, in the same batch as the change where it can.
- */
-export async function forgetSnapshotEtags(db: Db, state: string): Promise<void> {
-  await forgetEtags(db, state)
-}
-
-/**
- * `forgetSnapshotEtags` as one raw D1 statement that writes only while
- * `condition` holds, for a batch of raw statements that changes the state's
- * owner (lib/cutover.ts), as `writeClaim`'s batch does.
+ * stored records to instances, so this keeps a new owner from trusting records
+ * it stored long ago.) For a batch of raw statements that changes the state's
+ * owner (lib/cutover.ts), as `writeClaim`'s batch does for a claim.
  */
 export function forgetSnapshotEtagsStatement(db: Db, d1: D1Database, state: string, condition: SQL): D1PreparedStatement {
   const { sql: text, params } = forgetEtags(db, state, condition).toSQL()
   return d1.prepare(text).bind(...params)
 }
 
-function forgetEtags(db: Db, state: string, condition?: SQL) {
+function forgetEtags(db: Db, state: string, condition: SQL) {
   return db.update(sessions).set({ snapshotEtag: null })
     .where(and(eq(sessions.state, state), isNotNull(sessions.snapshotEtag), condition))
 }

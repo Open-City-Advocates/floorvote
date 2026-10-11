@@ -59,12 +59,3 @@ export function billTypeExplainer(labels: StateLabels | null, billType: string |
 export function eventTypeExplainer(labels: StateLabels | null, typeId: number | null | undefined): string | null {
   return (typeId != null && labels?.eventTypes?.find(t => t.typeId === typeId)?.explainer) || null
 }
-
-/**
- * The plain-language explainer for a bill's status label in its state, once
- * the state's labels load. Null while loading, and for a status with no
- * explainer.
- */
-export function useStatusExplainer(state: string | null | undefined, status: string | null | undefined): string | null {
-  return statusExplainer(useStateLabels(state), status)
-}

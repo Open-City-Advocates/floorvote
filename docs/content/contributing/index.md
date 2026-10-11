@@ -56,7 +56,7 @@ The full rules live in the [`Developing` section of `AGENTS.md`](https://github.
 
 ## Data providers
 
-Bill data comes from LegiScan by default, and some legislatures also have a direct provider ([how to add one](/contributing/providers)). [State coverage](/contributing/state-coverage) lists the providers that exist for each state, what each supplies, and who maintains it. The page is generated from the providers' own declarations. After changing a provider's `coverage` or `states`, run `npm run gen:state-coverage` and commit the result.
+Bill data comes from LegiScan by default, and some legislatures also have a direct provider. To bring in a legislature's own feed for your state, follow [Adding a data provider](./providers). It explains the provider model and the rules every provider follows, and points to a template directory and the test helper maintainers use. [State coverage](/contributing/state-coverage) lists the providers that exist for each state, what each supplies, and who maintains it. The page is generated from the providers' own declarations. After changing a provider's `coverage` or `states`, run `npm run gen:state-coverage` and commit the result.
 
 ## Licensing and sign-off
 
@@ -78,10 +78,6 @@ git push --force-with-lease
 ```
 
 There is no CLA to sign and no form to fill out — the one line in the commit is the whole process.
-
-## Adding a data provider
-
-To bring in a legislature's own feed for your state, follow [Adding a data provider](./providers). It explains the provider model and the rules every provider follows, and points to a template directory and the test helper maintainers use.
 
 ## Forking and operator overlays
 
