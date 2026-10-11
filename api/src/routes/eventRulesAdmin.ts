@@ -3,7 +3,7 @@ import { and, asc, eq, gte, isNotNull, lte } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { calendarEvents } from '../db/schema'
 import { readStateCapabilities } from '../lib/bodyEvents'
-import { agendaBills, centralOptions, loadEventRules, optionCommittees, saveEventRules } from '../lib/eventRules'
+import { agendaBills, applyEventRules, centralOptions, loadEventRules, optionCommittees, saveEventRules } from '../lib/eventRules'
 import { parseEventRules, type EventFacets } from '../../../shared/eventRules'
 import type { AppEnv } from '../types'
 
@@ -31,7 +31,9 @@ eventRulesAdminRouter.get('/', async (c) => {
   const optionsError = listed ? null : 'The lists below may be incomplete: the legislative data service is unavailable right now.'
   const centralCommittees = optionCommittees(listed) ?? []
   // A fork's #217 rules not yet carried over (central didn't answer) come back provisionally, unsaved.
-  const { rules } = await loadEventRules(db, optionCommittees(listed))
+  // Once saved here, they apply at once rather than at the next hourly sync.
+  const { rules, carriedOver } = await loadEventRules(db, optionCommittees(listed))
+  if (carriedOver) await applyEventRules(db, rules)
 
   const today = new Date().toISOString().slice(0, 10)
   const until = new Date(Date.now() + PREVIEW_DAYS * 86_400_000).toISOString().slice(0, 10)

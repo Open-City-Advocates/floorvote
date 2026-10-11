@@ -51,7 +51,7 @@ const legislativeMeeting = () => bodyEvent({
   agenda: [], url: 'https://lims.dccouncil.gov/Hearings/hearings/2045', eventHash: 'e3',
 })
 
-let central: { status?: number; optionsStatus?: number; events: CentralBodyEvent[] }
+let central: { status?: number; optionsStatus?: number; optionsStates?: unknown; bodyEvents?: boolean; events: CentralBodyEvent[] }
 const fetchMock = vi.fn()
 let admin: string
 let member: string
@@ -72,10 +72,11 @@ beforeEach(async () => {
     if (central.status) return new Response('down', { status: central.status })
     const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
     if (String(url).startsWith('https://central.test/api/tenants/bpc-test/body-events?')) {
-      return json({ capabilities: { DC: { bodyEvents: true, deadlines: true } }, events: central.events })
+      return json({ capabilities: { DC: { bodyEvents: central.bodyEvents ?? true, deadlines: true } }, events: central.events })
     }
     if (String(url) === 'https://central.test/api/tenants/bpc-test/body-event-options') {
       if (central.optionsStatus) return new Response('down', { status: central.optionsStatus })
+      if (central.optionsStates) return json({ states: central.optionsStates })
       return json({ states: { DC: {
         committees: [{ ...COW, chamber: 'C' }, { ...HOUSING, chamber: 'C' }, { committeeId: '3000000003', name: 'Committee on Health', chamber: 'C' }],
         kinds: [{ kind: 'hearing', types: ['Hearing', 'Roundtable'] }, { kind: 'meeting', types: ['Meeting'] }],
@@ -242,6 +243,43 @@ describe('event rules', () => {
       committees: [{ committeeId: '3000000003', name: 'Committee on Health' }], kinds: [], topics: [], trackedBills: false,
     })
     expect(await calendarUids()).toEqual([STADIUM])
+  })
+
+  it('carry a fork team\'s rules over only once some committee is known, though central answers', async () => {
+    await getDb(env.DB).insert(associationConfig).values({ key: 'council_calendar_rules', value: JSON.stringify({ include: [{ committee: 'Health' }] }) })
+    const savedRules = () => getDb(env.DB).select().from(associationConfig).where(eq(associationConfig.key, 'event_rules')).get()
+    // Central lists no committees, and the instance's only event has none.
+    central.events = [legislativeMeeting()]
+    central.optionsStates = {}
+    await sync()
+    expect(await savedRules()).toBeUndefined()
+    expect(await calendarUids()).toEqual([MEETING, HEARING_UID].sort())
+
+    delete central.optionsStates
+    await sync()
+    expect(JSON.parse((await savedRules())!.value).committees).toEqual([{ committeeId: '3000000003', name: 'Committee on Health' }])
+    expect(await calendarUids()).toEqual([HEARING_UID])
+  })
+
+  it('leave a fork team\'s rules alone while no covered state has body events', async () => {
+    await getDb(env.DB).insert(associationConfig).values({ key: 'council_calendar_rules', value: JSON.stringify({ include: [{ committee: 'Health' }] }) })
+    central.bodyEvents = false
+    central.events = []
+    await sync()
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/body-event-options'))).toBe(false)
+    expect(await getDb(env.DB).select().from(associationConfig).where(eq(associationConfig.key, 'event_rules')).get()).toBeUndefined()
+  })
+
+  it('apply a fork team\'s rules at once when the settings page carries them over', async () => {
+    await getDb(env.DB).insert(associationConfig).values({ key: 'council_calendar_rules', value: JSON.stringify({ include: [{ committee: 'Housing' }] }) })
+    central.optionsStatus = 503
+    await sync()
+    expect(await calendarUids()).toEqual([ROUNDTABLE, MEETING, STADIUM].sort())
+    delete central.optionsStatus
+    const page = await (await api('/admin/event-rules')).json() as any
+    expect(page.rules.committees).toEqual([HOUSING])
+    // No sync since: the page's save applied them.
+    expect(await calendarUids()).toEqual([ROUNDTABLE, STADIUM].sort())
   })
 
   it('refuse malformed rules and members', async () => {

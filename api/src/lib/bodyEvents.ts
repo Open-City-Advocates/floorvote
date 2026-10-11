@@ -234,8 +234,11 @@ async function reconcileBodyEvents(
   result.covered = await pointCovers(env, db, events, new Set(removed.map(r => r.uid)))
   // The instance's event rules, over events new or changed since, and bills tracked since.
   // Rules still waiting on central's committee list (a fork's being carried over) apply nothing yet: the next hour retries.
-  const loaded = await loadEventRules(db, async () => optionCommittees(await centralOptions(env)))
-  if (loaded.settled) await applyEventRules(db, loaded.rules)
+  // With no body events in any covered state there's nothing to apply, nor committees to carry a fork's rules over with.
+  if (anyBodyEvents) {
+    const loaded = await loadEventRules(db, async () => optionCommittees(await centralOptions(env)))
+    if (loaded.settled) await applyEventRules(db, loaded.rules)
+  }
   return result
 }
 

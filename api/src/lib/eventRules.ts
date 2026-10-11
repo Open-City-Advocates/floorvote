@@ -71,54 +71,65 @@ async function heldCommittees(db: AppDb): Promise<{ committeeId: string; name: s
 
 type CommitteeList = readonly { committeeId: string; name: string }[]
 
+/** A stored JSON value, or null when it doesn't parse. */
+function storedJson(value: string): unknown {
+  try { return JSON.parse(value) as unknown } catch { return null }
+}
+
+/** Stored event rules, or null (every event shows) when they no longer parse. */
+function storedRules(value: string): EventRules | null {
+  const rules = parseEventRules(storedJson(value))
+  if (typeof rules !== 'string') return rules
+  console.error(`[event-rules] stored rules are invalid, showing every event: ${rules}`)
+  return null
+}
+
 /** The instance's event rules, and whether they are settled. */
 export interface LoadedEventRules {
   /** The rules, or null when the instance has none and every event shows. */
   rules: EventRules | null
   /**
-   * False while a fork's #217 rules are carried over without central's
-   * committee list (central didn't answer). `rules` is then a provisional
-   * carry-over, not saved, and nothing should be applied until it settles.
+   * False while a fork's #217 rules are carried over without committees to
+   * match their names to (central didn't answer, or neither it nor the
+   * instance's events name any). `rules` is then a provisional carry-over,
+   * not saved, and nothing should be applied until it settles.
    */
   settled: boolean
+  /** True when this call saved a fork's carried-over rules. */
+  carriedOver?: boolean
 }
 
 /**
  * The instance's event rules. A fork's #217 rules are carried over and saved
  * the first time central's committee list arrives (`committees`, asked for
- * only then, null when central didn't answer), so committee names become
- * committees rather than keywords. Until then they're unsettled, and the
- * hourly sync applies nothing and tries again. Stored rules that no longer
- * parse count as none, so every event shows.
+ * only then, null when central didn't answer) and it or the instance's events
+ * name some committee, so committee names become committees rather than
+ * keywords. Until then they're unsettled, and the hourly sync applies nothing
+ * and tries again. Stored rules that no longer parse count as none, so every
+ * event shows.
  */
 export async function loadEventRules(db: AppDb, committees: CommitteeList | null | (() => Promise<CommitteeList | null>)): Promise<LoadedEventRules> {
   const rows = await db.select().from(associationConfig)
     .where(inArray(associationConfig.key, [EVENT_RULES_KEY, COUNCIL_RULES_KEY])).all()
-  const value = (key: string) => {
-    const row = rows.find(r => r.key === key)
-    if (!row) return undefined
-    try { return JSON.parse(row.value) as unknown } catch { return null }
-  }
+  const saved = rows.find(r => r.key === EVENT_RULES_KEY)
+  if (saved) return { rules: storedRules(saved.value), settled: true }
 
-  const saved = value(EVENT_RULES_KEY)
-  if (saved !== undefined) {
-    const rules = parseEventRules(saved)
-    if (typeof rules === 'string') {
-      console.error(`[event-rules] stored rules are invalid, showing every event: ${rules}`)
-      return { rules: null, settled: true }
-    }
-    return { rules, settled: true }
-  }
-
-  const legacy = value(COUNCIL_RULES_KEY)
-  if (legacy === undefined) return { rules: null, settled: true }
+  const legacyRow = rows.find(r => r.key === COUNCIL_RULES_KEY)
+  if (!legacyRow) return { rules: null, settled: true }
+  const legacy = storedJson(legacyRow.value)
   const listed = typeof committees === 'function' ? await committees() : committees
-  const carried = rulesFromCouncilCalendar(legacy, [...(listed ?? []), ...await heldCommittees(db)])
+  const held = await heldCommittees(db)
+  const carried = rulesFromCouncilCalendar(legacy, [...(listed ?? []), ...held])
   if (!carried) return { rules: null, settled: true }
-  if (!listed) return { rules: carried, settled: false }
+  // With no committee to match against, every committee name the fork chose would become a keyword for good.
+  const namesCommittees = Array.isArray((legacy as { include?: unknown }).include) && (legacy as { include: unknown[] }).include.length > 0
+  if (!listed || (namesCommittees && listed.length + held.length === 0)) return { rules: carried, settled: false }
   // Saved once, so the team's settings page shows them and edits them from here on.
   await db.insert(associationConfig).values({ key: EVENT_RULES_KEY, value: JSON.stringify(carried) }).onConflictDoNothing()
-  return { rules: carried, settled: true }
+  // An admin may have saved rules meanwhile: theirs win, and are what applies.
+  const stored = await db.select().from(associationConfig).where(eq(associationConfig.key, EVENT_RULES_KEY)).get()
+  if (!stored) return { rules: carried, settled: true, carriedOver: true }
+  return { rules: storedRules(stored.value), settled: true, carriedOver: stored.value === JSON.stringify(carried) }
 }
 
 /** The committees and kinds central lists for a state (GET /tenants/:tenantId/body-event-options). */
