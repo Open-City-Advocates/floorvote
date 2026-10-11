@@ -5,14 +5,16 @@ interface StatusChipProps {
   status: string | null
   onClick?: () => void
   isActive?: boolean
+  // id of an element holding a longer explanation of the status
+  describedBy?: string
 }
 
-export function StatusChip({ status, onClick, isActive }: StatusChipProps) {
+export function StatusChip({ status, onClick, isActive, describedBy }: StatusChipProps) {
   const [hovered, setHovered] = useState(false)
   if (!status) return null
 
   const inner = (
-    <span style={{ ...CHIP_BASE, whiteSpace: 'nowrap', ...chipOutline(!!isActive, hovered, !!onClick) }}>
+    <span aria-describedby={onClick ? undefined : describedBy} style={{ ...CHIP_BASE, whiteSpace: 'nowrap', ...chipOutline(!!isActive, hovered, !!onClick) }}>
       {status}
     </span>
   )
@@ -21,6 +23,7 @@ export function StatusChip({ status, onClick, isActive }: StatusChipProps) {
 
   return (
     <button
+      aria-describedby={describedBy}
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClick() }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
