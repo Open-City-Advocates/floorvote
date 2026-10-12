@@ -11,6 +11,7 @@ import { renderWeekAheadEmail, type WeekAheadDay } from './weekAheadEmail'
 import { renderDigestEmail, type DigestEvent, type NewMatchDigestItem } from './digestEmail'
 import { renderMentionEmail } from './mentions'
 import { renderInviteBounceEmail, type BouncedAddress } from './inviteBounceEmail'
+import { renderEmailChangeConfirmEmail, renderEmailChangeNoticeEmail } from './emailChangeEmail'
 
 export const SAMPLE_ASSOC_NAME = 'Rhode Island Association of Local Election Officials'
 
@@ -68,7 +69,11 @@ export const SAMPLE_INVITE_BOUNCES: BouncedAddress[] = [
   { email: 'casey.morgan@example.org', reason: '552 5.2.2 The email account that you tried to reach is over quota' },
 ]
 
+// The new address in the email-change samples. The notices to the old address show it masked.
+export const SAMPLE_NEW_EMAIL = 'dana.reed@newcounty.gov'
+
 export type SampleEmailType = 'login' | 'invite' | 'week-ahead' | 'digest' | 'digest-new-only' | 'mention' | 'invite-bounced'
+  | 'email-change-confirm' | 'email-change-requested' | 'email-change-changed'
 
 export function isSampleEmailType(t: string): t is SampleEmailType {
   return (ALL_SAMPLE_EMAIL_TYPES as string[]).includes(t)
@@ -126,6 +131,20 @@ export function renderSampleEmail(type: SampleEmailType, appUrl: string): { subj
       const { subject, html } = renderInviteBounceEmail({ appUrl, instanceName: SAMPLE_ASSOC_NAME, bounces: SAMPLE_INVITE_BOUNCES })
       return { subject: `[Sample] ${subject}`, html }
     }
+    case 'email-change-confirm': {
+      const { subject, html } = renderEmailChangeConfirmEmail({
+        appUrl, instanceName: SAMPLE_ASSOC_NAME, confirmUrl: `${appUrl}/auth/confirm-email?token=sample-link-not-functional`,
+      })
+      return { subject: `[Sample] ${subject}`, html }
+    }
+    case 'email-change-requested':
+    case 'email-change-changed': {
+      const { subject, html } = renderEmailChangeNoticeEmail({
+        stage: type === 'email-change-requested' ? 'requested' : 'changed',
+        appUrl, instanceName: SAMPLE_ASSOC_NAME, newEmail: SAMPLE_NEW_EMAIL, notMeUrl: `${appUrl}/auth/not-me`,
+      })
+      return { subject: `[Sample] ${subject}`, html }
+    }
   }
 }
 
@@ -137,4 +156,5 @@ export async function sendSampleEmail(env: Env, db: AppDb, to: string, type: Sam
 }
 
 /** Every sample email type — drives the conformance test's iteration. */
-export const ALL_SAMPLE_EMAIL_TYPES: SampleEmailType[] = ['login', 'invite', 'week-ahead', 'digest', 'digest-new-only', 'mention', 'invite-bounced']
+export const ALL_SAMPLE_EMAIL_TYPES: SampleEmailType[] = ['login', 'invite', 'week-ahead', 'digest', 'digest-new-only', 'mention', 'invite-bounced',
+  'email-change-confirm', 'email-change-requested', 'email-change-changed']

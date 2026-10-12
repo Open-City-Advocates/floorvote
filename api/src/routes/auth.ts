@@ -21,6 +21,7 @@ import { requireAuth } from '../middleware/auth'
 import { termsAcceptanceState } from '../lib/termsAcceptance'
 import type { AppEnv } from '../types'
 import { isValidEmail } from '../../../shared/email'
+import { confirmEmailChange, emailChangeLinkStatus, EMAIL_CHANGE_ERRORS } from '../lib/emailChange'
 
 export const authRoutes = new Hono<AppEnv>()
 
@@ -287,6 +288,38 @@ authRoutes.post('/verify', async (c) => {
   await recordAuthEvent(db, { event: 'verify_success', email: verifiedUser?.email ?? 'unknown', userId, linkType: null, ...authReqContext(c) })
 
   return c.json({ ok: true })
+})
+
+// The confirmation page for an email change (web: /auth/confirm-email) calls
+// these two. Neither needs a session: the link may be opened on any device
+// that reads the new inbox. Status writes nothing, so a scanner prefetching the
+// page changes nothing. Only the POST commits, and it never signs anyone in.
+// Both refuse to send a referrer, like the page itself (web/public/_headers).
+
+// GET /auth/email-change/status?token=…
+authRoutes.get('/email-change/status', async (c) => {
+  c.header('Referrer-Policy', 'no-referrer')
+  const ip = c.req.header('CF-Connecting-IP') || 'unknown'
+  if (!(await checkRateLimit(c.env.LOGIN_RATE_LIMITER, `email-change-status:${ip}`))) {
+    return c.json({ error: 'Too many requests. Please wait a moment and try again.' }, 429)
+  }
+  const rawToken = c.req.query('token')
+  if (!rawToken) return c.json({ status: 'invalid' })
+  return c.json(await emailChangeLinkStatus(getDb(c.env.DB), rawToken))
+})
+
+// POST /auth/email-change/confirm  { token }
+authRoutes.post('/email-change/confirm', async (c) => {
+  c.header('Referrer-Policy', 'no-referrer')
+  const ip = c.req.header('CF-Connecting-IP') || 'unknown'
+  if (!(await checkRateLimit(c.env.LOGIN_RATE_LIMITER, `email-change-confirm:${ip}`))) {
+    return c.json({ error: 'Too many requests. Please wait a moment and try again.' }, 429)
+  }
+  const body = await c.req.json<{ token?: unknown }>().catch(() => ({} as { token?: unknown }))
+  if (typeof body.token !== 'string' || !body.token) return c.json({ error: EMAIL_CHANGE_ERRORS.invalidLink }, 404)
+  const result = await confirmEmailChange(c.env, getDb(c.env.DB), body.token, authReqContext(c))
+  if (!result.ok) return c.json({ error: result.error }, result.status)
+  return c.json({ ok: true, email: result.email })
 })
 
 // GET /auth/me

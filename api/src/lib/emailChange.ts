@@ -1,0 +1,314 @@
+import { and, eq, isNull, ne, or, sql } from 'drizzle-orm'
+import type { AppDb, Env } from '../types'
+import { users, sessions, magicLinks, emailChanges } from '../db/schema'
+import { generateToken, hashToken } from './crypto'
+import { checkMemberAddresses, normalizeMemberAddress } from './memberAddress'
+import { isPreviouslyBounced } from './bouncedAddresses'
+import { isSuperadminEmailViaCentral } from './superadminCentral'
+import { claimSend, type SendLimit } from './adminSendLimits'
+import { recordAuthEvent } from './authEvents'
+import { sendBatch, resolveAssocName, type EmailMessage } from './email'
+import { renderEmailChangeConfirmEmail, renderEmailChangeNoticeEmail } from './emailChangeEmail'
+
+// Changing a member's sign-in email. The address is the member's identity, so
+// a change takes effect only when someone confirms it from the NEW address,
+// and the OLD address hears about it twice: at request and at commit.
+//
+// A request makes a pending change (table email_changes, one per member) and
+// mails a single-use link to the new address. The link opens a page whose
+// button posts the token here; loading the page changes nothing, because mail
+// scanners prefetch links. The token is stored hashed, lasts 24 hours, can
+// confirm only its own pending change, and never signs anyone in.
+//
+// The commit re-checks every rule and that the member is still active with the
+// address they had at request, then in one batch writes the address, deletes
+// the member's unused sign-in links, ends their other sessions, and removes the
+// pending change (spending the token) along with any other member's pending
+// change to the same address. Each step is recorded in auth_events.
+//
+// Who may request is the caller's business: the self-service route asks for
+// the signed-in member's own address and keeps their session at commit. A
+// request with no `sessionId` ends every session at commit.
+
+/** How long a confirmation link lasts. */
+export const EMAIL_CHANGE_TTL_HOURS = 24
+
+/** Requests per member, from anyone, in a rolling day. */
+export const EMAIL_CHANGE_LIMIT: SendLimit = { max: 3, windowMinutes: 24 * 60 }
+
+export const EMAIL_CHANGE_ERRORS = {
+  invalid: "That doesn't look like a valid email address.",
+  unchanged: "That's already your email address.",
+  inUse: 'That address is already used by another member.',
+  bounced: 'Email to that address has bounced before. Check it for a typo, or use a different address.',
+  reserved: "That address can't be used here.",
+  superadmin: "Your address is managed centrally, so it can't be changed here.",
+  limit: "You've asked to change your email three times in the past day. Please try again tomorrow.",
+  sendFailed: "We couldn't send the confirmation email. Please try again in a little while.",
+  // Confirming
+  invalidLink: 'This link is no longer valid. It may have been used already, or replaced by a newer request.',
+  expiredLink: 'This link has expired. Request the change again from your Account page.',
+  stale: "This change can't be completed because the account changed after it was requested. Request it again from your Account page.",
+} as const
+
+export type Refusal = { ok: false; status: 400 | 403 | 404 | 409 | 410 | 429 | 502; error: string }
+
+/** Where a confirmation link leads: the page with the Confirm new email button. */
+export function confirmUrl(appUrl: string, rawToken: string): string {
+  return `${appUrl}/auth/confirm-email?token=${encodeURIComponent(rawToken)}`
+}
+
+/**
+ * Where "This wasn't me" in an old-address notice leads. For now a page that
+ * tells the member to contact their admin.
+ */
+export function notMeUrl(appUrl: string): string {
+  return `${appUrl}/auth/not-me`
+}
+
+/**
+ * The rules a new address must pass, at request and again at commit. Lowercased
+ * and trimmed, then: the shared validity rule, not the member's current
+ * address, not any other member's (deactivated included, ignoring case), not on
+ * central's superadmin list, and not a previously bounced address.
+ */
+export async function checkNewAddress(
+  env: Env,
+  db: AppDb,
+  member: { id: string; email: string },
+  raw: unknown,
+): Promise<{ ok: true; email: string } | Refusal> {
+  const [check] = await checkMemberAddresses(db, [typeof raw === 'string' ? raw : ''])
+  if (check.status === 'invalid') return { ok: false, status: 400, error: EMAIL_CHANGE_ERRORS.invalid }
+  if (check.email === normalizeMemberAddress(member.email)) return { ok: false, status: 400, error: EMAIL_CHANGE_ERRORS.unchanged }
+  if (check.status === 'taken') return { ok: false, status: 409, error: EMAIL_CHANGE_ERRORS.inUse }
+  if (await isSuperadminEmailViaCentral(env, check.email)) return { ok: false, status: 400, error: EMAIL_CHANGE_ERRORS.reserved }
+  if (await isPreviouslyBounced(env, db, check.email)) return { ok: false, status: 400, error: EMAIL_CHANGE_ERRORS.bounced }
+  return { ok: true, email: check.email }
+}
+
+type RequestContext = { userAgent: string | null; ipCountry: string | null }
+
+/** Send through the demo-muted bulk path: a demo instance never sends these. */
+async function send(env: Env, db: AppDb, message: EmailMessage, tag: string): Promise<boolean> {
+  if (env.DEMO_MODE === 'true') {
+    console.log(`[${tag}] demo mode — suppressing`)
+    return false
+  }
+  const { sent } = await sendBatch(env, [message], tag, db)
+  return sent === 1
+}
+
+async function noticeToOldAddress(env: Env, db: AppDb, stage: 'requested' | 'changed', to: string, newEmail: string) {
+  const { subject, html, text } = renderEmailChangeNoticeEmail({
+    stage, appUrl: env.APP_URL, instanceName: (await resolveAssocName(env, db)) ?? '', newEmail, notMeUrl: notMeUrl(env.APP_URL),
+  })
+  if (!(await send(env, db, { to: [to], subject, html, text }, `email-change-notice-${stage}`))) {
+    console.error(`[email-change] the ${stage} notice to the old address did not go out`)
+  }
+}
+
+async function recordCancelled(
+  db: AppDb,
+  rows: { userId: string; oldEmail: string; newEmail: string }[],
+  actorId: string | null,
+  ctx?: RequestContext,
+) {
+  for (const r of rows) {
+    await recordAuthEvent(db, {
+      event: 'email_change_cancelled', userId: r.userId, email: r.newEmail, reason: r.oldEmail, actorId, ...ctx,
+    })
+  }
+}
+
+/**
+ * Start a change of `member`'s address to `rawNewEmail`, asked for by
+ * `requesterId`. Validates, counts against the daily limit, replaces any
+ * pending change (recording it cancelled), and sends the confirmation and the
+ * notice to the current address.
+ */
+export async function requestEmailChange(
+  env: Env,
+  db: AppDb,
+  input: {
+    member: { id: string; email: string }
+    requesterId: string
+    /** The session to keep signed in at commit; null ends them all. */
+    sessionId: string | null
+    rawNewEmail: unknown
+    ctx: RequestContext
+  },
+): Promise<{ ok: true; email: string } | Refusal> {
+  const { member } = input
+  const check = await checkNewAddress(env, db, member, input.rawNewEmail)
+  if (!check.ok) return check
+  const newEmail = check.email
+
+  // Last, so a request refused above uses none of the allowance. The claim is
+  // the request's own email_change_requested event (see adminSendLimits.ts).
+  const claim = await claimSend(
+    env.DB,
+    {
+      event: 'email_change_requested', userId: member.id, email: newEmail, reason: member.email,
+      linkType: null, actorId: input.requesterId, ...input.ctx,
+    },
+    [{ column: 'user_id', value: member.id, limit: EMAIL_CHANGE_LIMIT, message: EMAIL_CHANGE_ERRORS.limit }],
+  )
+  if (!claim.ok) return { ok: false, status: 429, error: claim.message }
+
+  const rawToken = await generateToken()
+  const id = crypto.randomUUID()
+  // One batch: the previous pending change goes as this one arrives, so there
+  // is never more than one and the latest request always wins.
+  const [replaced] = await db.batch([
+    db.delete(emailChanges).where(eq(emailChanges.userId, member.id))
+      .returning({ userId: emailChanges.userId, oldEmail: emailChanges.oldEmail, newEmail: emailChanges.newEmail }),
+    db.insert(emailChanges).values({
+      id,
+      userId: member.id,
+      oldEmail: member.email,
+      newEmail,
+      requestedBy: input.requesterId,
+      requestingSessionId: input.sessionId,
+      tokenHash: await hashToken(rawToken),
+      expiresAt: sql`datetime('now', ${`+${EMAIL_CHANGE_TTL_HOURS} hours`})`,
+    }),
+  ])
+  await recordCancelled(db, replaced, input.requesterId, input.ctx)
+
+  const instanceName = (await resolveAssocName(env, db)) ?? ''
+  const confirmation = renderEmailChangeConfirmEmail({ appUrl: env.APP_URL, instanceName, confirmUrl: confirmUrl(env.APP_URL, rawToken) })
+  if (!(await send(env, db, { to: [newEmail], ...confirmation }, 'email-change-confirm'))) {
+    // Nobody can confirm a change whose link never went out, so it goes. The
+    // claim stays and still counts: a failed send may have reached the inbox.
+    await db.delete(emailChanges).where(eq(emailChanges.id, id))
+    return { ok: false, status: 502, error: EMAIL_CHANGE_ERRORS.sendFailed }
+  }
+
+  await noticeToOldAddress(env, db, 'requested', member.email, newEmail)
+  return { ok: true, email: newEmail }
+}
+
+type PendingRow = typeof emailChanges.$inferSelect
+
+/** The pending change a raw token names, and whether it is still in date. */
+async function pendingFor(db: AppDb, rawToken: string): Promise<{ row: PendingRow; live: boolean } | null> {
+  const row = await db
+    .select({ row: emailChanges, live: sql<number>`datetime(${emailChanges.expiresAt}) > datetime('now')` })
+    .from(emailChanges)
+    .where(eq(emailChanges.tokenHash, await hashToken(rawToken)))
+    .get()
+  return row ? { row: row.row, live: row.live === 1 } : null
+}
+
+/**
+ * What a confirmation link would do, without doing it. Writes nothing. The
+ * new address rides along only while the link is live: whoever holds it reads
+ * the inbox it was sent to.
+ */
+export async function emailChangeLinkStatus(db: AppDb, rawToken: string): Promise<
+  { status: 'valid'; email: string } | { status: 'expired' } | { status: 'invalid' }
+> {
+  const found = await pendingFor(db, rawToken)
+  if (!found) return { status: 'invalid' }
+  if (!found.live) return { status: 'expired' }
+  return { status: 'valid', email: found.row.newEmail }
+}
+
+/** Drop a pending change that can no longer go through, recording why it went. */
+async function cancelPending(db: AppDb, row: PendingRow, why: string) {
+  const gone = await db.delete(emailChanges).where(eq(emailChanges.id, row.id)).returning({ id: emailChanges.id })
+  if (gone.length === 0) return
+  console.log(JSON.stringify({ tag: 'email_change_cancelled', userId: row.userId, why }))
+  await recordCancelled(db, [row], null)
+}
+
+const isUniqueViolation = (e: unknown) =>
+  /UNIQUE constraint failed/i.test(`${e} ${(e as { cause?: unknown })?.cause ?? ''}`)
+
+/**
+ * Commit the pending change a confirmation token names. One step: every rule
+ * re-checked, then the address, the sign-in links, the sessions, and the
+ * pending changes in one batch. Never signs anyone in.
+ */
+export async function confirmEmailChange(
+  env: Env,
+  db: AppDb,
+  rawToken: string,
+  ctx: RequestContext,
+): Promise<{ ok: true; email: string } | Refusal> {
+  const found = await pendingFor(db, rawToken)
+  if (!found) return { ok: false, status: 404, error: EMAIL_CHANGE_ERRORS.invalidLink }
+  const { row } = found
+  if (!found.live) return { ok: false, status: 410, error: EMAIL_CHANGE_ERRORS.expiredLink }
+
+  // The member must still be active, at the address the change started from.
+  const memberRow = await db
+    .select({ id: users.id, email: users.email, deactivatedAt: users.deactivatedAt })
+    .from(users).where(eq(users.id, row.userId)).get()
+  if (!memberRow || memberRow.deactivatedAt || memberRow.email !== row.oldEmail) {
+    await cancelPending(db, row, 'stale')
+    return { ok: false, status: 409, error: EMAIL_CHANGE_ERRORS.stale }
+  }
+
+  // Every rule again: the address may have been taken, bounced, or listed since.
+  const check = await checkNewAddress(env, db, memberRow, row.newEmail)
+  if (!check.ok) {
+    await cancelPending(db, row, check.error)
+    return check
+  }
+  const newEmail = check.email
+
+  // `changed` gates every statement after the update, so they run only if the
+  // address really moved. The update itself repeats the checks that a
+  // concurrent request could break: the pending change still exists and is in
+  // date (spending a token twice fails here), the member is still active at
+  // the old address, and no other member holds the address in any case. The
+  // unique index on users.email backs the last one up.
+  const changed = sql`(SELECT email FROM users WHERE id = ${row.userId}) = ${newEmail}`
+  const keep = row.requestingSessionId
+  let updated: { id: string }[]
+  let others: { userId: string; oldEmail: string; newEmail: string }[]
+  try {
+    ;[updated, , , others] = await db.batch([
+      db.update(users).set({ email: newEmail }).where(and(
+        eq(users.id, row.userId),
+        eq(users.email, row.oldEmail),
+        isNull(users.deactivatedAt),
+        sql`NOT EXISTS (SELECT 1 FROM users other WHERE lower(other.email) = ${newEmail} AND other.id != ${row.userId})`,
+        sql`EXISTS (SELECT 1 FROM email_changes WHERE id = ${row.id} AND datetime(expires_at) > datetime('now'))`,
+      )).returning({ id: users.id }),
+      db.delete(magicLinks).where(and(eq(magicLinks.userId, row.userId), isNull(magicLinks.usedAt), changed)),
+      db.delete(sessions).where(and(eq(sessions.userId, row.userId), keep ? ne(sessions.id, keep) : undefined, changed)),
+      // This change (spending its token) and any other member's change to the
+      // same address, which could never go through now.
+      db.delete(emailChanges).where(and(
+        or(eq(emailChanges.id, row.id), eq(emailChanges.newEmail, newEmail)),
+        changed,
+      )).returning({ userId: emailChanges.userId, oldEmail: emailChanges.oldEmail, newEmail: emailChanges.newEmail }),
+    ])
+  } catch (e) {
+    if (!isUniqueViolation(e)) throw e
+    await cancelPending(db, row, 'taken at commit')
+    return { ok: false, status: 409, error: EMAIL_CHANGE_ERRORS.inUse }
+  }
+
+  if (updated.length === 0) {
+    // Lost a race. Spent by a parallel confirm, or the account or the address
+    // changed between the checks above and the batch.
+    const still = await pendingFor(db, rawToken)
+    if (!still) return { ok: false, status: 404, error: EMAIL_CHANGE_ERRORS.invalidLink }
+    if (!still.live) return { ok: false, status: 410, error: EMAIL_CHANGE_ERRORS.expiredLink }
+    const recheck = await checkNewAddress(env, db, { id: row.userId, email: row.oldEmail }, row.newEmail)
+    await cancelPending(db, row, recheck.ok ? 'stale' : recheck.error)
+    return recheck.ok ? { ok: false, status: 409, error: EMAIL_CHANGE_ERRORS.stale } : recheck
+  }
+
+  await recordAuthEvent(db, {
+    event: 'email_change_confirmed', userId: row.userId, email: newEmail, reason: row.oldEmail, actorId: row.requestedBy, ...ctx,
+  })
+  await recordCancelled(db, others.filter(o => o.userId !== row.userId), null)
+  await noticeToOldAddress(env, db, 'changed', row.oldEmail, newEmail)
+  return { ok: true, email: newEmail }
+}
+

@@ -10,7 +10,14 @@ import { getAccountDeletionEnabled, activeUser } from '../lib/accountDeletion'
 import { nowDb } from '../lib/dbTime'
 import { countActiveOwners } from '../lib/owners'
 import { userDisplayNameSql } from '../lib/displayName'
-import { authEventActor, authEventActorName } from '../lib/authEvents'
+import { authEventActor, authEventActorName, authReqContext } from '../lib/authEvents'
+import { getCookie } from 'hono/cookie'
+import { hashToken } from '../lib/crypto'
+import { checkRateLimit } from '../../../shared/rateLimit'
+import { verifyTurnstile } from '../../../shared/turnstile'
+import { isSuperadminRequest } from '../lib/superadminRequest'
+import { isSuperadminEmailViaCentral } from '../lib/superadminCentral'
+import { requestEmailChange, EMAIL_CHANGE_ERRORS } from '../lib/emailChange'
 
 export const usersRouter = new Hono<AppEnv>()
 
@@ -144,6 +151,44 @@ usersRouter.post('/me/deactivate', async (c) => {
   return c.json({ ok: true })
 })
 
+// POST /users/me/email-change  { email, turnstileToken }
+// Ask to change your own sign-in email. Nothing changes until the change is
+// confirmed from the new address (lib/emailChange.ts). No re-authentication,
+// by decision: the session is the proof. Limited per IP and gated by
+// Turnstile the way the sign-in form is, plus three requests per member a day.
+usersRouter.post('/me/email-change', async (c) => {
+  const ip = c.req.header('CF-Connecting-IP') || 'unknown'
+  if (!(await checkRateLimit(c.env.LOGIN_RATE_LIMITER, `email-change:${ip}`))) {
+    return c.json({ error: 'Too many requests. Please wait a moment and try again.' }, 429)
+  }
+  const body = await c.req.json<{ email?: unknown; turnstileToken?: unknown }>().catch(() => ({} as { email?: unknown; turnstileToken?: unknown }))
+  const turnstileToken = typeof body.turnstileToken === 'string' ? body.turnstileToken : undefined
+  if (!(await verifyTurnstile(c.env.TURNSTILE_SECRET_KEY, turnstileToken, ip))) {
+    return c.json({ error: 'Verification required.' }, 403)
+  }
+
+  const db = getDb(c.env.DB)
+  const currentUser = c.get('user')
+  // A superadmin's identity is central's (#370), so it never changes here.
+  if (await isSuperadminRequest(c) || await isSuperadminEmailViaCentral(c.env, currentUser.email)) {
+    return c.json({ error: EMAIL_CHANGE_ERRORS.superadmin }, 403)
+  }
+
+  // The session asking is the one the commit leaves signed in.
+  const session = await db.select({ id: sessions.id }).from(sessions)
+    .where(eq(sessions.tokenHash, await hashToken(getCookie(c, 'session') ?? ''))).get()
+
+  const result = await requestEmailChange(c.env, db, {
+    member: { id: currentUser.id, email: currentUser.email },
+    requesterId: currentUser.id,
+    sessionId: session?.id ?? null,
+    rawNewEmail: body.email,
+    ctx: authReqContext(c),
+  })
+  if (!result.ok) return c.json({ error: result.error }, result.status)
+  return c.json({ ok: true, email: result.email })
+})
+
 // GET /users/me/bills — bills the user has voted on, commented on, or noted
 usersRouter.get('/me/bills', async (c) => {
   const db = getDb(c.env.DB)
@@ -242,6 +287,7 @@ usersRouter.get('/me/auth-events', async (c) => {
       ipCountry: authEvents.ipCountry,
       createdAt: authEvents.createdAt,
       email: authEvents.email,
+      actorId: authEvents.actorId,
       actorName: authEventActorName,
     })
     .from(authEvents)
