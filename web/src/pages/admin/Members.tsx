@@ -544,8 +544,15 @@ export function Members() {
     }
   }
 
-  function handleEmailChanged(member: Member, email: string) {
+  function handleEmailChanged(member: Member, email: string, pending: boolean) {
     setChangeEmailMember(null)
+    if (pending) {
+      // An active member's address changes only when they confirm it from the new one.
+      setToast(`Confirmation sent to ${email}. The change takes effect once it is confirmed.`)
+      setTimeout(() => setToast(null), 4000)
+      actionsTriggerRefs.current[member.id]?.focus()
+      return
+    }
     // The new invite is now the latest email, with no outcome yet, so the
     // row is a plain pending invite again (as the next members fetch says).
     setMembers(prev => prev.map(m => (m.id === member.id ? { ...m, email, emailBounce: null } : m)))
@@ -611,6 +618,13 @@ export function Members() {
       if (canManageThisMember) {
         items.push({ kind: 'action', label: 'Change email…', disabled: demoLocked, onClick: () => { close(); setChangeEmailMember(member) } })
       }
+    }
+
+    // An active member's change is asked for, and confirmed from the new
+    // address. Owners may ask for anyone and admins for Standard members (the
+    // server refuses the rest, and every superadmin account).
+    if (!isSelf && !isDeactivated && !isPendingInvite(member) && (currentUserIsOwner || member.role === 'member')) {
+      items.push({ kind: 'action', label: 'Change email…', disabled: demoLocked, onClick: () => { close(); setChangeEmailMember(member) } })
     }
 
     if (!isSelf && member.hasLoggedIn && !isDeactivated) {
@@ -1560,8 +1574,9 @@ export function Members() {
       {changeEmailMember && (
         <ChangeEmailDialog
           member={changeEmailMember}
+          pendingInvite={isPendingInvite(changeEmailMember)}
           onClose={() => { const id = changeEmailMember.id; setChangeEmailMember(null); actionsTriggerRefs.current[id]?.focus() }}
-          onChanged={(email) => handleEmailChanged(changeEmailMember, email)}
+          onChanged={(email, pending) => handleEmailChanged(changeEmailMember, email, pending)}
         />
       )}
       {/* Toast notification */}
