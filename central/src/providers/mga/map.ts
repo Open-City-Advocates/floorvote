@@ -40,12 +40,6 @@ export const MGA_STATUS = {
   enactedSubjectToReferendum: MGA_STATUS_BASE + 16,
 } as const
 
-/** Outcomes the Governor or the constitution decides: the file gives them no date. */
-const UNDATED_OUTCOMES = new Set<number>([
-  MGA_STATUS.vetoed, MGA_STATUS.adopted, MGA_STATUS.approved, MGA_STATUS.enactedUnsigned,
-  MGA_STATUS.enactedOverVeto, MGA_STATUS.enactedSubjectToReferendum,
-])
-
 /**
  * The code an MGA bill stores in `bills.status` (labeled in vocabulary.ts).
  * The file's own Status field is the last action as free text (over a
@@ -124,14 +118,22 @@ export function mgaBillUrl(sessionCode: string, billNumber: string): string {
   return `${MGA_BASE}/mgawebsite/Legislation/Details/${billNumber.toLowerCase()}?ys=${sessionCode}`
 }
 
-/** The MGA writes the same chamber prefix ("hb", "sj") into every document path. */
-function docPaths(sessionCode: string, billNumber: string) {
-  const lower = billNumber.toLowerCase()
+/**
+ * The MGA writes the same chamber prefix ("hb", "sj") into every document
+ * path. A text sits in a folder named for the prefix. A fiscal note sits in a
+ * folder named for the number's last digit, zero-padded to four: HB 618's is
+ * `bil_0008/hb0618.pdf`, and HB 1000's `bil_0000/hb1000.pdf`. The MGA doesn't
+ * document that rule, but it fit every fiscal note link on 37 of the
+ * Maryland bill pages checked, which the number as the folder (`bil_0618`)
+ * missed on nearly all.
+ */
+export function mgaDocPaths(sessionCode: string, billNumber: string) {
+  const lower = billNumber.trim().toLowerCase()
   const prefix = /^[a-z]+/.exec(lower)?.[0] ?? ''
   const seq = lower.slice(prefix.length)
   return {
     text: (version: string) => `${MGA_BASE}/${sessionCode}/bills/${prefix}/${lower}${version}.pdf`,
-    fiscalNote: `${MGA_BASE}/${sessionCode}/fnotes/bil_${seq}/${lower}.pdf`,
+    fiscalNote: `${MGA_BASE}/${sessionCode}/fnotes/bil_${seq.slice(-1).padStart(4, '0')}/${lower}.pdf`,
   }
 }
 
@@ -176,8 +178,14 @@ function milestones(r: MgaRecord): Milestone[] {
   return out.sort((a, b) => a.date.localeCompare(b.date))
 }
 
-function lastActionDate(r: MgaRecord, status: number, history: Milestone[]): string | undefined {
-  if (UNDATED_OUTCOMES.has(status)) return undefined
+/**
+ * The date of the bill's last action. The file dates no action of its own, so
+ * this is its latest milestone: the last reading or report. That includes a
+ * bill the Governor signed or vetoed, a resolution the legislature adopted,
+ * and a law enacted without a signature, whose outcome the file gives no date
+ * at all, so it carries the date it last moved in the General Assembly.
+ */
+function lastActionDate(history: Milestone[]): string | undefined {
   return history[history.length - 1]?.date
 }
 
@@ -215,9 +223,9 @@ export function toMgaMasterListEntry(
     title: r.Title?.trim() || mgaDisplayNumber(r.BillNumber),
     description: r.Synopsis?.trim() || (storedDescription as string),
     status,
-    status_date: lastActionDate(r, status, history),
+    status_date: lastActionDate(history),
     last_action: r.Status?.trim() || undefined,
-    last_action_date: lastActionDate(r, status, history),
+    last_action_date: lastActionDate(history),
     state_link: mgaBillUrl(sessionCode, r.BillNumber),
   }
 }
@@ -400,7 +408,7 @@ export async function buildMgaBill(
   const status = mgaStatus(r)
   const history = milestones(r)
   const type = mgaBillType(r.BillNumber)
-  const paths = docPaths(sessionCode, r.BillNumber)
+  const paths = mgaDocPaths(sessionCode, r.BillNumber)
   const yearStart = `${session.year_start}-01-01`
 
   // Each text is dated by the reading that produced it; the file has no print dates.
@@ -501,7 +509,7 @@ export async function buildMgaBill(
     state_id: MD_STATE_ID,
     change_hash: hash,
     status,
-    status_date: lastActionDate(r, status, history) ?? '',
+    status_date: lastActionDate(history) ?? '',
     bill_type: type.type,
     bill_type_id: type.typeId,
     body: origin,

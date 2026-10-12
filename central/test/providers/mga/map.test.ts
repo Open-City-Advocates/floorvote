@@ -132,7 +132,7 @@ describe('mgaRecordHash', () => {
 })
 
 describe('toMgaMasterListEntry', () => {
-  it('keeps the free-text Status as the last action, and leaves a Governor outcome undated', () => {
+  it('keeps the free-text Status as the last action, dated by the last reading or report', () => {
     const e = toMgaMasterListEntry(rec('HB0001'), '2026RS', 1, 'h', null)
     expect(e.number).toBe('HB1')
     expect(e.last_action).toBe('In the Senate - First Reading Education, Energy, and the Environment')
@@ -140,8 +140,33 @@ describe('toMgaMasterListEntry', () => {
     expect(e.state_link).toBe('https://mgaleg.maryland.gov/mgawebsite/Legislation/Details/hb0001?ys=2026RS')
 
     const enacted = toMgaMasterListEntry(rec('HB0014'), '2026RS', 2, 'h', null)
+    // The file dates no Governor action, so a bill the Governor signed carries the date it last moved in the General Assembly.
     expect(enacted.last_action).toBe('Approved by the Governor - Chapter 775')
-    expect(enacted.last_action_date).toBeUndefined()
+    expect(enacted.last_action_date).toBe('2026-04-09')
+    expect(enacted.status_date).toBe('2026-04-09')
+  })
+
+  it('dates every enacted, vetoed, and adopted outcome the file gives no date', () => {
+    const outcomes: [string, Record<string, unknown>][] = [
+      ['approved', {}],
+      ['enacted without signature', { Status: 'Enacted under Article II, Section 17(c) of the Maryland Constitution - Chapter 12' }],
+      ['over a veto', { Status: 'Gubernatorial Veto Override (Legislative date: 12/16/2026) - Chapter 2' }],
+      ['subject to referendum', { Status: 'Assigned a chapter number, enactment subject to constitutional referendum - Chapter 9' }],
+      ['vetoed', { Status: 'Vetoed by the Governor (Message)', ChapterNumber: '' }],
+    ]
+    for (const [name, change] of outcomes) {
+      const e = toMgaMasterListEntry({ ...rec('HB0014'), ...change }, '2026RS', 2, 'h', null)
+      expect([name, e.last_action_date, e.status_date]).toEqual([name, '2026-04-09', '2026-04-09'])
+    }
+    // A joint resolution's adoption has only its first reading in the file, so that is its last milestone.
+    const jr = toMgaMasterListEntry(rec('HJ0005'), '2026RS', 3, 'h', null)
+    expect(jr.last_action_date).toBe('2026-01-27')
+  })
+
+  it('dates an enacted bill\'s status as well as its last action', async () => {
+    const b = await buildMgaBill(rec('HB0014'), '2026RS', 1, 'h', SESSION, ids)
+    expect(b.status).toBe(MGA_STATUS.approved)
+    expect(b.status_date).toBe('2026-04-09')
   })
 })
 
@@ -262,6 +287,34 @@ describe('buildMgaBill', () => {
     // Ids come from the id table, by kind and code.
     expect(b.subjects[0].subject_id).toBe(ids.subject('broad/c5'))
     expect(b.subjects[1].subject_id).toBe(ids.subject('narrow/commitco'))
+  })
+
+  it('files a fiscal note under the number\'s last digit, zero-padded, not under the number', async () => {
+    // Links read off the MGA's own 2026 bill pages, each of which lists a note.
+    const onThePage: [string, string][] = [
+      ['HB0001', 'bil_0001/hb0001.pdf'],
+      ['HB0010', 'bil_0000/hb0010.pdf'],
+      ['HB0618', 'bil_0008/hb0618.pdf'],
+      ['HB0763', 'bil_0003/hb0763.pdf'],
+      ['HB1243', 'bil_0003/hb1243.pdf'],
+      ['SB0919', 'bil_0009/sb0919.pdf'],
+      ['SB1002', 'bil_0002/sb1002.pdf'],
+      ['HJ0004', 'bil_0004/hj0004.pdf'],
+    ]
+    for (const [number, path] of onThePage) {
+      const r = { ...rec('HB0002'), BillNumber: number, CrossfileBillNumber: '' }
+      const b = await buildMgaBill(r, '2026RS', 1, 'h', SESSION, ids)
+      expect(b.supplements.map(s => s.state_link), number).toEqual([`https://mgaleg.maryland.gov/2026RS/fnotes/${path}`])
+    }
+  })
+
+  it('files each text under its chamber prefix and the whole number, which the MGA\'s pages confirm', async () => {
+    for (const [number, folder] of [['HB0618', 'hb'], ['SB1002', 'sb'], ['HJ0004', 'hj'], ['SJ0001', 'sj']]) {
+      const r = { ...rec('HB0014'), BillNumber: number, CrossfileBillNumber: '' }
+      const b = await buildMgaBill(r, '2026RS', 1, 'h', SESSION, ids)
+      expect(b.texts.map(t => t.state_link), number).toEqual(
+        ['F', 'T', 'E'].map(v => `https://mgaleg.maryland.gov/2026RS/bills/${folder}/${number.toLowerCase()}${v}.pdf`))
+    }
   })
 
   it('gives a bill and a joint resolution a fiscal and policy note, and a resolution none', async () => {

@@ -115,6 +115,19 @@ describe('Maryland from the General Assembly', () => {
     expect(full).toEqual(expect.arrayContaining([toHandle(await billId('HB1')), toHandle(await billId('SB2')), toHandle(await billId('HB2'))]))
   })
 
+  it('links a fiscal note from the folder the MGA files it under, the number\'s last digit', async () => {
+    const records = sample()
+    // HB 618 and SB 1002, as the MGA's own pages link their notes (bil_0008/hb0618.pdf, bil_0002/sb1002.pdf).
+    const base = records.find(r => r.BillNumber === 'HB0002')!
+    records.push({ ...base, BillNumber: 'HB0618', CrossfileBillNumber: '' }, { ...base, BillNumber: 'SB1002', CrossfileBillNumber: '' })
+    serve(records)
+    await claim('mga')
+    await syncAndIngest()
+    const links = async (n: string) => (await getJson(`/bills/${toHandle(await billId(n))}`)).supplements.map((s: any) => s.stateLink)
+    expect(await links('HB618')).toEqual(['https://mgaleg.maryland.gov/2026RS/fnotes/bil_0008/hb0618.pdf'])
+    expect(await links('SB1002')).toEqual(['https://mgaleg.maryland.gov/2026RS/fnotes/bil_0002/sb1002.pdf'])
+  })
+
   it('shows an enacted bill\'s chapter, and the emergency and constitutional amendment flags when set', async () => {
     const records = sample()
     const hb14 = records.find(r => r.BillNumber === 'HB0014')!
@@ -127,6 +140,8 @@ describe('Maryland from the General Assembly', () => {
 
     const bill = await getJson(`/bills/${toHandle(await billId('HB14'))}`)
     expect(bill).toMatchObject({ status: 'Approved by the Governor', statusStage: 'enacted', statusRank: 702 })
+    // The file dates no Governor action, so the bill carries the date it last moved in the General Assembly.
+    expect(bill).toMatchObject({ lastAction: 'Approved by the Governor - Chapter 775', lastActionDate: '2026-04-09', statusDate: '2026-04-09' })
     expect(bill.extras.fields.map((f: any) => [f.label, f.value])).toEqual([
       ['Chapter', 'Chapter 775 of 2026'],
       ['Statutes affected', 'Education § 7-424'],
