@@ -106,19 +106,30 @@ export function renderEmailChangeReportedEmail(input: {
   requestedBy: string
   /** When it was asked for, already formatted. */
   requestedAt: string
-  /** Whether the new address had become the member's sign-in email by the time of the report. */
-  tookEffect: boolean
-  /** Whether pressing the button cancelled a pending change. */
-  cancelledPending: boolean
+  /** Which address the member signed in with at the time of the report. */
+  current: 'old' | 'new' | 'other'
+  /** Their sign-in email then, named when it is neither the old nor the new address. */
+  currentEmail: string
+  /** The address a pending change was cancelled for, if pressing the button cancelled one. */
+  cancelledTo: string | null
+  /** The address of a pending change still waiting for confirmation, if one was left in place. */
+  stillPendingTo: string | null
 }): Rendered {
   const subject = `${input.memberName} says they didn't change their sign-in email`
   const href = `${input.appUrl}/admin/members?search=${encodeURIComponent(input.memberEmail)}`
   const intro = `${input.memberName} pressed "This wasn't me" on a notice about a change to their sign-in email${atInstanceText(input.instanceName)}. Every session they had has been signed out.`
-  const status = input.tookEffect
-    ? `The change had already taken effect. The new address was their sign-in email.${input.cancelledPending ? ' A pending change was also cancelled.' : ''}`
-    : input.cancelledPending
-      ? 'The pending change was cancelled, so it can no longer be confirmed. Their sign-in email is still the old address.'
-      : 'The change had not taken effect, and nothing was pending. Their sign-in email is still the old address.'
+  const nothingPending = !input.cancelledTo && !input.stillPendingTo
+  const status = [
+    input.current === 'new'
+      ? 'The change had already taken effect. The new address was their sign-in email.'
+      : input.current === 'other'
+        ? `The change had already taken effect, and their sign-in email has since changed again, to ${input.currentEmail}.`
+        : nothingPending
+          ? 'The change had not taken effect, and nothing was pending. Their sign-in email is still the old address.'
+          : 'Their sign-in email is still the old address.',
+    input.cancelledTo ? `The pending change to ${input.cancelledTo} was cancelled, so it can no longer be confirmed.` : '',
+    input.stillPendingTo ? `A pending change to ${input.stillPendingTo} was not cancelled and is still waiting for confirmation.` : '',
+  ].filter(Boolean).join(' ')
   const rows: [string, string][] = [
     ['Member', input.memberName],
     ['Old address', input.oldEmail],
@@ -126,7 +137,7 @@ export function renderEmailChangeReportedEmail(input: {
     ['Requested by', input.requestedBy],
     ['Requested', input.requestedAt],
   ]
-  const advice = "FloorVote does not reverse a change that has taken effect, because the old mailbox may now belong to someone else. Reach the member another way, such as by phone, before you act. An admin can change their email back from Members."
+  const advice = `${PRODUCT_NAME} does not reverse a change that has taken effect, because the old mailbox may now belong to someone else. Reach the member another way, such as by phone, before you act. An admin can change their email back from Members.`
   const footer = 'Sent to every active owner and admin as an account security alert.'
 
   const table = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${color.white};border:1px solid ${color.borderDefault};border-radius:${radius.lg}px;margin:0 0 14px;"><tbody>${rows.map(([k, v], i) => `
