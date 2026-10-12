@@ -322,7 +322,7 @@ authRoutes.post('/email-change/confirm', async (c) => {
   if (typeof body.token !== 'string' || !body.token) return c.json({ error: EMAIL_CHANGE_ERRORS.invalidLink }, 404)
   const result = await confirmEmailChange(c.env, getDb(c.env.DB), body.token, authReqContext(c))
   if (!result.ok) return c.json({ error: result.error }, result.status)
-  return c.json({ ok: true, email: result.email })
+  return c.json({ ok: true, email: result.email, ...(result.byAdmin ? { byAdmin: true } : {}) })
 })
 
 // "This wasn't me" in an old-address notice (web: /auth/not-me) calls these two,
