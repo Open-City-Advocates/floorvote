@@ -17,8 +17,9 @@ export function emailChangedLabel(e: EmailChangedFields): string {
 
 /**
  * The steps of a confirmed email change (email_change_requested / _confirmed
- * / _cancelled). `email` is the new address, `reason` the old one, and
- * `actorId` the member who asked for the change.
+ * / _cancelled / _reported). `email` is the new address, `reason` the old one,
+ * and `actorId` the member who asked for the change. A report has no actor:
+ * whoever pressed "This wasn't me" was not signed in.
  */
 export type EmailChangeStepFields = EmailChangedFields & { event: string; actorId?: string | null }
 
@@ -37,6 +38,8 @@ export function ownEmailChangeLabel(e: EmailChangeStepFields, selfId: string): s
         : `Your email was changed from ${e.reason} to ${e.email} at the request of ${who}`
     case 'email_change_cancelled':
       return cancelled(e)
+    case 'email_change_reported':
+      return `"This wasn't me" was pressed for the change of your email from ${e.reason} to ${e.email}, and every session was signed out`
     default:
       return null
   }
@@ -52,6 +55,8 @@ export function memberEmailChangeLabel(e: EmailChangeStepFields, memberId: strin
       return `Email changed from ${e.reason} to ${e.email}, requested by ${by}`
     case 'email_change_cancelled':
       return cancelled(e)
+    case 'email_change_reported':
+      return `"This wasn't me" was pressed for the change from ${e.reason} to ${e.email}, and all of the member's sessions were signed out`
     default:
       return null
   }

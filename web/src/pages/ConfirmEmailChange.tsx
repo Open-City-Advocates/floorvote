@@ -24,6 +24,11 @@ const LINK_ERRORS = {
   invalid: 'This link is no longer valid. It may have been used already, or replaced by a newer request.',
 } as const
 
+const NOT_ME_ERRORS = {
+  expired: 'This link has expired.',
+  invalid: 'This link is no longer valid. It may have been used already.',
+} as const
+
 type Status = { status: 'valid'; email: string } | { status: 'expired' } | { status: 'invalid' }
 
 /**
@@ -125,23 +130,98 @@ export function ConfirmEmailChange() {
   )
 }
 
+type NotMeStatus = { status: 'valid' | 'expired' | 'invalid' }
+
 /**
- * Where "This wasn't me" leads from an old-address notice. For now it tells
- * the member to reach an admin.
+ * Where "This wasn't me" leads from an old-address notice. Built like the
+ * confirmation page: the token is read once and taken out of the address bar,
+ * loading the page only asks whether the link is still good, and the button
+ * does the work. Pressing it signs the member out everywhere and emails the
+ * instance's owners and admins. It never undoes the change.
  */
 export function EmailChangeNotMe() {
   usePageTitle("Didn't Ask for This Change?")
   useNoReferrer()
+  const [searchParams] = useSearchParams()
+  const [token] = useState(() => searchParams.get('token') ?? '')
+  const [status, setStatus] = useState<NotMeStatus | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [done, setDone] = useState<{ alerted: boolean } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!token) { setStatus({ status: 'invalid' }); return }
+    window.history.replaceState(window.history.state, '', window.location.pathname + window.location.hash)
+    let cancelled = false
+    apiFetch<NotMeStatus>('/auth/email-change/not-me/status', { method: 'POST', body: JSON.stringify({ token }) })
+      .then((s) => { if (!cancelled) setStatus(s) })
+      // Can't tell: offer the button, and let the press say what's wrong.
+      .catch(() => { if (!cancelled) setStatus(null) })
+    return () => { cancelled = true }
+  }, [token])
+
+  async function handlePress(e: FormEvent) {
+    e.preventDefault()
+    setSubmitting(true)
+    setError(null)
+    try {
+      setDone(await apiFetch<{ ok: true; alerted: boolean }>('/auth/email-change/not-me', {
+        method: 'POST',
+        body: JSON.stringify({ token }),
+      }))
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  if (done) {
+    return (
+      <Card title="You're Signed Out Everywhere">
+        <p style={styles.body}>
+          {done.alerted
+            ? `We emailed your ${PRODUCT_NAME} admins so they can look into it.`
+            : `We couldn't email your ${PRODUCT_NAME} admins. Please contact one of them directly.`}
+        </p>
+        <p style={styles.body}>
+          This doesn&apos;t undo the change. If your sign-in email was changed, an admin can restore it.
+        </p>
+        <a href="/login" className="blue-link" style={styles.link}>Sign in</a>
+      </Card>
+    )
+  }
+
+  if (error) {
+    return (
+      <Card title="Nothing Was Done">
+        <p style={styles.error}>{error}</p>
+        <p style={styles.body}>If your sign-in email was changed and you didn&apos;t ask for it, contact one of your {PRODUCT_NAME} admins.</p>
+      </Card>
+    )
+  }
+
+  if (status && status.status !== 'valid') {
+    return (
+      <Card title={status.status === 'expired' ? 'Link Expired' : 'Link No Longer Valid'}>
+        <p style={styles.error}>{NOT_ME_ERRORS[status.status]}</p>
+        <p style={styles.body}>If your sign-in email was changed and you didn&apos;t ask for it, contact one of your {PRODUCT_NAME} admins.</p>
+      </Card>
+    )
+  }
+
   return (
     <Card title="Didn't Ask for This Change?">
       <p style={styles.body}>
-        If you didn&apos;t ask to change your sign-in email, contact one of your {PRODUCT_NAME} admins right away. They
-        can see who asked for the change and help secure your account.
+        Someone asked to change the sign-in email for your {PRODUCT_NAME} account. If that wasn&apos;t you, press the
+        button. It signs you out everywhere and emails your admins so they can look into it.
       </p>
-      <p style={styles.body}>
-        A change that hasn't been confirmed from the new address doesn't take effect, and the request expires after
-        24 hours.
-      </p>
+      <p style={styles.body}>It doesn&apos;t undo the change. If you did ask for it, you can close this page.</p>
+      <form onSubmit={handlePress}>
+        <button type="submit" disabled={submitting} style={{ ...styles.button, opacity: submitting ? 0.7 : 1 }}>
+          {submitting ? 'Working…' : "This wasn't me"}
+        </button>
+      </form>
     </Card>
   )
 }
