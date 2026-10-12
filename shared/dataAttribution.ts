@@ -2,15 +2,18 @@
  * How an instance credits the legislative data it shows. Each provider
  * declares its own (`Provider.attribution`, central/src/providers/types.ts),
  * central tells an instance which providers its states come from, and the
- * web footer renders one line per provider, so a provider adds no web code.
+ * web footer renders them on one line, so a provider adds no web code.
  */
 export interface DataAttribution {
   /** The publisher or service credited, as it reads in "Data: <name>". */
   name: string
   /** Where the credit links. */
   url: string
-  /** One plain sentence on where the data comes from and the terms it carries. It explains the credit to a member. */
-  note: string
+  /**
+   * One plain sentence explaining the license to a member, shown on hover and to screen readers on the
+   * license link. Only a credit with a `license` displays it.
+   */
+  note?: string
   /** The license the data is under, when it has one that asks for credit. Linked after the name. */
   license?: { name: string; url: string }
 }

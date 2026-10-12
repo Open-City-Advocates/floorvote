@@ -20,7 +20,6 @@ export const mga: Provider = {
   attribution: {
     name: 'Maryland General Assembly',
     url: 'https://mgaleg.maryland.gov',
-    note: 'Legislative data comes from the Maryland General Assembly\'s public data.',
   },
   coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: false, billText: true },
   envKeys: [],

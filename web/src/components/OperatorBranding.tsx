@@ -46,8 +46,8 @@ const DEFAULT_CREDITS = [{ id: 'legiscan', ...LEGISCAN_ATTRIBUTION }]
  * are data-provider credits, some under a license, and always render).
  *
  * The footer shows three muted lines below the operator credit: the license
- * line, one "Data: <provider>" credit per provider the instance's states come
- * from ("Data: LegiScan (CC BY 4.0)", for LegiScan), and a "Terms · Privacy" line
+ * line, one "Data:" line crediting every provider the instance's states come
+ * from, comma-separated ("Data: LegiScan (CC BY 4.0)", for LegiScan), and a "Terms · Privacy" line
  * gated on `showTerms`/`showPrivacy` (defaulting to `legalDocsVisible`: the docs
  * were bundled and this is not a demo tenant). `sourceUrl`/`showTerms`/
  * `showPrivacy` are optional props only so tests can drive them.
@@ -147,10 +147,10 @@ export function OperatorBranding({
         <span id={LICENSE_NOTE_ID} style={SR_ONLY}>{LICENSE_NOTE}</span>
       </div>
       {/* One credit per provider the instance's states come from (GET /config
-          attribution), each as the provider declares it. LegiScan carries its
-          CC BY license, which is linked; a legislature that publishes none is
-          credited by name alone. */}
-      {dataCredits.map(credit => <DataCredit key={credit.id} id={credit.id} credit={credit} />)}
+          attribution), all on one "Data:" line, each as the provider declares it.
+          LegiScan carries its CC BY license, which is linked; a legislature that
+          publishes none is credited by name alone. */}
+      <DataCredits credits={dataCredits} />
       {/* A legal doc is a reference, not a destination: opening it alongside keeps
           whatever page the footer sits on — a half-filled form, a bill mid-scroll. */}
       {(showTerms || showPrivacy) && (
@@ -164,28 +164,40 @@ export function OperatorBranding({
   )
 }
 
-/** One "Data: <provider>" line. The hover note explains the license when there is one, else the source. */
-function DataCredit({ id, credit }: { id: string; credit: DataAttribution }) {
-  const noteId = dataNoteId(id)
-  const nameLink = (describes: boolean) => (
-    <a href={credit.url} target="_blank" rel="noopener noreferrer" aria-describedby={describes ? noteId : undefined} style={{ color: color.textMuted }}>{credit.name}</a>
-  )
+/**
+ * The data credits on one line: "Data: LegiScan (CC BY 4.0), DC Council LIMS", wrapping as needed.
+ * A credit with a license links the license after the name, and the license's note, when it has one,
+ * explains it on hover and for screen readers. A credit with no license is its name link alone.
+ */
+function DataCredits({ credits }: { credits: ProviderCredit[] }) {
   return (
     <div style={{ fontSize: fontSize.xs, color: color.textMuted, marginTop: 4, textAlign: 'left' }}>
       Data:{' '}
-      {credit.license
-        ? (
-          <>
-            {nameLink(false)}
-            {' ('}
-            <HoverTooltip text={credit.note} maxWidth={280} placement="top-start">
-              <a href={credit.license.url} target="_blank" rel="noopener noreferrer" aria-describedby={noteId} style={{ color: color.textMuted }}>{credit.license.name}</a>
-            </HoverTooltip>
-            {')'}
-          </>
-        )
-        : <HoverTooltip text={credit.note} maxWidth={280} placement="top-start">{nameLink(true)}</HoverTooltip>}
-      <span id={noteId} style={SR_ONLY}>{credit.note}</span>
+      {credits.map((credit, i) => (
+        <span key={credit.id}>
+          {i > 0 && ', '}
+          <DataCredit id={credit.id} credit={credit} />
+        </span>
+      ))}
     </div>
+  )
+}
+
+function DataCredit({ id, credit }: { id: string; credit: DataAttribution }) {
+  const noteId = dataNoteId(id)
+  const nameLink = <a href={credit.url} target="_blank" rel="noopener noreferrer" style={{ color: color.textMuted }}>{credit.name}</a>
+  if (!credit.license) return nameLink
+  const note = credit.note
+  const licenseLink = (
+    <a href={credit.license.url} target="_blank" rel="noopener noreferrer" aria-describedby={note ? noteId : undefined} style={{ color: color.textMuted }}>{credit.license.name}</a>
+  )
+  return (
+    <>
+      {nameLink}
+      {' ('}
+      {note ? <HoverTooltip text={note} maxWidth={280} placement="top-start">{licenseLink}</HoverTooltip> : licenseLink}
+      {')'}
+      {note && <span id={noteId} style={SR_ONLY}>{note}</span>}
+    </>
   )
 }

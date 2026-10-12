@@ -21,7 +21,6 @@ export const lis: Provider = {
   attribution: {
     name: 'Virginia Legislative Information System',
     url: 'https://lis.virginia.gov',
-    note: 'Legislative data comes from the Virginia General Assembly\'s Legislative Information System (LIS) public data files.',
   },
   coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: true, billText: false },
   envKeys: [],

@@ -321,7 +321,7 @@ describe('the Council\'s calendar', () => {
 
   it('tells an instance which providers its states come from, with the credit each declares', async () => {
     const legiscan = expect.objectContaining({ id: 'legiscan', name: 'LegiScan', license: expect.objectContaining({ name: 'CC BY 4.0' }) })
-    const limsCredit = { id: 'lims', name: 'DC Council LIMS', url: 'https://lims.dccouncil.gov', note: expect.stringContaining('Legislative Information Management System') }
+    const limsCredit = { id: 'lims', name: 'DC Council LIMS', url: 'https://lims.dccouncil.gov' }
     await db().insert(schema.tenants).values([
       { tenantId: 'md', name: 'MD', stateCoverage: '["MD"]', active: true },
       { tenantId: 'all', name: 'All', stateCoverage: '["*"]', active: true },

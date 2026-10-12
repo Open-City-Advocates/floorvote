@@ -32,7 +32,6 @@ export const template: Provider = {
   attribution: {
     name: 'Template Legislature',
     url: 'https://legislature.example.gov',
-    note: 'Legislative data comes from the Template Legislature\'s public data feed.',
   },
   // TEMPLATE: who maintains the provider (GitHub handles, no @), and `experimental` until it has run through a
   // session. Say whether it supplies member votes and bill text. A test asserts both against your fixtures.

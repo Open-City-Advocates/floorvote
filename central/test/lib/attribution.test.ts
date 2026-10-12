@@ -40,9 +40,9 @@ describe('what an instance credits for the states it covers', () => {
 })
 
 describe('every provider\'s declared credit', () => {
-  it.each(PROVIDERS.map(p => [p.id, p.attribution] as const))('%s names its publisher, a note, and an https link', (_id, a) => {
+  it.each(PROVIDERS.map(p => [p.id, p.attribution] as const))('%s names its publisher and an https link', (_id, a) => {
     expect(a.name.trim()).not.toBe('')
-    expect(a.note.trim()).not.toBe('')
+    if (a.note !== undefined) expect(a.note.trim()).not.toBe('')
     expect(a.url).toMatch(/^https:\/\//)
     if (a.license) expect(a.license.url).toMatch(/^https:\/\//)
   })

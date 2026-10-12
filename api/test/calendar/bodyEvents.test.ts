@@ -277,12 +277,12 @@ describe('data attribution', () => {
     expect(await configAttribution()).toEqual(DC_ATTRIBUTION)
   })
 
-  it('drops a credit that is not a name, note, and http(s) link, and falls back to LegiScan when none is left', async () => {
+  it('drops a credit that is not a name and http(s) link, and falls back to LegiScan when none is left', async () => {
     central.attribution = {
       providers: [
         { ...LIMS_CREDIT, url: 'javascript:alert(1)' },
         { ...LEGISCAN_CREDIT, id: 'ok', license: undefined },
-        { id: 'x', name: 'No note', url: 'https://example.test' },
+        { id: 'x', name: '', url: 'https://example.test' },
       ],
     }
     await sync()
@@ -290,6 +290,14 @@ describe('data attribution', () => {
     central.attribution = { providers: [{ ...LIMS_CREDIT, url: '/relative' }] }
     await sync()
     expect((await configAttribution()).providers[0]).toMatchObject({ id: 'legiscan', license: { name: 'CC BY 4.0' } })
+  })
+
+  it('keeps a credit with no note, with or without a license, and still keeps a note when one is sent', async () => {
+    const { note: _n, ...licensedNoNote } = LEGISCAN_CREDIT
+    const { note: _m, ...limsNoNote } = LIMS_CREDIT
+    central.attribution = { providers: [licensedNoNote, limsNoNote, { ...LIMS_CREDIT, id: 'noted' }] }
+    await sync()
+    expect(await configAttribution()).toEqual({ providers: [licensedNoNote, limsNoNote, { ...LIMS_CREDIT, id: 'noted' }] })
   })
 
   it('drops the whole credit, not just its license, when the license has no usable link', async () => {
