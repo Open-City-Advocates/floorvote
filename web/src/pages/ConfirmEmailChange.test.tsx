@@ -13,7 +13,7 @@ afterEach(() => {
   document.head.querySelectorAll('meta[name="referrer"]').forEach(m => m.remove())
 })
 
-type Status = { status: 'valid'; email: string } | { status: 'expired' } | { status: 'invalid' }
+type Status = { status: 'valid'; email: string; byAdmin?: boolean } | { status: 'expired'; byAdmin?: boolean } | { status: 'invalid' }
 
 /** Route apiFetch: the status GET answers `status`; the confirm POST answers `confirm`. */
 function server(status: Status, confirm: unknown = { ok: true, email: 'jane@newjob.org' }) {
@@ -84,6 +84,38 @@ describe('ConfirmEmailChange', () => {
     expect(await screen.findByText(message)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Confirm new email' })).not.toBeInTheDocument()
     expect(posts(spy)).toHaveLength(0)
+  })
+
+  describe('when an admin asked for the change', () => {
+    it('says so, and warns that everyone is signed out', async () => {
+      server({ status: 'valid', email: 'jane@newjob.org', byAdmin: true })
+      renderPage()
+      expect(await screen.findByRole('button', { name: 'Confirm new email' })).toBeInTheDocument()
+      expect(screen.getByText(/An admin asked to make/)).toHaveTextContent('An admin asked to make jane@newjob.org the sign-in email for your FloorVote account. Confirm the change?')
+      expect(screen.getByText(/signed out everywhere/)).toBeInTheDocument()
+    })
+
+    it('tells the member to sign in again once it is done, since no session is kept', async () => {
+      server({ status: 'valid', email: 'jane@newjob.org', byAdmin: true }, { ok: true, email: 'jane@newjob.org', byAdmin: true })
+      renderPage()
+      fireEvent.click(await screen.findByRole('button', { name: 'Confirm new email' }))
+      expect(await screen.findByRole('heading', { name: 'Email Changed' })).toBeInTheDocument()
+      expect(screen.getByText(/Sign in again with the new address/)).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login')
+    })
+
+    it.each([
+      [{ status: 'expired', byAdmin: true } as Status, 'This link has expired. Ask the admin who requested the change to request it again.'],
+      [{ status: 'invalid' } as Status, 'This link is no longer valid. It may have been used already, or replaced by a newer request.'],
+    ])('does not send the member to an Account page to request again (%j)', async (status, message) => {
+      server(status)
+      renderPage()
+      expect(await screen.findByText(message)).toBeInTheDocument()
+      if ('byAdmin' in status) {
+        expect(screen.queryByText(/Account page/)).not.toBeInTheDocument()
+        expect(screen.queryByText(/from your Account page/)).not.toBeInTheDocument()
+      }
+    })
   })
 
   it('sends no referrer from the page', async () => {

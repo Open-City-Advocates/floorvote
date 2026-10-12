@@ -24,12 +24,19 @@ const LINK_ERRORS = {
   invalid: 'This link is no longer valid. It may have been used already, or replaced by a newer request.',
 } as const
 
+// When an admin asked for the change (#416) there is no Account page to go back
+// to and request it again: the member may be signed out, and the admin asked.
+const ADMIN_LINK_ERRORS = {
+  expired: 'This link has expired. Ask the admin who requested the change to request it again.',
+  invalid: LINK_ERRORS.invalid,
+} as const
+
 const NOT_ME_ERRORS = {
   expired: 'This link has expired.',
   invalid: 'This link is no longer valid. It may have been used already.',
 } as const
 
-type Status = { status: 'valid'; email: string } | { status: 'expired' } | { status: 'invalid' }
+type Status = { status: 'valid'; email: string; byAdmin?: boolean } | { status: 'expired'; byAdmin?: boolean } | { status: 'invalid' }
 
 /**
  * Send no referrer from this page. The token is in its URL, so a Referer on
@@ -54,8 +61,10 @@ export function ConfirmEmailChange() {
   const [token] = useState(() => searchParams.get('token') ?? '')
   const [status, setStatus] = useState<Status | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [done, setDone] = useState<string | null>(null)
+  const [done, setDone] = useState<{ email: string; byAdmin: boolean } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Whether an admin asked, as far as the status call said (it may not have been made).
+  const byAdmin = !!status && status.status !== 'invalid' && status.byAdmin === true
 
   useEffect(() => {
     if (!token) { setStatus({ status: 'invalid' }); return }
@@ -73,11 +82,11 @@ export function ConfirmEmailChange() {
     setSubmitting(true)
     setError(null)
     try {
-      const r = await apiFetch<{ ok: true; email: string }>('/auth/email-change/confirm', {
+      const r = await apiFetch<{ ok: true; email: string; byAdmin?: boolean }>('/auth/email-change/confirm', {
         method: 'POST',
         body: JSON.stringify({ token }),
       })
-      setDone(r.email)
+      setDone({ email: r.email, byAdmin: r.byAdmin === true })
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.')
     } finally {
@@ -88,9 +97,20 @@ export function ConfirmEmailChange() {
   if (done) {
     return (
       <Card title="Email Changed">
-        <p style={styles.body}>Your sign-in email is now <strong>{done}</strong>.</p>
-        <p style={styles.body}>Use it the next time you sign in.</p>
-        <a href="/" className="blue-link" style={styles.link}>Go to {PRODUCT_NAME}</a>
+        <p style={styles.body}>Your sign-in email is now <strong>{done.email}</strong>.</p>
+        {done.byAdmin
+          ? (
+            <>
+              <p style={styles.body}>Everyone signed in to your account was signed out, including you. Sign in again with the new address.</p>
+              <a href="/login" className="blue-link" style={styles.link}>Sign in</a>
+            </>
+          )
+          : (
+            <>
+              <p style={styles.body}>Use it the next time you sign in.</p>
+              <a href="/" className="blue-link" style={styles.link}>Go to {PRODUCT_NAME}</a>
+            </>
+          )}
       </Card>
     )
   }
@@ -99,7 +119,9 @@ export function ConfirmEmailChange() {
     return (
       <Card title="Email Not Changed">
         <p style={styles.error}>{error}</p>
-        <a href="/profile" className="blue-link" style={styles.link}>Go to your Account page</a>
+        {byAdmin
+          ? <a href="/" className="blue-link" style={styles.link}>Go to {PRODUCT_NAME}</a>
+          : <a href="/profile" className="blue-link" style={styles.link}>Go to your Account page</a>}
       </Card>
     )
   }
@@ -107,8 +129,10 @@ export function ConfirmEmailChange() {
   if (status && status.status !== 'valid') {
     return (
       <Card title={status.status === 'expired' ? 'Link Expired' : 'Link No Longer Valid'}>
-        <p style={styles.error}>{LINK_ERRORS[status.status]}</p>
-        <a href="/profile" className="blue-link" style={styles.link}>Go to your Account page</a>
+        <p style={styles.error}>{(byAdmin ? ADMIN_LINK_ERRORS : LINK_ERRORS)[status.status]}</p>
+        {byAdmin
+          ? <a href="/" className="blue-link" style={styles.link}>Go to {PRODUCT_NAME}</a>
+          : <a href="/profile" className="blue-link" style={styles.link}>Go to your Account page</a>}
       </Card>
     )
   }
@@ -117,10 +141,13 @@ export function ConfirmEmailChange() {
     <Card title="Confirm Your New Email">
       <p style={styles.body}>
         {status
-          ? <>Make <strong>{status.email}</strong> the sign-in email for your {PRODUCT_NAME} account?</>
+          ? <>{byAdmin ? 'An admin asked to make' : 'Make'} <strong>{status.email}</strong> the sign-in email for your {PRODUCT_NAME} account{byAdmin ? '. Confirm the change?' : '?'}</>
           : `Make this address the sign-in email for your ${PRODUCT_NAME} account?`}
       </p>
-      <p style={styles.body}>Your old address stops working for sign-in as soon as you confirm.</p>
+      <p style={styles.body}>
+        Your old address stops working for sign-in as soon as you confirm.
+        {byAdmin && ' You will be signed out everywhere, and sign in again with the new address.'}
+      </p>
       <form onSubmit={handleConfirm}>
         <button type="submit" disabled={submitting} style={{ ...styles.button, opacity: submitting ? 0.7 : 1 }}>
           {submitting ? 'Confirming…' : 'Confirm new email'}
