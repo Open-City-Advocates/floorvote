@@ -1,16 +1,16 @@
 // The notifications inbox: one stored row per event a member is notified about.
 //
 // Each kind has a writer and a renderer. The writer stores rows when the event
-// happens (mentions: lib/mentions.ts, replies: lib/replies.ts, both through
-// writeNotifications below). The renderer turns a stored row into the API shape
+// happens (mentions: lib/mentions.ts, replies: lib/replies.ts, reactions:
+// lib/reactions.ts, all through writeNotifications below). The renderer turns a stored row into the API shape
 // GET /notifications returns, discriminated on `kind`. Adding a kind means adding it to the schema's `kind`
 // enum, a writer, and a renderer here, and a renderer in the web panel.
 //
 // Notifications for deleted comments are hidden here, at read time, rather than
 // deleted when the comment is.
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm'
 import type { getDb } from '../db/client'
-import { notifications, comments, users, bills, roles, type MentionNotificationData, type ReplyNotificationData, type NotificationKind } from '../db/schema'
+import { notifications, comments, users, bills, roles, type MentionNotificationData, type ReplyNotificationData, type ReactionNotificationData, type NotificationKind } from '../db/schema'
 import { filedSlug } from './sessionSlug'
 import { stripHtml } from './stripHtml'
 import { chunk, D1_MAX_PARAMS } from './chunk'
@@ -27,12 +27,12 @@ export type NewNotification = {
   commentId: string
   actorId: string
   /** Kind-specific data, stored as JSON. */
-  data: MentionNotificationData | ReplyNotificationData
+  data: MentionNotificationData | ReplyNotificationData | ReactionNotificationData
 }
 
 /**
  * Stores notifications. A row its kind already has (a mention is unique per
- * comment and recipient) is skipped rather than duplicated, which is what keeps
+ * comment and recipient, a reaction per comment, reactor, and emoji) is skipped rather than duplicated, which is what keeps
  * two concurrent edits of one comment from notifying a person twice.
  *
  * Returns the ids of the recipients actually written, so a caller emails only them.
@@ -113,16 +113,95 @@ export type ReplyNotificationView = NotificationBase & {
   commentHtml: string
 }
 
-export type NotificationView = MentionNotificationView | ReplyNotificationView
+/**
+ * Someone reacted to the recipient's comment. Stored one row per reactor and
+ * emoji, rendered as one row per comment: `id` is the newest of the stored rows,
+ * `isUnread` is true if any of them is, and `createdAt` is the newest's.
+ */
+export type ReactionNotificationView = NotificationBase & {
+  kind: 'reaction'
+  commentPreview: string
+  commentHtml: string
+  /** Each reactor once, newest first, however many emoji they used. */
+  reactors: Array<{ id: string; name: string | null }>
+  reactorCount: number
+}
+
+export type NotificationView = MentionNotificationView | ReplyNotificationView | ReactionNotificationView
+
+/** What a stored notification row joined to its comment and bill carries. */
+type BaseRow = {
+  id: string
+  commentId: string
+  billId: string
+  billNumber: string
+  billTitle: string
+  billAbstract: string | null
+  billState: string | null
+  billSession: string | null
+  billSessionSlug: string | null
+  billIsDraft: boolean
+  createdAt: string
+  readAt: string | null
+}
+
+function notificationBase(r: BaseRow): NotificationBase {
+  return {
+    id: r.id,
+    commentId: r.commentId,
+    billId: r.billId,
+    billNumber: r.billNumber,
+    billTitle: r.billAbstract ?? r.billTitle,
+    billState: r.billState,
+    billIsDraft: r.billIsDraft,
+    sessionSlug: filedSlug({ session: r.billSession, sessionSlug: r.billSessionSlug }),
+    createdAt: r.createdAt,
+    isUnread: r.readAt === null,
+  }
+}
+
+type ReactionRow = BaseRow & { commentContent: string; actorId: string; actorName: string | null }
+
+/**
+ * One view per comment from its stored reaction rows, which arrive newest first.
+ * The group takes the newest row's id and time, and is unread if any row is.
+ */
+function collapseReactions(rows: ReactionRow[]): ReactionNotificationView[] {
+  const groups = new Map<string, ReactionNotificationView>()
+  for (const r of rows) {
+    const group = groups.get(r.commentId)
+    if (!group) {
+      groups.set(r.commentId, {
+        ...notificationBase(r),
+        kind: 'reaction',
+        commentPreview: stripHtml(r.commentContent).slice(0, 150),
+        commentHtml: r.commentContent,
+        reactors: [{ id: r.actorId, name: r.actorName }],
+        reactorCount: 1,
+      })
+      continue
+    }
+    if (r.readAt === null) group.isUnread = true
+    if (!group.reactors.some(x => x.id === r.actorId)) {
+      group.reactors.push({ id: r.actorId, name: r.actorName })
+      group.reactorCount = group.reactors.length
+    }
+  }
+  return [...groups.values()]
+}
 
 const LIST_LIMIT = 50
+// Reactions are collapsed after they are read, and a popular comment stores a
+// row per reactor and emoji, so they are read from a wider window than
+// LIST_LIMIT. Otherwise one busy comment could push every mention off the page.
+const REACTION_ROW_WINDOW = 500
 
 /**
  * A member's newest notifications, rendered for GET /notifications. The unread
  * count covers the rows returned.
  */
 export async function listNotifications(db: Db, recipientId: string): Promise<{ unreadCount: number; notifications: NotificationView[] }> {
-  const rows = await db
+  const fetchRows = (kindFilter: SQL, limit: number) => db
     .select({
       id: notifications.id,
       kind: notifications.kind,
@@ -149,10 +228,15 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
     .innerJoin(comments, eq(notifications.commentId, comments.id))
     .innerJoin(users, eq(notifications.actorId, users.id))
     .innerJoin(bills, eq(notifications.billId, bills.id))
-    .where(and(eq(notifications.recipientId, recipientId), isNull(comments.deletedAt), activeUser))
-    .orderBy(desc(notifications.createdAt))
-    .limit(LIST_LIMIT)
+    .where(and(eq(notifications.recipientId, recipientId), isNull(comments.deletedAt), activeUser, kindFilter))
+    // rowid breaks ties inside one second, so "newest" is well defined.
+    .orderBy(desc(notifications.createdAt), sql`${notifications}.rowid desc`)
+    .limit(limit)
     .all()
+
+  const rows = await fetchRows(ne(notifications.kind, 'reaction'), LIST_LIMIT)
+  const reactionRows = await fetchRows(eq(notifications.kind, 'reaction'), REACTION_ROW_WINDOW)
+
 
   // Kind-specific data, parsed once. A row whose data can't be read is dropped.
   type Row = (typeof rows)[number]
@@ -179,18 +263,7 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
   }
 
   const rendered = parsed.map((r): NotificationView => {
-    const base: NotificationBase = {
-      id: r.id,
-      commentId: r.commentId,
-      billId: r.billId,
-      billNumber: r.billNumber,
-      billTitle: r.billAbstract ?? r.billTitle,
-      billState: r.billState,
-      billIsDraft: r.billIsDraft,
-      sessionSlug: filedSlug({ session: r.billSession, sessionSlug: r.billSessionSlug }),
-      createdAt: r.createdAt,
-      isUnread: r.readAt === null,
-    }
+    const base = notificationBase(r)
     switch (r.kind) {
       case 'mention':
         return {
@@ -217,9 +290,13 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
     }
   })
 
+  const all = [...rendered, ...collapseReactions(reactionRows)]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, LIST_LIMIT)
+
   return {
-    unreadCount: rendered.filter(n => n.isUnread).length,
-    notifications: rendered,
+    unreadCount: all.filter(n => n.isUnread).length,
+    notifications: all,
   }
 }
 
