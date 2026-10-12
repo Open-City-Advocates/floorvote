@@ -11,6 +11,7 @@ const UNCHANGED = "That's already their address. Check it for a typo, or use Res
 const IN_USE = 'Another member already uses that address.'
 const SUPPRESSED = 'This address has bounced before. Check it for a typo.'
 const INVALID = 'Invalid email address'
+const RATE_LIMITED = "You've sent a lot of invites and sign-in links in the past hour. Please wait a little while before sending more."
 
 function member(overrides: Record<string, unknown>) {
   return {
@@ -224,6 +225,7 @@ describe('Members "Change email…" action', () => {
       [new ApiError(400, SUPPRESSED), SUPPRESSED],
       [new ApiError(400, UNCHANGED), UNCHANGED],
       [new ApiError(400, INVALID), INVALID],
+      [new ApiError(429, RATE_LIMITED), RATE_LIMITED],
       [new TypeError('network down'), "Couldn't change the address. Try again."],
     ])('shows "%s" in red inside the dialog, keeping the typed value', async (err, message) => {
       mockApi(undefined, { '/admin/members/pending-1/change-email': () => { throw err } })
