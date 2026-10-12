@@ -29,7 +29,7 @@ vi.mock('../../src/lib/llm', async (importOriginal) => {
   }
 })
 
-// The same fixtures central's tests run (central/test/lib/billMatchText.test.ts).
+// The same fixtures central's tests run (central/test/routes/billMatchText.test.ts).
 // Each row is a bill plus a keyword list; every instance-side check must agree
 // with the row's `expected`, which is what central matches. An empty list is
 // left out of the checks that short-circuit on it before matching anything.
