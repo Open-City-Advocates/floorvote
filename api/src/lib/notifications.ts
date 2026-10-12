@@ -12,7 +12,8 @@ import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { notifications, comments, users, bills, roles, type MentionNotificationData, type NotificationKind } from '../db/schema'
 import { filedSlug } from './sessionSlug'
-import { stripHtml } from './mentions'
+import { stripHtml } from './stripHtml'
+import { chunk, D1_MAX_PARAMS } from './chunk'
 import { nowDb } from './dbTime'
 import { activeUser } from './accountDeletion'
 import { userDisplayNameSql } from './displayName'
@@ -29,10 +30,6 @@ export type NewNotification = {
   data: MentionNotificationData
 }
 
-// D1 rejects a statement with more than 100 bound parameters, and each row binds
-// seven, so an @everyone on a larger instance has to be split.
-const INSERT_CHUNK = 14
-
 /**
  * Stores notifications. A row its kind already has (a mention is unique per
  * comment and recipient) is skipped rather than duplicated, which is what keeps
@@ -43,29 +40,40 @@ const INSERT_CHUNK = 14
 export async function writeNotifications(db: Db, rows: NewNotification[]): Promise<Set<string>> {
   const written = new Set<string>()
   if (rows.length === 0) return written
-  const statements = []
-  for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
-    statements.push(db.insert(notifications)
-      .values(rows.slice(i, i + INSERT_CHUNK).map(r => ({
-        id: crypto.randomUUID(),
-        recipientId: r.recipientId,
-        kind: r.kind,
-        billId: r.billId,
-        commentId: r.commentId,
-        actorId: r.actorId,
-        data: JSON.stringify(r.data),
-      })))
-      .onConflictDoNothing()
-      .returning({ recipientId: notifications.recipientId }))
-  }
+  const values = rows.map(r => ({
+    id: crypto.randomUUID(),
+    recipientId: r.recipientId,
+    kind: r.kind,
+    billId: r.billId,
+    commentId: r.commentId,
+    actorId: r.actorId,
+    data: JSON.stringify(r.data),
+  }))
+  // Each row binds one parameter per column, so an @everyone on a larger
+  // instance is split to stay under D1's limit.
+  const rowsPerStatement = Math.floor(D1_MAX_PARAMS / Object.keys(values[0]).length)
+  const statements = chunk(values, rowsPerStatement).map(slice => db.insert(notifications)
+    .values(slice)
+    .onConflictDoNothing()
+    .returning({ recipientId: notifications.recipientId }))
   const results = await db.batch(statements as unknown as Parameters<typeof db.batch>[0]) as unknown as Array<Array<{ recipientId: string }>>
   for (const result of results) for (const r of result) written.add(r.recipientId)
   return written
 }
 
-/** Reads a mention row's data. Rows are written by this module, so the shape is trusted. */
-export function mentionData(data: string): MentionNotificationData {
-  return JSON.parse(data) as MentionNotificationData
+/**
+ * Reads a mention row's data, or null if it is not a mention's data. Callers
+ * skip a bad row rather than failing the whole panel over it.
+ */
+export function mentionData(data: string): MentionNotificationData | null {
+  try {
+    const d = JSON.parse(data) as Partial<MentionNotificationData> | null
+    if (d && (d.sourceType === 'user' || d.sourceType === 'role' || d.sourceType === 'everyone') && typeof d.sourceId === 'string') {
+      return { sourceType: d.sourceType, sourceId: d.sourceId }
+    }
+  } catch {}
+  console.error('[notifications] skipping a mention notification with unreadable data')
+  return null
 }
 
 /** Shared by every kind: where the notification points, and whether it's been read. */
@@ -108,7 +116,7 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
     .select({
       id: notifications.id,
       kind: notifications.kind,
-      commentId: notifications.commentId,
+      commentId: comments.id,
       data: notifications.data,
       readAt: notifications.readAt,
       createdAt: notifications.createdAt,
@@ -126,6 +134,8 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
       billIsDraft: bills.isDraft,
     })
     .from(notifications)
+    // Every kind so far concerns a comment. A kind without one (comment_id is
+    // nullable for it) will need a left join here.
     .innerJoin(comments, eq(notifications.commentId, comments.id))
     .innerJoin(users, eq(notifications.actorId, users.id))
     .innerJoin(bills, eq(notifications.billId, bills.id))
@@ -134,19 +144,27 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
     .limit(LIST_LIMIT)
     .all()
 
+  // Kind-specific data, parsed once. A row whose data can't be read is dropped.
+  const parsed = rows.flatMap(r => {
+    switch (r.kind) {
+      case 'mention': {
+        const data = mentionData(r.data)
+        return data ? [{ ...r, kind: r.kind, mention: data }] : []
+      }
+      default:
+        return []
+    }
+  })
+
   // Role names for role mentions, looked up once for the whole page.
-  const roleIds = [...new Set(rows
-    .filter(r => r.kind === 'mention')
-    .map(r => mentionData(r.data))
-    .filter(d => d.sourceType === 'role')
-    .map(d => d.sourceId))]
+  const roleIds = [...new Set(parsed.filter(r => r.mention.sourceType === 'role').map(r => r.mention.sourceId))]
   const roleNames = new Map<string, string>()
   if (roleIds.length > 0) {
     const roleRows = await db.select({ id: roles.id, name: roles.name }).from(roles).where(inArray(roles.id, roleIds)).all()
     for (const r of roleRows) roleNames.set(r.id, r.name)
   }
 
-  const rendered = rows.map((r): NotificationView => {
+  const rendered = parsed.map((r): NotificationView => {
     const base: NotificationBase = {
       id: r.id,
       commentId: r.commentId,
@@ -160,8 +178,7 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
       isUnread: r.readAt === null,
     }
     switch (r.kind) {
-      case 'mention': {
-        const data = mentionData(r.data)
+      case 'mention':
         return {
           ...base,
           kind: 'mention',
@@ -170,10 +187,9 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
           authorSubtitle: r.actorSubtitle,
           commentPreview: stripHtml(r.commentContent).slice(0, 150),
           commentHtml: r.commentContent,
-          sourceType: data.sourceType,
-          sourceLabel: data.sourceType === 'role' ? (roleNames.get(data.sourceId) ?? null) : null,
+          sourceType: r.mention.sourceType,
+          sourceLabel: r.mention.sourceType === 'role' ? (roleNames.get(r.mention.sourceId) ?? null) : null,
         }
-      }
     }
   })
 

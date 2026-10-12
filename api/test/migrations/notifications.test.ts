@@ -81,6 +81,24 @@ describe('migration 0085_notifications', () => {
     expect(body.unreadCount).toBe(1)
   })
 
+  // comments has had no foreign keys since 0025, so a comment can outlive its
+  // bill or its author. The old GET inner-joined both, so these were never shown.
+  it('skips mentions on comments whose bill or author no longer exists, with foreign keys enforced', async () => {
+    const kept = await seedComment(billId, bobId, '<p>kept</p>')
+    await env.DB.prepare(`INSERT INTO comments (id, bill_id, user_id, content) VALUES ('c-no-bill', 'missing-bill', ?, '<p>x</p>')`).bind(bobId).run()
+    await env.DB.prepare(`INSERT INTO comments (id, bill_id, user_id, content) VALUES ('c-no-author', ?, 'missing-user', '<p>x</p>')`).bind(billId).run()
+    await oldMention('m-kept', kept, janeId, 'user', janeId, '2026-01-01 09:00:00', null)
+    await oldMention('m-no-bill', 'c-no-bill', janeId, 'user', janeId, '2026-01-02 09:00:00', null)
+    await oldMention('m-no-author', 'c-no-author', janeId, 'user', janeId, '2026-01-03 09:00:00', null)
+    const fk = await env.DB.prepare('PRAGMA foreign_keys').first<{ foreign_keys: number }>()
+    expect(fk?.foreign_keys).toBe(1)
+
+    await applyMigrations()
+
+    const body = await notifications()
+    expect(body.notifications.map(n => n.id)).toEqual(['m-kept'])
+  })
+
   it('keeps each member\'s mentions their own', async () => {
     const comment = await seedComment(billId, bobId, '<p>both</p>')
     const caraId = await seedUser({ name: 'Cara', email: 'cara@example.com' })

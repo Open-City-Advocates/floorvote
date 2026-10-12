@@ -1,6 +1,7 @@
 import { getDb } from '../db/client'
 import { notifications, type MentionNotificationData, userRoles, users, bills, roles, sessions, associationConfig, comments } from '../db/schema'
 import { writeNotifications, mentionData } from './notifications'
+import { chunk, D1_MAX_PARAMS } from './chunk'
 import { eq, inArray, exists, and } from 'drizzle-orm'
 import { billUrl } from '../../../shared/sessionSlug'
 import { PRODUCT_NAME } from '../../../shared/brand'
@@ -69,10 +70,6 @@ export function extractMentions(html: string): Mention[] {
   }
 
   return mentions
-}
-
-export function stripHtml(html: string): string {
-  return html.replace(/<[^>]*>/g, '').trim()
 }
 
 
@@ -380,7 +377,10 @@ export async function syncMentionsOnEdit(
     .from(notifications)
     .where(and(eq(notifications.commentId, commentId), eq(notifications.kind, 'mention')))
     .all())
-    .map(r => ({ id: r.id, userId: r.userId, ...mentionData(r.data) }))
+    .flatMap(r => {
+      const data = mentionData(r.data)
+      return data ? [{ id: r.id, userId: r.userId, ...data }] : []
+    })
 
   const added = mentions.filter(m => !previousTokens.has(mentionToken(m.type, m.id)))
   const removed = [...previousTokens].some(t => !tokens.has(t))
@@ -459,11 +459,12 @@ async function sendMentionEmails(
     .all()
   const commentCreatedAt = commentMeta?.createdAt ?? new Date().toISOString() // ts-write-ok: display-only fallback, not a DB column
 
-  const recipients = await db
+  // Split under D1's parameter limit: an @everyone can reach more than 100 people.
+  const recipients = (await Promise.all(chunk(targets.map(t => t.userId), D1_MAX_PARAMS).map(ids => db
     .select({ id: users.id, email: users.email, name: users.name })
     .from(users)
-    .where(inArray(users.id, targets.map(t => t.userId)))
-    .all()
+    .where(inArray(users.id, ids))
+    .all()))).flat()
 
   const instanceName = (await resolveAssocName(env, db)) ?? ''
 

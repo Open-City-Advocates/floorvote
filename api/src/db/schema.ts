@@ -412,7 +412,8 @@ export const notifications = sqliteTable('notifications', {
   recipientId: text('recipient_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   kind: text('kind', { enum: ['mention'] }).notNull(),
   billId: text('bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
-  commentId: text('comment_id').notNull().references(() => comments.id, { onDelete: 'cascade' }),
+  // Nullable for a future kind about a bill alone (no comment). Every kind so far has one.
+  commentId: text('comment_id').references(() => comments.id, { onDelete: 'cascade' }),
   actorId: text('actor_id').references(() => users.id, { onDelete: 'cascade' }),
   /** Kind-specific JSON, e.g. MentionNotificationData for a mention. */
   data: text('data').notNull().default('{}'),

@@ -119,6 +119,23 @@ describe('GET /notifications', () => {
     expect(body.unreadCount).toBe(1)
   })
 
+  it('skips a notification whose stored data is unreadable instead of failing the panel', async () => {
+    const otherCommentId = await seedComment(billId, authorId)
+    await seedCommentMention(commentId, userId)
+    const corrupt = await seedCommentMention(otherCommentId, userId)
+    await env.DB.prepare(`UPDATE notifications SET data = 'not json' WHERE id = ?`).bind(corrupt).run()
+
+    const body = await getNotifications(token)
+    expect(body.notifications.map(n => n.commentId)).toEqual([commentId])
+  })
+
+  it('also returns the list as `mentions` for web bundles from before the rename', async () => {
+    await seedCommentMention(commentId, userId)
+
+    const body = await getNotifications(token) as Body & { mentions: Body['notifications'] }
+    expect(body.mentions).toEqual(body.notifications)
+  })
+
   it('returns 401 without authentication', async () => {
     const res = await SELF.fetch('http://localhost/api/notifications')
     expect(res.status).toBe(401)
