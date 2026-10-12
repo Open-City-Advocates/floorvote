@@ -11,7 +11,7 @@ export interface DataAttribution {
   url: string
   /**
    * One plain sentence explaining the license to a member, shown on hover and to screen readers on the
-   * license link. Only a credit with a `license` displays it; an older central sends one for every credit.
+   * license link. Only a credit with a `license` displays it.
    */
   note?: string
   /** The license the data is under, when it has one that asks for credit. Linked after the name. */

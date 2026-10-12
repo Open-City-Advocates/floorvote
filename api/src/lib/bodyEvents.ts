@@ -114,8 +114,7 @@ export async function readStateAttribution(db: AppDb): Promise<Attribution | nul
 /**
  * What an instance accepts as attribution: credits that have an id, a name,
  * and an http(s) link, since the footer renders them as links. A note is
- * optional (an older central sends one for every credit, a newer one only
- * where a license needs explaining), and kept when present. Names and notes
+ * optional (only a license needs one), and kept when present. Names and notes
  * are cut to a sensible length. A credit whose license is present
  * but has no name or http(s) link is dropped whole, not shown without it: the
  * license link is the credit CC BY asks for. Null when the value isn't a list
