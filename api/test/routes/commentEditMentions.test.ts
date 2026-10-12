@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { env } from 'cloudflare:test'
 import { app } from '../../src/index'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedRole, seedUserRole } from '../helpers'
+import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedRole, seedUserRole, mentionRecords } from '../helpers'
 import { getDb } from '../../src/db/client'
-import { commentMentions, feedEvents } from '../../src/db/schema'
+import { notifications, feedEvents } from '../../src/db/schema'
 
 // Edits go through the comments HTTP routes with the Cloudflare email binding
 // stubbed, so "who got emailed" is read at the email-sending boundary. Mention
@@ -58,7 +58,7 @@ describe('editing a comment re-notifies only newly mentioned people', () => {
   const emailedTo = () => send.mock.calls.map(call => (call[0] as { to: string[] }).to[0]).sort()
 
   async function mentionRows(commentId: string) {
-    return getDb(env.DB).select().from(commentMentions).where(eq(commentMentions.commentId, commentId)).all()
+    return mentionRecords(commentId)
   }
 
   async function makeMember(name: string, opts: { session?: boolean } = {}) {
@@ -85,8 +85,8 @@ describe('editing a comment re-notifies only newly mentioned people', () => {
     const before = await mentionRows(commentId)
     expect(before).toHaveLength(2)
     const janeRow = before.find(r => r.userId === ids.jane)!
-    await getDb(env.DB).update(commentMentions)
-      .set({ readAt: '2026-01-01 09:00:00' }).where(eq(commentMentions.id, janeRow.id))
+    await getDb(env.DB).update(notifications)
+      .set({ readAt: '2026-01-01 09:00:00' }).where(eq(notifications.id, janeRow.id))
 
     await edit(commentId, `<p>Fixed a typo: ${user(ids.jane, 'Jane')} and ${user(ids.bob, 'Bob')}</p>`)
 
@@ -268,8 +268,8 @@ describe('editing a comment re-notifies only newly mentioned people', () => {
       const commentId = await create(`<p>${role(teamId, 'Team')}</p>`)
       const before = (await mentionRows(commentId))[0]
       expect(before.sourceType).toBe('role')
-      await getDb(env.DB).update(commentMentions)
-        .set({ readAt: '2026-01-01 09:00:00' }).where(eq(commentMentions.id, before.id))
+      await getDb(env.DB).update(notifications)
+        .set({ readAt: '2026-01-01 09:00:00' }).where(eq(notifications.id, before.id))
 
       await edit(commentId, `<p>${role(teamId, 'Team')} ${user(ids.jane, 'Jane')}</p>`)
 

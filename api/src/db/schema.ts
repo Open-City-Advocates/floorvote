@@ -394,12 +394,30 @@ export const calendarEventBills = sqliteTable('calendar_event_bills', {
   pk: primaryKey({ columns: [t.eventId, t.billId] }),
 }))
 
-export const commentMentions = sqliteTable('comment_mentions', {
+/** A mention notification's kind-specific data: how the mention reached the recipient. */
+export type MentionNotificationData = {
+  sourceType: 'user' | 'role' | 'everyone'
+  /** The user, the role, or 'all' for @everyone. */
+  sourceId: string
+}
+
+/**
+ * The notifications inbox: one row per event a member is notified about, of a
+ * `kind` (only 'mention' so far). Rows are written when the event happens and
+ * never recomputed from comments. Rows for deleted comments are hidden at read
+ * time, not deleted. Writers and renderers per kind live in lib/notifications.ts.
+ */
+export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
+  recipientId: text('recipient_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  kind: text('kind', { enum: ['mention'] }).notNull(),
+  billId: text('bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
   commentId: text('comment_id').notNull().references(() => comments.id, { onDelete: 'cascade' }),
-  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  sourceType: text('source_type', { enum: ['user', 'role', 'everyone'] }).notNull(),
-  sourceId: text('source_id').notNull(),
+  actorId: text('actor_id').references(() => users.id, { onDelete: 'cascade' }),
+  /** Kind-specific JSON, e.g. MentionNotificationData for a mention. */
+  data: text('data').notNull().default('{}'),
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
   readAt: text('read_at'),
 })
+
+export type NotificationKind = typeof notifications.$inferSelect['kind']

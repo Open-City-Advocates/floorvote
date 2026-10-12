@@ -1,5 +1,6 @@
 import { getDb } from '../db/client'
-import { commentMentions, userRoles, users, bills, roles, sessions, associationConfig, comments } from '../db/schema'
+import { notifications, type MentionNotificationData, userRoles, users, bills, roles, sessions, associationConfig, comments } from '../db/schema'
+import { writeNotifications, mentionData } from './notifications'
 import { eq, inArray, exists, and } from 'drizzle-orm'
 import { billUrl } from '../../../shared/sessionSlug'
 import { PRODUCT_NAME } from '../../../shared/brand'
@@ -273,7 +274,12 @@ async function resolveMentionTargets(
   return [...targets.values()]
 }
 
-/** Writes mention records for the given targets, then emails them unless an admin turned mention emails off. */
+/**
+ * Writes mention notifications for the given targets, then emails the people
+ * actually written unless an admin turned mention emails off. A person who
+ * already has a mention on this comment (a concurrent edit got there first) is
+ * neither written nor emailed again.
+ */
 async function recordAndEmail(
   db: Db,
   newTargets: NotificationTarget[],
@@ -286,16 +292,18 @@ async function recordAndEmail(
 ): Promise<void> {
   if (newTargets.length === 0) return
 
-  await db.insert(commentMentions).values(newTargets.map(t => ({
-    id: crypto.randomUUID(),
+  const written = await writeNotifications(db, newTargets.map(t => ({
+    recipientId: t.userId,
+    kind: 'mention',
+    billId,
     commentId,
-    userId: t.userId,
-    sourceType: t.via,
-    sourceId: t.sourceId,
+    actorId: authorUserId,
+    data: { sourceType: t.via, sourceId: t.sourceId },
   })))
+  const toEmail = newTargets.filter(t => written.has(t.userId))
 
-  if (await mentionEmailsEnabled(db)) {
-    const emailTask = sendMentionEmails(newTargets, authorUserId, billId, commentId, html, env)
+  if (toEmail.length > 0 && await mentionEmailsEnabled(db)) {
+    const emailTask = sendMentionEmails(toEmail, authorUserId, billId, commentId, html, env)
     if (waitUntil) {
       waitUntil(emailTask)
     } else {
@@ -318,6 +326,11 @@ export async function extractAndNotifyMentions(
   const targets = await resolveMentionTargets(db, extractMentions(html), authorUserId, authorRole)
   await recordAndEmail(db, targets, commentId, html, authorUserId, billId, env, waitUntil)
   return targets.map(t => t.userId)
+}
+
+/** Repoints a mention notification at the token that now reaches its recipient. Read state is untouched. */
+function setMentionSource(db: Db, id: string, data: MentionNotificationData) {
+  return db.update(notifications).set({ data: JSON.stringify(data) }).where(eq(notifications.id, id))
 }
 
 /** A mention token: `user:<id>`, `role:<id>`, or `everyone`. A record's source maps to the same form. */
@@ -362,7 +375,12 @@ export async function syncMentionsOnEdit(
   const mentions = extractMentions(html)
   const tokens = new Set(mentions.map(m => mentionToken(m.type, m.id)))
   const previousTokens = new Set(extractMentions(previousHtml).map(m => mentionToken(m.type, m.id)))
-  const existing = await db.select().from(commentMentions).where(eq(commentMentions.commentId, commentId)).all()
+  const existing = (await db
+    .select({ id: notifications.id, userId: notifications.recipientId, data: notifications.data })
+    .from(notifications)
+    .where(and(eq(notifications.commentId, commentId), eq(notifications.kind, 'mention')))
+    .all())
+    .map(r => ({ id: r.id, userId: r.userId, ...mentionData(r.data) }))
 
   const added = mentions.filter(m => !previousTokens.has(mentionToken(m.type, m.id)))
   const removed = [...previousTokens].some(t => !tokens.has(t))
@@ -379,22 +397,18 @@ export async function syncMentionsOnEdit(
   for (const row of existing) {
     if (tokens.has(`user:${row.userId}`) && row.sourceType !== 'user') {
       reached.add(row.userId)
-      writes.push(db.update(commentMentions)
-        .set({ sourceType: 'user', sourceId: row.userId })
-        .where(eq(commentMentions.id, row.id)))
+      writes.push(setMentionSource(db, row.id, { sourceType: 'user', sourceId: row.userId }))
     } else if (!sourceGone(row)) {
       reached.add(row.userId)
     } else {
       const target = remaining.get(row.userId)
       if (!target) {
-        writes.push(db.delete(commentMentions).where(eq(commentMentions.id, row.id)))
+        writes.push(db.delete(notifications).where(eq(notifications.id, row.id)))
         continue
       }
       reached.add(row.userId)
       if (row.sourceType !== target.via || row.sourceId !== target.sourceId) {
-        writes.push(db.update(commentMentions)
-          .set({ sourceType: target.via, sourceId: target.sourceId })
-          .where(eq(commentMentions.id, row.id)))
+        writes.push(setMentionSource(db, row.id, { sourceType: target.via, sourceId: target.sourceId }))
       }
     }
   }
