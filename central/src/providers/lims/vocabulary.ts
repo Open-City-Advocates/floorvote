@@ -11,7 +11,7 @@ import type { ProviderVocabulary } from '../sdk'
  * law, deemed approved) are what advocates act on, and LegiScan's codes would
  * flatten them.
  *
- * The explainers come from @anotherpanacea's DC explainers (#216). Durations
+ * The explainers come from @anotherpanacea-eng's DC explainers (#216). Durations
  * and review periods follow the Council's own summary
  * (https://dccouncil.gov/how-a-bill-becomes-a-law/) and the Home Rule Act.
  * Keep the wording factual: these appear next to real bills.

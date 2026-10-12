@@ -159,6 +159,16 @@ The LIMS, Maryland, and Virginia tests all use it, and the [template's test](htt
 
 A provider test mocks `rateLimitedFetch` with [`unpacedFetch`](https://github.com/floorvote/floorvote/blob/main/central/test/helpers/unpacedFetch.ts), so stubbed requests don't wait on pacing. The template's test also adds itself to the registry with a mock, since it isn't there. Remove that mock in your copy.
 
+## Maintainers and review
+
+Each provider declares who maintains it, as GitHub handles in `coverage.maintainers` in its `index.ts`. Everything else follows from that one declaration:
+
+- The [State coverage](/contributing/state-coverage) page lists each provider's maintainers.
+- [`.github/CODEOWNERS`](https://github.com/floorvote/floorvote/blob/main/.github/CODEOWNERS) is generated from the declarations (`npm run gen:codeowners`), so GitHub asks a provider's maintainers to review changes to its source directory and its tests. Don't edit that file by hand. A test fails when it is out of date.
+- A pull request that changes a provider's directory gets one comment mentioning that provider's maintainers, other than the pull request's author. The comment is updated rather than repeated as the branch changes, and a draft waits until it is marked ready for review.
+
+Maintainers review changes to their provider. The project maintainer merges.
+
 ## Before you open a pull request
 
 Run what CI runs, from `central/`:
@@ -172,7 +182,7 @@ npm test
 Then check the following:
 
 - **Register it.** Add your provider to `PROVIDERS` in `central/src/providers/index.ts`, and delete the template's "stays out of the registry" test from your copy.
-- **CODEOWNERS.** Add a line for `/central/src/providers/<id>/` to [`.github/CODEOWNERS`](https://github.com/floorvote/floorvote/blob/main/.github/CODEOWNERS), below the `providers/` line, naming whoever maintains the adapter. A provider needs a maintainer who will answer when the feed changes. The handles must match the `coverage.maintainers` your provider declares, and a test fails when they don't.
+- **Maintainers.** Name the people who maintain the adapter in your provider's `coverage.maintainers`, then run `npm run gen:codeowners` and `npm run gen:state-coverage` and commit what they write. A provider needs a maintainer who will answer when the feed changes. A test fails when `.github/CODEOWNERS` or the State coverage page no longer matches the declarations. See [Maintainers and review](#maintainers-and-review).
 - **LegiScan budget.** Don't bulk-queue central's ingestor in a test or a script without skipping the fetch. LegiScan's free tier is 10,000 calls a month, and your provider spends none of them.
 - **Sign-off.** Every commit needs the `Signed-off-by` line described in [Contributing](./#licensing-and-sign-off).
 - **Migrations.** Most providers need none. If yours does, add a new numbered file and never edit an existing one. Don't put a semicolon inside a comment in a migration, since the test helper splits statements on semicolons before it strips comments.

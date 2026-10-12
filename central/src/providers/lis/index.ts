@@ -22,7 +22,7 @@ export const lis: Provider = {
     name: 'Virginia Legislative Information System',
     url: 'https://lis.virginia.gov',
   },
-  coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: true, billText: false },
+  coverage: { maintainers: ['anotherpanacea-eng', 'wtadler'], status: 'experimental', memberVotes: true, billText: false },
   envKeys: [],
   states: [LIS_STATE],
 

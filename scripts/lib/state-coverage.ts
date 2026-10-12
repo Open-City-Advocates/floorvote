@@ -1,15 +1,14 @@
-// The State coverage page, rendered from the provider registry, and the check
-// that CODEOWNERS names each provider's declared maintainers.
+// The State coverage page, rendered from the provider registry.
 //
 // Used by scripts/gen-state-coverage.ts (writes the page) and by the drift
-// test beside this file (fails CI when the committed page or CODEOWNERS no
-// longer matches the providers' own declarations).
+// test beside this file (fails CI when the committed page no longer matches
+// the providers' own declarations). CODEOWNERS is generated the same way, in
+// scripts/lib/codeowners.ts.
 
 import type { ListedCapabilities, Provider } from '../../central/src/providers'
 
-/** Where the generated page lives, and the file that lists each provider directory's owners. */
+/** Where the generated page lives. */
 export const PAGE_PATH = 'docs/content/contributing/state-coverage.md'
-export const CODEOWNERS_PATH = '.github/CODEOWNERS'
 
 /** The jurisdictions LegiScan covers: the 50 states, DC, and Congress (which LegiScan calls "US"). */
 export const STATES: Readonly<Record<string, string>> = {
@@ -84,7 +83,7 @@ This page lists the data providers that exist for each state. It does not say wh
 
 [LegiScan](https://legiscan.com) supplies every state, the District of Columbia, and Congress. Some legislatures also publish their own data, and a direct provider reads it from the source. Direct providers are opt-in and start out experimental. A deployment that never opts in keeps using LegiScan.
 
-This page is generated from what each provider declares in code, so it can't drift from the providers themselves. Maintainers are the people CODEOWNERS asks to review changes to the provider.
+This page is generated from what each provider declares in code, so it can't drift from the providers themselves. Maintainers are the people CODEOWNERS asks to review changes to the provider, and who a pull request that changes it mentions.
 
 ## What the columns mean
 
@@ -99,30 +98,4 @@ When a state has more than one provider, each column lists them in the same orde
 | --- | --- | --- | --- | --- |
 ${rows.join('\n')}
 `
-}
-
-/**
- * Problems with CODEOWNERS: each registered provider's directory must have a
- * line naming exactly the maintainers the provider declares. A directory with
- * a line but no registered provider (a template, say) is not checked.
- */
-export function checkCodeowners(codeowners: string, providers: readonly Provider[]): string[] {
-  const owners = new Map<string, string[]>()
-  for (const raw of codeowners.split('\n')) {
-    const line = raw.replace(/#.*/, '').trim()
-    if (!line) continue
-    const [path, ...who] = line.split(/\s+/)
-    owners.set(path, who) // a later line wins, as on GitHub
-  }
-  const problems: string[] = []
-  for (const p of providers) {
-    const dir = `/central/src/providers/${p.id}/`
-    const declared = p.coverage.maintainers.map(h => `@${h}`)
-    const actual = owners.get(dir)
-    if (!actual) problems.push(`${CODEOWNERS_PATH} has no line for ${dir}. Add: ${dir} ${declared.join(' ')}`)
-    else if ([...actual].sort().join(' ') !== [...declared].sort().join(' ')) {
-      problems.push(`${CODEOWNERS_PATH} names ${actual.join(' ')} for ${dir}, but ${p.id} declares ${declared.join(' ')}`)
-    }
-  }
-  return problems
 }

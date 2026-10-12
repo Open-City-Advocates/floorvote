@@ -10,7 +10,7 @@ This page lists the data providers that exist for each state. It does not say wh
 
 [LegiScan](https://legiscan.com) supplies every state, the District of Columbia, and Congress. Some legislatures also publish their own data, and a direct provider reads it from the source. Direct providers are opt-in and start out experimental. A deployment that never opts in keeps using LegiScan.
 
-This page is generated from what each provider declares in code, so it can't drift from the providers themselves. Maintainers are the people CODEOWNERS asks to review changes to the provider.
+This page is generated from what each provider declares in code, so it can't drift from the providers themselves. Maintainers are the people CODEOWNERS asks to review changes to the provider, and who a pull request that changes it mentions.
 
 ## What the columns mean
 
@@ -31,7 +31,7 @@ When a state has more than one provider, each column lists them in the same orde
 | Colorado (CO) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | Connecticut (CT) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | Delaware (DE) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
-| District of Columbia (DC) | DC Council<br>LegiScan | experimental<br>stable | [@wtadler](https://github.com/wtadler)<br>[@wtadler](https://github.com/wtadler) | Bills, member votes, hearings without bills, bill text, extras, deadlines<br>Bills, member votes, bill text |
+| District of Columbia (DC) | DC Council<br>LegiScan | experimental<br>stable | [@anotherpanacea-eng](https://github.com/anotherpanacea-eng), [@wtadler](https://github.com/wtadler)<br>[@wtadler](https://github.com/wtadler) | Bills, member votes, hearings without bills, bill text, extras, deadlines<br>Bills, member votes, bill text |
 | Florida (FL) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | Georgia (GA) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | Hawaii (HI) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
@@ -43,7 +43,7 @@ When a state has more than one provider, each column lists them in the same orde
 | Kentucky (KY) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | Louisiana (LA) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | Maine (ME) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
-| Maryland (MD) | Maryland General Assembly<br>LegiScan | experimental<br>stable | [@wtadler](https://github.com/wtadler)<br>[@wtadler](https://github.com/wtadler) | Bills, bill text, extras<br>Bills, member votes, bill text |
+| Maryland (MD) | Maryland General Assembly<br>LegiScan | experimental<br>stable | [@anotherpanacea-eng](https://github.com/anotherpanacea-eng), [@wtadler](https://github.com/wtadler)<br>[@wtadler](https://github.com/wtadler) | Bills, bill text, extras<br>Bills, member votes, bill text |
 | Massachusetts (MA) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | Michigan (MI) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | Minnesota (MN) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
@@ -70,7 +70,7 @@ When a state has more than one provider, each column lists them in the same orde
 | United States (Congress) (US) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | Utah (UT) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | Vermont (VT) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
-| Virginia (VA) | Virginia General Assembly<br>LegiScan | experimental<br>stable | [@wtadler](https://github.com/wtadler)<br>[@wtadler](https://github.com/wtadler) | Bills, member votes, extras<br>Bills, member votes, bill text |
+| Virginia (VA) | Virginia General Assembly<br>LegiScan | experimental<br>stable | [@anotherpanacea-eng](https://github.com/anotherpanacea-eng), [@wtadler](https://github.com/wtadler)<br>[@wtadler](https://github.com/wtadler) | Bills, member votes, extras<br>Bills, member votes, bill text |
 | Washington (WA) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | West Virginia (WV) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
 | Wisconsin (WI) | LegiScan | stable | [@wtadler](https://github.com/wtadler) | Bills, member votes, bill text |
