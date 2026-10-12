@@ -16,10 +16,14 @@ import { renderEmailChangeReportedEmail } from './emailChangeEmail'
 // reportNotMe, which ends every one of the member's sessions and emails the
 // instance's owners and admins, then records the event.
 //
-// It cancels the member's pending change, if there is one, so nobody can still
-// confirm it from the new inbox. It never reverses a change that has already
-// taken effect: the old mailbox may now belong to someone else, and an admin
-// can restore the address. It never signs anyone in either.
+// It cancels the member's pending change when the member started it from the
+// address the notice went to, so nobody can still confirm it from the new inbox.
+// It leaves alone a change an admin started, so a member whose old mailbox
+// someone else holds can still move by asking an admin, and a change the
+// mailbox was never told about (a newer one from another address). It never
+// reverses a change that has already taken effect: the old mailbox may now
+// belong to someone else, and an admin can restore the address. It never signs
+// anyone in either.
 // A token works once, and so does its sibling's, because spending one deletes
 // every token of the same change. The report would otherwise alert the admins
 // twice.
@@ -102,7 +106,8 @@ function whenText(dbTs: string): string {
 
 /**
  * Press "This wasn't me". Ends every session the member has, cancels their
- * pending change, records the event, and emails the instance's active owners and admins who changed what
+ * pending change if they started it from this notice's address, records the
+ * event, and emails the instance's active owners and admins who changed what
  * and when. Spends the token, so a second press does nothing. `alerted` says
  * whether at least one alert went out, so the page can be honest if none did.
  */
@@ -124,7 +129,13 @@ export async function reportNotMe(
   const live = sql`EXISTS (SELECT 1 FROM email_change_reports WHERE id = ${row.id} AND datetime(expires_at) > datetime('now'))`
   const [, cancelled, spent] = await db.batch([
     db.delete(sessions).where(and(eq(sessions.userId, row.userId), live)),
-    db.delete(emailChanges).where(and(eq(emailChanges.userId, row.userId), live))
+    db.delete(emailChanges).where(and(
+      eq(emailChanges.userId, row.userId),
+      // Only a change this mailbox was told about, and only one the member asked for.
+      eq(emailChanges.oldEmail, row.oldEmail),
+      eq(emailChanges.requestedBy, row.userId),
+      live,
+    ))
       .returning({ userId: emailChanges.userId, oldEmail: emailChanges.oldEmail, newEmail: emailChanges.newEmail }),
     db.delete(emailChangeReports)
       .where(and(eq(emailChangeReports.changeId, row.changeId), eq(emailChangeReports.userId, row.userId)))
@@ -141,7 +152,7 @@ export async function reportNotMe(
     })
   }
 
-  return { ok: true, alerted: await alertAdmins(env, db, row, cancelled.length > 0) }
+  return { ok: true, alerted: await alertAdmins(env, db, row, cancelled[0]?.newEmail ?? null) }
 }
 
 /**
@@ -149,11 +160,12 @@ export async function reportNotMe(
  * member who reported: their own address may be the one in doubt, and they
  * know. Runs after the sessions are gone, so a failure is logged, never raised.
  */
-async function alertAdmins(env: Env, db: AppDb, row: ReportRow, cancelledPending: boolean): Promise<boolean> {
+async function alertAdmins(env: Env, db: AppDb, row: ReportRow, cancelledTo: string | null): Promise<boolean> {
   try {
     const member = await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, row.userId)).get()
     if (!member) return false
-    const requester = row.requestedBy === row.userId
+    const selfRequested = row.requestedBy === row.userId
+    const requester = selfRequested
       ? null
       : await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, row.requestedBy)).get()
     const recipients = await db
@@ -166,9 +178,11 @@ async function alertAdmins(env: Env, db: AppDb, row: ReportRow, cancelledPending
       return false
     }
 
-    const requestedBy = row.requestedBy === row.userId
+    const requestedBy = selfRequested
       ? 'the member'
       : requester ? `${requester.name || requester.email} (${requester.email})` : 'a member who has since been removed'
+    const current = normalizeMemberAddress(member.email)
+    const stillPending = await db.select({ newEmail: emailChanges.newEmail }).from(emailChanges).where(eq(emailChanges.userId, row.userId)).get()
     const { subject, html, text } = renderEmailChangeReportedEmail({
       appUrl: env.APP_URL,
       instanceName: (await resolveAssocName(env, db)) ?? '',
@@ -178,8 +192,10 @@ async function alertAdmins(env: Env, db: AppDb, row: ReportRow, cancelledPending
       newEmail: row.newEmail,
       requestedBy,
       requestedAt: whenText(row.requestedAt),
-      tookEffect: normalizeMemberAddress(member.email) === normalizeMemberAddress(row.newEmail),
-      cancelledPending,
+      current: current === normalizeMemberAddress(row.oldEmail) ? 'old' : current === normalizeMemberAddress(row.newEmail) ? 'new' : 'other',
+      currentEmail: member.email,
+      cancelledTo,
+      stillPendingTo: stillPending?.newEmail ?? null,
     })
     const messages: EmailMessage[] = recipients.map(r => ({ to: [r.email], subject, html, text }))
     const { sent } = await sendBatch(env, messages, 'email-change-reported', db)

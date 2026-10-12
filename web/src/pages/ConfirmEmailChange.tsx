@@ -137,7 +137,7 @@ type NotMeStatus = { status: 'valid' | 'expired' | 'invalid' }
  * confirmation page: the token is read once and taken out of the address bar,
  * loading the page only asks whether the link is still good, and the button
  * does the work. Pressing it signs the member out everywhere, cancels a
- * pending change, and emails the instance's owners and admins. It never undoes
+ * pending change the member started, and emails the instance's owners and admins. It never undoes
  * a change that has taken effect.
  */
 export function EmailChangeNotMe() {
@@ -186,7 +186,7 @@ export function EmailChangeNotMe() {
             : `We couldn't email your ${PRODUCT_NAME} admins. Please contact one of them directly.`}
         </p>
         <p style={styles.body}>
-          Any change that hadn&apos;t been confirmed was cancelled. A change that already took effect isn&apos;t undone, but an admin can restore your address.
+          A change you asked for that hadn&apos;t been confirmed was cancelled. A change that already took effect isn&apos;t undone, but an admin can restore your address.
         </p>
         <a href="/login" className="blue-link" style={styles.link}>Sign in</a>
       </Card>
@@ -195,7 +195,7 @@ export function EmailChangeNotMe() {
 
   if (error) {
     return (
-      <Card title="Nothing Was Done">
+      <Card title="Nothing Changed">
         <p style={styles.error}>{error}</p>
         <p style={styles.body}>If your sign-in email was changed and you didn&apos;t ask for it, contact one of your {PRODUCT_NAME} admins.</p>
       </Card>
@@ -217,7 +217,7 @@ export function EmailChangeNotMe() {
         Someone asked to change the sign-in email for your {PRODUCT_NAME} account. If that wasn&apos;t you, press the
         button. It signs you out everywhere and emails your admins so they can look into it.
       </p>
-      <p style={styles.body}>It cancels a change that hasn&apos;t been confirmed yet, but it doesn&apos;t undo one that has. If you did ask for it, you can close this page.</p>
+      <p style={styles.body}>If a change you asked for hasn&apos;t been confirmed yet, it cancels that change, but it doesn&apos;t undo one that has. If you did ask for it, you can close this page.</p>
       <form onSubmit={handlePress}>
         <button type="submit" disabled={submitting} style={{ ...styles.button, opacity: submitting ? 0.7 : 1 }}>
           {submitting ? 'Working…' : "This wasn't me"}

@@ -207,7 +207,7 @@ describe('pressing the button', () => {
       expect(body).toContain('jane@newjob.org')
       expect(mail.text).toContain('Requested by: the member')
       expect(mail.text).toMatch(/Requested: \w+ \d{1,2}, \d{4} at \d{1,2}:\d{2} [ap]\.m\. UTC/)
-      expect(mail.text).toContain('The pending change was cancelled')
+      expect(mail.text).toContain('The pending change to jane@newjob.org was cancelled')
     }
     // Nobody else hears of it: not the standard member, and no mail to the member.
     expect(sent.filter(m => m.to.includes('bob@org.org') || m.to.includes('jane@oldjob.org') || m.to.includes('jane@newjob.org'))).toHaveLength(0)
@@ -236,9 +236,66 @@ describe('pressing the button', () => {
     expect(left.map(r => r.userId)).toEqual([jane])
   })
 
-  it('tells the admins the pending change was cancelled', async () => {
+  it('tells the admins which pending change was cancelled', async () => {
     await press(token)
-    expect(alerts()[0].text).toContain('The pending change was cancelled')
+    expect(alerts()[0].text).toContain('The pending change to jane@newjob.org was cancelled')
+    expect(alerts()[0].text).toContain('Their sign-in email is still the old address')
+  })
+
+  it("does not cancel a pending change the member did not start: an admin's survives, and the admins are told", async () => {
+    // Moving away from an old mailbox someone else holds must stay possible through an admin.
+    await env.DB.prepare('DELETE FROM email_changes').run()
+    await getDb(env.DB).insert(emailChanges).values({
+      id: crypto.randomUUID(), userId: jane, oldEmail: 'jane@oldjob.org', newEmail: 'jane@adminpick.org', requestedBy: admin,
+      tokenHash: 'adminhash', expiresAt: '2999-01-01 00:00:00',
+    })
+    const r = await press(token)
+    expect(r.status).toBe(200)
+    expect(await sessionCount(jane)).toBe(0)
+    const left = await getDb(env.DB).select().from(emailChanges).all()
+    expect(left.map(c => c.newEmail)).toEqual(['jane@adminpick.org'])
+    expect((await eventsFor(jane)).filter(e => e.event === 'email_change_cancelled').filter(e => e.email === 'jane@adminpick.org')).toHaveLength(0)
+    expect(alerts()[0].text).toContain('A pending change to jane@adminpick.org was not cancelled and is still waiting for confirmation')
+    expect(alerts()[0].text).not.toContain('was cancelled, so')
+  })
+
+  it("does not let a committed change's token cancel a newer change its mailbox was never told about", async () => {
+    await confirm(confirmToken)
+    const atCommit = notMeTokenSentTo('jane@oldjob.org')
+    // The member (now at jane@newjob.org) asks to move on. The notices for this go to jane@newjob.org.
+    expect((await request(janeCookie, 'jane@newer.org')).status).toBe(200)
+    sent = []
+    expect((await press(atCommit)).status).toBe(200)
+    const left = await getDb(env.DB).select().from(emailChanges).all()
+    expect(left.map(c => [c.oldEmail, c.newEmail])).toEqual([['jane@newjob.org', 'jane@newer.org']])
+    expect((await member(jane)).email).toBe('jane@newjob.org')
+    expect(alerts()[0].text).toContain('A pending change to jane@newer.org was not cancelled and is still waiting for confirmation')
+  })
+
+  it('says so when the address has since moved on to a third address', async () => {
+    await confirm(confirmToken)
+    const atCommit = notMeTokenSentTo('jane@oldjob.org')
+    await request(janeCookie, 'jane@newer.org')
+    await confirm(sent.filter(m => m.to.includes('jane@newer.org')).pop()!.text.match(CONFIRM_LINK)![1])
+    expect((await member(jane)).email).toBe('jane@newer.org')
+    sent = []
+    await press(atCommit)
+    const text = alerts()[0].text
+    expect(text).toContain('The change had already taken effect, and their sign-in email has since changed again, to jane@newer.org')
+    expect(text).not.toContain('had not taken effect')
+    expect(text).not.toContain('still the old address')
+  })
+
+  it("names the pending change that was cancelled when it was not the one the notice described", async () => {
+    // The member's request to jane@newjob.org was replaced from the same mailbox
+    // by one to jane@third.org. Pressing the first notice's link cancels the second.
+    await request(janeCookie, 'jane@third.org')
+    sent = []
+    await press(token)
+    expect(await getDb(env.DB).select().from(emailChanges).all()).toHaveLength(0)
+    const text = alerts()[0].text
+    expect(text).toContain('The pending change to jane@third.org was cancelled')
+    expect(text).not.toContain('pending change to jane@newjob.org')
   })
 
   it('does not reverse a change that has taken effect, and says so to the admins', async () => {
@@ -250,7 +307,7 @@ describe('pressing the button', () => {
     expect(r.status).toBe(200)
     expect((await member(jane)).email).toBe('jane@newjob.org')
     expect(alerts()[0].text).toContain('The change had already taken effect')
-    expect(alerts()[0].text).not.toContain('pending change was cancelled')
+    expect(alerts()[0].text).not.toContain('was cancelled')
     expect(await getDb(env.DB).select().from(emailChanges).all()).toHaveLength(0)
     expect((await eventsFor(jane)).filter(e => e.event === 'email_change_cancelled')).toHaveLength(0)
     expect(alerts()[0].text).toContain('Old address: jane@oldjob.org')

@@ -149,7 +149,7 @@ export function renderSampleEmail(type: SampleEmailType, appUrl: string): { subj
       const { subject, html } = renderEmailChangeReportedEmail({
         appUrl, instanceName: SAMPLE_ASSOC_NAME, memberName: 'Dana Reed', memberEmail: 'dana.reed@county.gov',
         oldEmail: 'dana.reed@county.gov', newEmail: SAMPLE_NEW_EMAIL, requestedBy: 'the member',
-        requestedAt: 'June 15, 2026 at 2:41 p.m. UTC', tookEffect: true, cancelledPending: false,
+        requestedAt: 'June 15, 2026 at 2:41 p.m. UTC', current: 'new', currentEmail: SAMPLE_NEW_EMAIL, cancelledTo: null, stillPendingTo: null,
       })
       return { subject: `[Sample] ${subject}`, html }
     }
