@@ -1,0 +1,86 @@
+import { useEffect, useRef, useState } from 'react'
+import { apiFetch } from '../../lib/api'
+import { HELPER_TEXT } from '../../lib/textStyles'
+import { color } from '../../styles/tokens'
+
+type Summary = { total: number; matched: number; newlyMatched: number; unmatched: number }
+
+// How long typing must pause before the count is refreshed. Counting reads
+// every bill the instance tracks, so it should not run on each keystroke.
+const DEBOUNCE_MS = 400
+
+/** The keywords a textarea holds: one per line, trimmed, blank lines dropped. */
+function keywordList(text: string): string[] {
+  return text.split('\n').map(line => line.trim()).filter(Boolean)
+}
+
+/** Matching ignores case, so two boxes that differ only by case match the same bills. */
+function sameKeywords(a: string, b: string): boolean {
+  return keywordList(a).join('\n').toLowerCase() === keywordList(b).join('\n').toLowerCase()
+}
+
+function isSummary(value: unknown): value is Summary {
+  const s = value as Summary | null
+  return !!s && [s.total, s.matched, s.newlyMatched, s.unmatched].every(n => typeof n === 'number')
+}
+
+const count = (n: number) => n.toLocaleString('en-US')
+const bills = (n: number) => `${count(n)} ${n === 1 ? 'bill' : 'bills'}`
+
+/**
+ * A live count of how many of the instance's bills the keywords in the box
+ * match, analyzed or not, and, once the box differs from what is saved, how
+ * saving would change that. Reads only: nothing is saved and no sync starts.
+ *
+ * `keywords` is the textarea's text and `savedKeywords` the text as last
+ * loaded or saved. The count lags typing by the debounce and keeps showing the
+ * previous answer while the next loads. A failed count renders nothing, since
+ * the summary is a convenience and the save confirmation still reports what
+ * saving will do.
+ */
+export function KeywordMatchSummary({ keywords, savedKeywords }: { keywords: string; savedKeywords: string }) {
+  const [summary, setSummary] = useState<Summary | null>(null)
+  const hasCounted = useRef(false)
+  // Keyed on the cleaned list, so typing a trailing space or a blank line does not recount.
+  const list = keywordList(keywords)
+  const listKey = JSON.stringify(list)
+
+  useEffect(() => {
+    let cancelled = false
+    // The first count has no typing to wait out.
+    const timer = setTimeout(() => {
+      hasCounted.current = true
+      apiFetch<Summary>('/admin/keyword-match-summary', {
+        method: 'POST',
+        body: JSON.stringify({ keywords: JSON.parse(listKey) }),
+      })
+        .then(result => { if (!cancelled && isSummary(result)) setSummary(result) })
+        .catch(() => {})
+    }, hasCounted.current ? DEBOUNCE_MS : 0)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [listKey])
+
+  if (!summary) return null
+
+  const { total, matched, newlyMatched, unmatched } = summary
+  const percent = total === 0 ? 0 : Math.round((matched / total) * 100)
+  const changes = [
+    newlyMatched > 0 ? <>newly match <strong>{bills(newlyMatched)}</strong></> : null,
+    unmatched > 0 ? <>unmatch <strong>{bills(unmatched)}</strong></> : null,
+  ].filter(Boolean)
+
+  return (
+    <div role="status" style={{ ...HELPER_TEXT, color: color.textSlate, marginTop: 8 }}>
+      <p style={{ margin: 0 }}>
+        This keyword set matches <strong>{count(matched)} of {bills(total)} ({percent}%)</strong>.
+      </p>
+      {!sameKeywords(keywords, savedKeywords) && (
+        <p style={{ margin: '4px 0 0' }}>
+          {changes.length === 0
+            ? "Saving these keywords wouldn't change which bills match."
+            : <>Saving these keywords would {changes[0]}{changes.length > 1 && <> and {changes[1]}</>}.</>}
+        </p>
+      )}
+    </div>
+  )
+}

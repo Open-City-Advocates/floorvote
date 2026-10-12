@@ -1309,3 +1309,34 @@ describe('Config — custom fields drag-to-reorder', () => {
     })
   })
 })
+
+describe('Config — live keyword match summary', () => {
+  function mockSummary(summary: { total: number; matched: number; newlyMatched: number; unmatched: number }) {
+    mockFetch.mockImplementation(async (path: string) => {
+      if (path === '/admin/config') return { ...BASE_CONFIG, keywords: ['election'] }
+      if (path === '/admin/custom-fields') return []
+      if (path === '/bills/drafts') return { drafts: [] }
+      if (path === '/admin/keyword-match-summary') return summary
+      throw new Error('unexpected path: ' + path)
+    })
+  }
+
+  it('shows the count under the keywords box without a second line until the box is edited', async () => {
+    mockSummary({ total: 60, matched: 22, newlyMatched: 3, unmatched: 0 })
+    render(<Config />)
+
+    expect(await screen.findByText('22 of 60 bills (37%)')).toBeInTheDocument()
+    expect(screen.queryByText(/Saving these keywords/)).toBeNull()
+
+    const textarea = (await screen.findByLabelText('Keywords')) as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: 'election\nhealth care' } })
+    expect(await screen.findByText(/Saving these keywords/)).toHaveTextContent('Saving these keywords would newly match 3 bills.')
+
+    // The count follows the typing after the debounce, not on each keystroke.
+    await waitFor(() => {
+      const summaryCalls = mockFetch.mock.calls.filter(([p]) => p === '/admin/keyword-match-summary')
+      expect(JSON.parse((summaryCalls[summaryCalls.length - 1][1] as RequestInit).body as string))
+        .toEqual({ keywords: ['election', 'health care'] })
+    })
+  })
+})
