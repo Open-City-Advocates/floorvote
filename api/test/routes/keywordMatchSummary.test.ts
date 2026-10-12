@@ -5,6 +5,7 @@ import { resetDb, applyMigrations, seedUser, seedSession, seedBill } from '../he
 import { getDb } from '../../src/db/client'
 import { associationConfig } from '../../src/db/schema'
 import { centralFetch } from '../../src/lib/centralFetch'
+import { clearKeywordMatchCorpus, CORPUS_TTL_MS } from '../../src/lib/keywordMatchSummary'
 
 vi.mock('../../src/lib/centralFetch', () => ({
   centralFetch: vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }),
@@ -27,6 +28,7 @@ describe('POST /admin/keyword-match-summary', () => {
     await resetDb()
     await applyMigrations()
     vi.clearAllMocks()
+    clearKeywordMatchCorpus()
     await getDb(env.DB).delete(associationConfig)
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
     adminCookie = `session=${await seedSession(adminId)}`
@@ -157,6 +159,89 @@ describe('POST /admin/keyword-match-summary', () => {
        FROM n`,
     ).run()
     expect(await summarize(['election'])).toMatchObject({ total: 2300, matched: 230 })
+  })
+
+  describe('the cached bill corpus', () => {
+    // An env whose DB counts the statements that read bill text, so a test can
+    // tell a cache hit from a re-read.
+    function countingEnv() {
+      const state = { billReads: 0 }
+      const DB = new Proxy(env.DB, {
+        get(target, prop) {
+          if (prop === 'prepare') {
+            return (query: string) => {
+              if (query.includes('"abstract"')) state.billReads++
+              return target.prepare(query)
+            }
+          }
+          const value = Reflect.get(target, prop, target)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+      return { state, env: { ...env, DB } as typeof env }
+    }
+
+    async function countWith(e: typeof env, keywords: string[]) {
+      const res = await app.request('/api/admin/keyword-match-summary', {
+        method: 'POST', headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keywords }),
+      }, e)
+      expect(res.status).toBe(200)
+      return await res.json() as Summary
+    }
+
+    beforeEach(async () => {
+      await seedBill({ externalId: 'legiscan:1', title: 'Election Reform', matchType: null })
+      await seedBill({ externalId: 'legiscan:2', title: 'Road Maintenance', matchType: null })
+    })
+
+    it('reads the bills once for a run of requests, even as the keywords change', async () => {
+      const { state, env: counted } = countingEnv()
+      expect(await countWith(counted, ['election'])).toMatchObject({ total: 2, matched: 1 })
+      expect(await countWith(counted, ['election', 'road'])).toMatchObject({ total: 2, matched: 2 })
+      expect(await countWith(counted, ['road'])).toMatchObject({ total: 2, matched: 1 })
+      expect(state.billReads).toBe(1)
+    })
+
+    it('reads again when a bill has been added since', async () => {
+      const { state, env: counted } = countingEnv()
+      await countWith(counted, ['election'])
+      await seedBill({ externalId: 'legiscan:3', title: 'Election Day Holiday', matchType: null })
+      expect(await countWith(counted, ['election'])).toMatchObject({ total: 3, matched: 2 })
+      expect(state.billReads).toBe(2)
+    })
+
+    it('reads again when a bill has been removed since', async () => {
+      const { state, env: counted } = countingEnv()
+      await countWith(counted, ['election'])
+      await env.DB.prepare('DELETE FROM bills WHERE external_id = ?').bind('legiscan:1').run()
+      expect(await countWith(counted, ['election'])).toMatchObject({ total: 1, matched: 0 })
+      expect(state.billReads).toBe(2)
+    })
+
+    it('reads again once the TTL has passed', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        const { state, env: counted } = countingEnv()
+        await countWith(counted, ['election'])
+        vi.setSystemTime(Date.now() + CORPUS_TTL_MS - 1000)
+        await countWith(counted, ['election'])
+        expect(state.billReads).toBe(1)
+        vi.setSystemTime(Date.now() + 2000)
+        await countWith(counted, ['election'])
+        expect(state.billReads).toBe(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not count member drafts when judging whether the cache is fresh', async () => {
+      const { state, env: counted } = countingEnv()
+      await countWith(counted, ['election'])
+      await seedBill({ title: 'Election Draft', isDraft: true, matchType: null })
+      expect(await countWith(counted, ['election'])).toMatchObject({ total: 2, matched: 1 })
+      expect(state.billReads).toBe(1)
+    })
   })
 
   it('makes no central calls', async () => {

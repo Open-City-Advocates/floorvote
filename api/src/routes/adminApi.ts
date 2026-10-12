@@ -1058,7 +1058,7 @@ adminApiRouter.post('/keyword-match-summary', async (c) => {
   const kwRow = await db.select().from(associationConfig).where(eq(associationConfig.key, 'keywords')).get()
   const saved: string[] = kwRow ? JSON.parse(kwRow.value) : []
 
-  return c.json(await summarizeKeywordMatches(db, keywords, saved))
+  return c.json(await summarizeKeywordMatches(db, c.env.TENANT_ID, keywords, saved))
 })
 
 // POST /admin/reprocess-bill/:externalId — reprocess a single bill, forcing AI re-run
