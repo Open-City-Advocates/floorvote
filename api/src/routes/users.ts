@@ -58,8 +58,8 @@ usersRouter.patch('/me', async (c) => {
   const currentUser = c.get('user')
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
   const raw = body && typeof body === 'object' ? body : {}
-  const updates: { subtitle?: string | null; name?: string; emailDigestEnabled?: number; emailWeekAheadEnabled?: number } = {}
-  const echo: { subtitle?: string | null; name?: string; emailDigestEnabled?: boolean; emailWeekAheadEnabled?: boolean } = {}
+  const updates: { subtitle?: string | null; name?: string; emailDigestEnabled?: number; emailWeekAheadEnabled?: number; emailRepliesEnabled?: number } = {}
+  const echo: { subtitle?: string | null; name?: string; emailDigestEnabled?: boolean; emailWeekAheadEnabled?: boolean; emailRepliesEnabled?: boolean } = {}
 
   if ('name' in raw) {
     if (raw.name !== null && typeof raw.name !== 'string') {
@@ -88,6 +88,10 @@ usersRouter.patch('/me', async (c) => {
   if (typeof raw.emailWeekAheadEnabled === 'boolean') {
     updates.emailWeekAheadEnabled = raw.emailWeekAheadEnabled ? 1 : 0
     echo.emailWeekAheadEnabled = raw.emailWeekAheadEnabled
+  }
+  if (typeof raw.emailRepliesEnabled === 'boolean') {
+    updates.emailRepliesEnabled = raw.emailRepliesEnabled ? 1 : 0
+    echo.emailRepliesEnabled = raw.emailRepliesEnabled
   }
   if (Object.keys(updates).length > 0) {
     await db.update(users).set(updates).where(eq(users.id, currentUser.id))

@@ -7,6 +7,7 @@ import {
   billCustomFieldValues,
 } from '../../db/schema'
 import { extractAndNotifyMentions } from '../../lib/mentions'
+import { notifyParticipantsOfReply } from '../../lib/replies'
 import { stripHtml } from '../../lib/stripHtml'
 import { COMMENT_PREVIEW_MAX, truncateWithEllipsis } from '../../../../shared/feedUtils'
 import { sanitizeCommentHtml } from '../../lib/sanitizeHtml'
@@ -236,6 +237,9 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
     })
 
     const mentionedUserIds = await extractAndNotifyMentions(commentId, content, currentUser.id, currentUser.role, id, c.env, c.executionCtx.waitUntil.bind(c.executionCtx))
+    // Everyone else who has commented here hears about it too, except the people
+    // this comment mentions (they got the mention).
+    await notifyParticipantsOfReply({ id: commentId, html: content, createdAt: now }, currentUser.id, id, mentionedUserIds, c.env, c.executionCtx.waitUntil.bind(c.executionCtx))
 
     await db.insert(feedEvents).values({
       id: crypto.randomUUID(),

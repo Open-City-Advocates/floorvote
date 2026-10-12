@@ -1,16 +1,16 @@
 // The notifications inbox: one stored row per event a member is notified about.
 //
 // Each kind has a writer and a renderer. The writer stores rows when the event
-// happens (mentions: lib/mentions.ts, through writeNotifications below). The
-// renderer turns a stored row into the API shape GET /notifications returns,
-// discriminated on `kind`. Adding a kind means adding it to the schema's `kind`
+// happens (mentions: lib/mentions.ts, replies: lib/replies.ts, both through
+// writeNotifications below). The renderer turns a stored row into the API shape
+// GET /notifications returns, discriminated on `kind`. Adding a kind means adding it to the schema's `kind`
 // enum, a writer, and a renderer here, and a renderer in the web panel.
 //
 // Notifications for deleted comments are hidden here, at read time, rather than
 // deleted when the comment is.
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import type { getDb } from '../db/client'
-import { notifications, comments, users, bills, roles, type MentionNotificationData, type NotificationKind } from '../db/schema'
+import { notifications, comments, users, bills, roles, type MentionNotificationData, type ReplyNotificationData, type NotificationKind } from '../db/schema'
 import { filedSlug } from './sessionSlug'
 import { stripHtml } from './stripHtml'
 import { chunk, D1_MAX_PARAMS } from './chunk'
@@ -27,7 +27,7 @@ export type NewNotification = {
   commentId: string
   actorId: string
   /** Kind-specific data, stored as JSON. */
-  data: MentionNotificationData
+  data: MentionNotificationData | ReplyNotificationData
 }
 
 /**
@@ -103,7 +103,17 @@ export type MentionNotificationView = NotificationBase & {
   sourceLabel: string | null
 }
 
-export type NotificationView = MentionNotificationView
+/** Someone else commented on a bill the recipient has commented on. */
+export type ReplyNotificationView = NotificationBase & {
+  kind: 'reply'
+  authorId: string
+  authorName: string | null
+  authorSubtitle: string | null
+  commentPreview: string
+  commentHtml: string
+}
+
+export type NotificationView = MentionNotificationView | ReplyNotificationView
 
 const LIST_LIMIT = 50
 
@@ -145,19 +155,23 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
     .all()
 
   // Kind-specific data, parsed once. A row whose data can't be read is dropped.
-  const parsed = rows.flatMap(r => {
+  type Row = (typeof rows)[number]
+  type Parsed = (Row & { kind: 'mention'; mention: MentionNotificationData }) | (Row & { kind: 'reply' })
+  const parsed = rows.flatMap((r): Parsed[] => {
     switch (r.kind) {
       case 'mention': {
         const data = mentionData(r.data)
         return data ? [{ ...r, kind: r.kind, mention: data }] : []
       }
+      case 'reply':
+        return [{ ...r, kind: r.kind }]
       default:
         return []
     }
   })
 
   // Role names for role mentions, looked up once for the whole page.
-  const roleIds = [...new Set(parsed.filter(r => r.mention.sourceType === 'role').map(r => r.mention.sourceId))]
+  const roleIds = [...new Set(parsed.flatMap(r => r.kind === 'mention' && r.mention.sourceType === 'role' ? [r.mention.sourceId] : []))]
   const roleNames = new Map<string, string>()
   if (roleIds.length > 0) {
     const roleRows = await db.select({ id: roles.id, name: roles.name }).from(roles).where(inArray(roles.id, roleIds)).all()
@@ -189,6 +203,16 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
           commentHtml: r.commentContent,
           sourceType: r.mention.sourceType,
           sourceLabel: r.mention.sourceType === 'role' ? (roleNames.get(r.mention.sourceId) ?? null) : null,
+        }
+      case 'reply':
+        return {
+          ...base,
+          kind: 'reply',
+          authorId: r.actorId,
+          authorName: r.actorName,
+          authorSubtitle: r.actorSubtitle,
+          commentPreview: stripHtml(r.commentContent).slice(0, 150),
+          commentHtml: r.commentContent,
         }
     }
   })
