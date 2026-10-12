@@ -2,7 +2,8 @@ import type { AuthEventType } from './authEvents'
 
 // Limits on the admin routes that email a member: resend invite, resend
 // sign-in link, and change a pending invite's address. The limits live here
-// and nowhere else.
+// and nowhere else. claimSend is also how email-change requests are counted
+// (lib/emailChange.ts, with its own event and limit).
 //
 // Counted from auth_events, not a Workers Rate Limiting binding. That binding
 // can only count over 10 or 60 seconds, which cannot say "a few resends an

@@ -27,6 +27,7 @@ Every FloorVote deployment ships with:
 - **Tenant isolation.** Each team is a separate Worker with its own database. One team's members, votes, and positions are not reachable from another's, because there is no shared multi-tenant database to get authorization wrong in.
 - **Binding-authenticated internal calls.** Tenants and the central service talk over Cloudflare service bindings, and the tenant-facing entrypoint is deny-by-default: only an explicit allowlist of operations is forwarded, and operator-only routes aren't on it. No shared secret travels between them.
 - **Self-serve account deletion**, so members can remove their own data.
+- **Confirmed email changes.** A member's email is their sign-in identity, so a change takes effect only when someone confirms it from the new address, through a single-use link that expires in 24 hours. The old address is told when the change is requested and again when it takes effect, with the new address masked. Taking effect ends the member's other sessions and voids sign-in links already sent to the old address.
 
 ## What the project does
 
