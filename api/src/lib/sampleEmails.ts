@@ -11,7 +11,7 @@ import { renderWeekAheadEmail, type WeekAheadDay } from './weekAheadEmail'
 import { renderDigestEmail, type DigestEvent, type NewMatchDigestItem } from './digestEmail'
 import { renderMentionEmail } from './mentions'
 import { renderInviteBounceEmail, type BouncedAddress } from './inviteBounceEmail'
-import { renderEmailChangeConfirmEmail, renderEmailChangeNoticeEmail } from './emailChangeEmail'
+import { renderEmailChangeConfirmEmail, renderEmailChangeNoticeEmail, renderEmailChangeReportedEmail } from './emailChangeEmail'
 
 export const SAMPLE_ASSOC_NAME = 'Rhode Island Association of Local Election Officials'
 
@@ -73,7 +73,7 @@ export const SAMPLE_INVITE_BOUNCES: BouncedAddress[] = [
 export const SAMPLE_NEW_EMAIL = 'dana.reed@newcounty.gov'
 
 export type SampleEmailType = 'login' | 'invite' | 'week-ahead' | 'digest' | 'digest-new-only' | 'mention' | 'invite-bounced'
-  | 'email-change-confirm' | 'email-change-requested' | 'email-change-changed'
+  | 'email-change-confirm' | 'email-change-requested' | 'email-change-changed' | 'email-change-reported'
 
 export function isSampleEmailType(t: string): t is SampleEmailType {
   return (ALL_SAMPLE_EMAIL_TYPES as string[]).includes(t)
@@ -141,7 +141,15 @@ export function renderSampleEmail(type: SampleEmailType, appUrl: string): { subj
     case 'email-change-changed': {
       const { subject, html } = renderEmailChangeNoticeEmail({
         stage: type === 'email-change-requested' ? 'requested' : 'changed',
-        appUrl, instanceName: SAMPLE_ASSOC_NAME, newEmail: SAMPLE_NEW_EMAIL, notMeUrl: `${appUrl}/auth/not-me`,
+        appUrl, instanceName: SAMPLE_ASSOC_NAME, newEmail: SAMPLE_NEW_EMAIL, notMeUrl: `${appUrl}/auth/not-me?token=sample-link-not-functional`,
+      })
+      return { subject: `[Sample] ${subject}`, html }
+    }
+    case 'email-change-reported': {
+      const { subject, html } = renderEmailChangeReportedEmail({
+        appUrl, instanceName: SAMPLE_ASSOC_NAME, memberName: 'Dana Reed', memberEmail: 'dana.reed@county.gov',
+        oldEmail: 'dana.reed@county.gov', newEmail: SAMPLE_NEW_EMAIL, requestedBy: 'the member',
+        requestedAt: 'June 15, 2026 at 2:41 p.m. UTC', tookEffect: true,
       })
       return { subject: `[Sample] ${subject}`, html }
     }
@@ -157,4 +165,4 @@ export async function sendSampleEmail(env: Env, db: AppDb, to: string, type: Sam
 
 /** Every sample email type — drives the conformance test's iteration. */
 export const ALL_SAMPLE_EMAIL_TYPES: SampleEmailType[] = ['login', 'invite', 'week-ahead', 'digest', 'digest-new-only', 'mention', 'invite-bounced',
-  'email-change-confirm', 'email-change-requested', 'email-change-changed']
+  'email-change-confirm', 'email-change-requested', 'email-change-changed', 'email-change-reported']
