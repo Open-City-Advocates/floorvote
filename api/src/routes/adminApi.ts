@@ -28,7 +28,7 @@ import { checkMemberAddresses, normalizeMemberAddress } from '../lib/memberAddre
 import { isPendingInvite, pendingInviteWhere } from '../lib/pendingInvite'
 import { isPreviouslyBounced, previouslyBouncedAddresses } from '../lib/bouncedAddresses'
 import { adminSendChecks, claimSend, releaseSend } from '../lib/adminSendLimits'
-import { mayChangeEmail, requestEmailChange } from '../lib/emailChange'
+import { mayChangeEmail, refuseSuperadmin, requestEmailChange } from '../lib/emailChange'
 import { centralEmail, type DeliveryStatus, type SuppressionStatus } from '../lib/centralEmail'
 
 export const adminApiRouter = new Hono<AppEnv>()
@@ -330,6 +330,12 @@ adminApiRouter.post('/members/:id/change-email', async (c) => {
     return c.json({ error: "Only owners can change an owner's address" }, 403)
   }
   if (target.deactivatedAt) return c.json({ error: 'Cannot change the address of a deactivated member' }, 400)
+
+  // Nobody changes a superadmin account here, a pending invite included: a
+  // superadmin who only ever signs in through the dashboard never uses a
+  // sign-in link, so their row can still look like a pending invite.
+  const superadmin = await refuseSuperadmin(c.env, target.email, true)
+  if (superadmin) return c.json({ error: superadmin.error }, superadmin.status)
 
   const body = await c.req.json<{ email?: unknown }>().catch(() => ({} as { email?: unknown }))
 
