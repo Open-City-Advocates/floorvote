@@ -26,6 +26,7 @@ import type { ReactNode } from 'react'
 import { FILTER_DIMENSIONS, filterDimensionLabel, type FilterDimensionContext } from '../../lib/filterDimensions'
 import { filterableCustomFields, customFieldFilterKind } from '../../lib/customFieldFilters'
 import { FilterSheet } from '../../components/FilterSheet'
+import { ConfigContext, type AppConfig } from '../../context/ConfigContext'
 import type { SubjectGroup } from './FilterPanel'
 import type { CustomFieldDef } from './types'
 
@@ -165,7 +166,7 @@ function renderMobile(
     <FilterSheet
       isOpen
       onClose={() => {}}
-      statuses={[]} priorities={[]} positions={[]} tags={[]} subjects={[]} sessions={[]} states={[]}
+      statuses={[]} stages={[]} priorities={[]} positions={[]} tags={[]} subjects={[]} sessions={[]} states={[]}
       minRelevance={0} myBills={false}
       isAdmin={ctx.isAdmin}
       newMatches={false}
@@ -179,6 +180,7 @@ function renderMobile(
       uniqueStates={ctx.uniqueStates}
       isMultiState={ctx.isMultiState}
       statusOptions={[{ value: 'active', label: 'Active' }]}
+      stageOptions={[{ value: 'enacted', label: 'Enacted' }]}
       priorityOptions={[{ value: 'high', label: 'High' }]}
       positionOptions={[{ value: 'support', label: 'Support' }]}
       tagOptions={['Education']}
@@ -189,7 +191,7 @@ function renderMobile(
       customFieldDefs={ctx.customFieldDefs ?? []}
       cfFilters={{}}
       onCfFilterChange={() => {}}
-      onStatusChange={() => {}} onPriorityChange={() => {}} onPositionChange={() => {}}
+      onStatusChange={() => {}} onStageChange={() => {}} onPriorityChange={() => {}} onPositionChange={() => {}}
       onTagChange={() => {}} onSubjectChange={() => {}} onSessionChange={() => {}} onStateChange={() => {}}
       onMinRelevanceChange={() => {}} onMyBillsChange={() => {}} onNewMatchesChange={() => {}}
       onUnvotedOnlyChange={() => {}}
@@ -529,7 +531,7 @@ describe('dimension scope classification', () => {
 
   it('treats every value dimension as a bill fact', () => {
     const bill = FILTER_DIMENSIONS.filter(d => d.scope === 'bill').map(d => d.key).sort()
-    expect(bill).toEqual(['position', 'priority', 'session', 'state', 'status', 'subjects', 'tags'])
+    expect(bill).toEqual(['position', 'priority', 'session', 'stage', 'state', 'status', 'subjects', 'tags'])
   })
 
   it('registers unvoted so the bills page can set it, not only clear it', () => {
@@ -551,5 +553,72 @@ describe('dimension scope classification', () => {
     expect(myBills.scope).toBe('workflow')
     expect(state.kind).toBe('options')
     expect(state.scope).toBe('bill')
+  })
+})
+
+// The Stage filter is hidden when every covered state is on LegiScan, whose
+// status field almost never carries the in-committee codes. Config tells which
+// providers own the covered states (`attribution.providers`).
+describe('Stage dimension — hidden when every covered state is on LegiScan', () => {
+  const credit = (id: string) => ({ id, name: id, url: 'https://example.com', note: 'n' })
+  const withConfig = (providers: string[] | undefined, ui: ReactNode) => (
+    <ConfigContext value={{
+      config: { states: ['RI'], attribution: providers && { providers: providers.map(credit) } } as AppConfig,
+      multiState: false, loading: false,
+    }}>
+      {ui}
+    </ConfigContext>
+  )
+  const stageName = new RegExp(`^${filterDimensionLabel('stage')}$`)
+  const renderConfiguredDesktop = async (providers: string[] | undefined, initialUrl?: string) => {
+    render(withConfig(providers, <BillList />), { wrapper: (props) => <Wrapper {...props} initialUrl={initialUrl} /> })
+    await screen.findByText('Default bill')
+  }
+  const renderConfiguredMobile = (providers: string[] | undefined, stages: string[] = []) => render(withConfig(providers,
+    <FilterSheet
+      isOpen onClose={() => {}}
+      statuses={[]} stages={stages} priorities={[]} positions={[]} tags={[]} subjects={[]} sessions={[]} states={[]}
+      minRelevance={0} myBills={false} isAdmin={false} newMatches={false} newMatchesCount={0} unvotedOnly={false}
+      drafts={false} draftCount={0} hasDrafts={false} matchAny={false} onMatchAnyChange={() => {}}
+      uniqueStates={['RI']} isMultiState={false}
+      statusOptions={[{ value: 'active', label: 'Active' }]}
+      stageOptions={[{ value: 'enacted', label: 'Enacted' }]}
+      priorityOptions={[]} positionOptions={[]} tagOptions={[]} subjectGroups={[]} sessionOptions={[]} totalSessionCount={0}
+      stateOptions={[{ value: 'RI', label: 'RI' }]} customFieldDefs={[]} cfFilters={{}} onCfFilterChange={() => {}}
+      onStatusChange={() => {}} onStageChange={() => {}} onPriorityChange={() => {}} onPositionChange={() => {}}
+      onTagChange={() => {}} onSubjectChange={() => {}} onSessionChange={() => {}} onStateChange={() => {}}
+      onMinRelevanceChange={() => {}} onMyBillsChange={() => {}} onNewMatchesChange={() => {}}
+      onUnvotedOnlyChange={() => {}} onDraftsChange={() => {}} onClearAll={() => {}}
+    />))
+
+  it('hides Stage on both surfaces when LegiScan owns every state', async () => {
+    await renderConfiguredDesktop(['legiscan'])
+    expect(screen.queryByRole('button', { name: stageName })).toBeNull()
+    expect(screen.getByRole('button', { name: filterDimensionLabel('status') })).toBeInTheDocument()
+    cleanup()
+    renderConfiguredMobile(['legiscan'])
+    expect(screen.queryByRole('button', { name: stageName })).toBeNull()
+    expect(screen.getByRole('button', { name: filterDimensionLabel('status') })).toBeInTheDocument()
+  })
+
+  it('hides Stage when central names no providers (LegiScan is the default)', () => {
+    renderConfiguredMobile(undefined)
+    expect(screen.queryByRole('button', { name: stageName })).toBeNull()
+  })
+
+  it('shows Stage on both surfaces when any covered state is on another provider', async () => {
+    await renderConfiguredDesktop(['legiscan', 'mga'])
+    expect(screen.getByRole('button', { name: stageName })).toBeInTheDocument()
+    cleanup()
+    renderConfiguredMobile(['legiscan', 'mga'])
+    expect(screen.getByRole('button', { name: stageName })).toBeInTheDocument()
+  })
+
+  it('keeps a stage filter from a saved view or URL applied and visible so it can be turned off', async () => {
+    await renderConfiguredDesktop(['legiscan'], '/bills?stage=enacted')
+    expect(screen.getByRole('button', { name: new RegExp(filterDimensionLabel('stage')) })).toBeInTheDocument()
+    cleanup()
+    renderConfiguredMobile(['legiscan'], ['enacted'])
+    expect(screen.getByRole('button', { name: new RegExp(`^${filterDimensionLabel('stage')}`) })).toBeInTheDocument()
   })
 })

@@ -19,7 +19,9 @@ vi.mock('../../src/providers/legiscan/client', async () => {
 const fetchMock = vi.fn()
 vi.stubGlobal('fetch', fetchMock)
 
-import { processIngestorQueue, validateTextPayload, isVersionAddressable } from '../../src/queue/processor'
+import { processIngestorQueue, validateTextPayload, ingestMeasure, isVersionAddressable } from '../../src/queue/processor'
+import { getProvider } from '../../src/providers'
+import { limsBillId, limsDocId, limsSessionId } from '../../src/providers/lims/ids'
 import * as legiscan from '../../src/providers/legiscan/client'
 import { setupLsDb } from '../helpers/setupLsDb'
 
@@ -465,6 +467,133 @@ describe('downloadTextToR2: bot-wall handling', () => {
     expect(row!.fetchError).toMatch(/expected a PDF/)
     expect(row!.fetchError).toMatch(/403/)
     expect(row!.fetchAttemptedAt).toBeTruthy()
+  })
+})
+
+describe('per-member votes', () => {
+  it("replaces a roll call's earlier vote rows, ids and unresolved members included", async () => {
+    const db = drizzle(env.DB, { schema })
+    // Rows as the contributor's batched insert wrote them in production: random
+    // ids, and a null person for a member LIMS couldn't resolve.
+    await db.insert(schema.rollCallVotes).values([
+      { id: crypto.randomUUID(), rollCallId: 778, peopleId: 5000, voteId: 1, voteText: 'Yea' },
+      { id: crypto.randomUUID(), rollCallId: 778, peopleId: null, voteId: 2, voteText: 'Nay' },
+    ])
+    const bill = buildFixtureBill({
+      votes: [{ roll_call_id: 778, date: '2026-02-03', desc: 'Passed', yea: 1, nay: 1, nv: 1, absent: 0, total: 3, passed: 1,
+        chamber: 'H', chamber_id: 1, url: '', state_link: '', member_votes: [
+          { people_id: 5000, vote_id: 1, vote_text: 'Yea' },
+          { people_id: 5001, vote_id: 2, vote_text: 'Nay' },
+          { people_id: null, vote_id: 3, vote_text: 'NV' },
+        ] }],
+    })
+
+    await ingestMeasure(bill, getProvider('lims'), makeEnv(), db, { forceMetadata: false, forceAI: false, interactive: false })
+
+    const rows = await db.select().from(schema.rollCallVotes).where(eq(schema.rollCallVotes.rollCallId, 778)).all()
+    expect(rows.map(r => r.id).sort()).toEqual(['778-5000', '778-5001'])
+    expect(rows.some(r => r.peopleId === null)).toBe(false)
+  })
+
+  it('writes every member vote of a large roll call, replacing the previous set', async () => {
+    const db = drizzle(env.DB, { schema })
+    const memberVotes = (n: number) => Array.from({ length: n }, (_, i) => ({ people_id: 5000 + i, vote_id: i % 2 ? 1 : 2, vote_text: i % 2 ? 'Yea' : 'Nay' }))
+    const bill = (n: number) => buildFixtureBill({
+      votes: [{ roll_call_id: 777, date: '2026-02-03', desc: 'Passed', yea: 0, nay: 0, nv: 0, absent: 0, total: n, passed: 1,
+        chamber: 'H', chamber_id: 1, url: '', state_link: '', member_votes: memberVotes(n) }],
+    })
+    const opts = { forceMetadata: false, forceAI: false, interactive: false }
+    const count = async () => (await db.select().from(schema.rollCallVotes).where(eq(schema.rollCallVotes.rollCallId, 777)).all()).length
+
+    await ingestMeasure(bill(250), getProvider('legiscan'), makeEnv(), db, opts)
+    expect(await count()).toBe(250)
+    await ingestMeasure(bill(40), getProvider('legiscan'), makeEnv(), db, opts)
+    expect(await count()).toBe(40)
+  })
+})
+
+describe('LIMS ids never reach LegiScan', () => {
+  const LIMS_BILL = limsBillId('B26-0400')!
+  const limsPdf = {
+    doc_id: limsDocId(224385), date: '2025-10-06', type: 'Introduction', type_id: 1,
+    mime: 'application/pdf', mime_id: 2, url: '',
+    state_link: 'https://lims.dccouncil.gov/downloads/LIMS/60460/Introduction/B26-0400-Introduction.pdf?Id=224385',
+    text_size: 0, text_hash: '',
+    alt_bill_text: 0, alt_mime: '', alt_mime_id: 0, alt_state_link: '', alt_text_size: 0, alt_text_hash: '',
+  }
+  const limsBill = () => buildFixtureBill({
+    bill_id: LIMS_BILL, session_id: limsSessionId(26), state: 'DC', bill_number: 'B26-0400',
+    texts: [limsPdf], votes: [], amendments: [], supplements: [], sasts: [],
+  })
+  const ingestOpts = { forceMetadata: false, forceAI: false, interactive: false }
+
+  it('does not call getBill for a LIMS bill whose stored record is missing, and retries the message', async () => {
+    const db = drizzle(env.DB, { schema })
+    await db.insert(schema.bills).values({
+      billId: LIMS_BILL, changeHash: '', sessionId: limsSessionId(26), state: 'DC', stateId: 51,
+      billNumber: 'B26-0400', title: 'B26-0400', provider: 'lims',
+    })
+    const batch = makeBatch(LIMS_BILL)
+
+    await processIngestorQueue(batch, makeEnv(), db)
+
+    expect(legiscan.getBill).not.toHaveBeenCalled()
+    expect(batch.messages[0].retry).toHaveBeenCalled()
+    expect(batch.messages[0].ack).not.toHaveBeenCalled()
+  })
+
+  it('skips the getBillText fallback for a LIMS bill', async () => {
+    const db = drizzle(env.DB, { schema })
+    vi.mocked(legiscan.getBillText).mockClear()
+    fetchMock.mockResolvedValue(new Response(IN_APP_SHELL, {
+      status: 200, headers: { 'content-type': 'text/html' },
+    }))
+
+    await ingestMeasure(limsBill(), getProvider('lims'), makeEnv(), db, ingestOpts)
+
+    const row = await db.select().from(schema.billTexts).where(eq(schema.billTexts.docId, limsPdf.doc_id)).get()
+    expect(legiscan.getBillText).not.toHaveBeenCalled()
+    expect(row!.r2Key).toBeNull()
+    expect(row!.fetchError).toMatch(/expected a PDF/)
+  })
+
+  it('skips the getBillText fallback on a skipFetch re-download of a LIMS bill', async () => {
+    const db = drizzle(env.DB, { schema })
+    fetchMock.mockResolvedValue(new Response(IN_APP_SHELL, {
+      status: 200, headers: { 'content-type': 'text/html' },
+    }))
+    await ingestMeasure(limsBill(), getProvider('lims'), makeEnv(), db, ingestOpts)
+    vi.mocked(legiscan.getBillText).mockClear()
+
+    await processIngestorQueue(makeBatch(LIMS_BILL, { skipFetch: true }), makeEnv(), db)
+
+    expect(legiscan.getBill).not.toHaveBeenCalled()
+    expect(legiscan.getBillText).not.toHaveBeenCalled()
+  })
+
+  it('stores a LIMS document fetched directly', async () => {
+    const db = drizzle(env.DB, { schema })
+    fetchMock.mockResolvedValue(new Response(REAL_PDF, {
+      status: 200, headers: { 'content-type': 'application/pdf' },
+    }))
+
+    await ingestMeasure(limsBill(), getProvider('lims'), makeEnv(), db, ingestOpts)
+
+    const row = await db.select().from(schema.billTexts).where(eq(schema.billTexts.docId, limsPdf.doc_id)).get()
+    expect(row!.r2Key).toBe(`bills/legiscan-${LIMS_BILL}/texts/${limsPdf.doc_id}.pdf`)
+    expect(row!.fetchError).toBeNull()
+  })
+})
+
+describe('bill type on re-ingest', () => {
+  it('replaces the masterlist default with the type getBill reports', async () => {
+    const db = drizzle(env.DB, { schema })
+    // A masterlist-first stub: no type, so the column default 'B'.
+    await db.insert(schema.bills).values({ billId: 9001, changeHash: 'old', sessionId: 2154, state: 'WI', stateId: 50, billNumber: 'AR9', title: 't' } as any)
+    vi.mocked(legiscan.getBill).mockResolvedValue(buildFixtureBill({ bill_type: 'R', bill_type_id: '2', bill_number: 'AR9' }))
+    await processIngestorQueue(makeBatch(9001), makeEnv(), db)
+    const row = await db.select().from(schema.bills).where(eq(schema.bills.billId, 9001)).get()
+    expect(row).toMatchObject({ billType: 'R', billTypeId: '2' })
   })
 })
 

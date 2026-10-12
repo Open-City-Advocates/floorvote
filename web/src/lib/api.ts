@@ -8,6 +8,8 @@ export class ApiError extends Error {
     message: string,
     /** The server's machine-readable `code`, when it sent one. */
     public code?: string,
+    /** The whole error body, for the few callers that read more than `error`. */
+    public body?: Record<string, unknown>,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -32,7 +34,7 @@ export async function apiFetch<T>(
     if (body.code === 'terms_not_accepted') {
       window.dispatchEvent(new CustomEvent(TERMS_NOT_ACCEPTED_EVENT))
     }
-    throw new ApiError(res.status, body.error ?? res.statusText, body.code)
+    throw new ApiError(res.status, body.error ?? res.statusText, body.code, body)
   }
 
   if (res.status === 204) return undefined as T

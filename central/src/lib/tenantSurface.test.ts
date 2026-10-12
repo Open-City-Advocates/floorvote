@@ -10,6 +10,7 @@ describe('tenantSurface allowlist matcher', () => {
       ['GET', '/api/bills/legiscan:123/changes'],
       ['GET', '/api/bills/sessions'],
       ['GET', '/api/bills/sessions?state=RI'],
+      ['GET', '/api/bills/labels?state=DC'],
       ['POST', '/api/bills/rich-batch'],
       ['POST', '/api/tenants/register'],
       ['POST', '/api/tenants/reprocess/ri'],
@@ -17,6 +18,8 @@ describe('tenantSurface allowlist matcher', () => {
       ['POST', '/api/tenants/promote-bills/ri'],
       ['GET', '/api/tenants/ri/upcoming-hearings'],
       ['GET', '/api/tenants/ri/upcoming-hearings?days=14'],
+      ['GET', '/api/tenants/ri/body-events?from=2026-09-01&to=2027-01-31'],
+      ['GET', '/api/tenants/ri/body-event-options'],
       ['POST', '/api/admin/sync-keywords/ri'],
       ['POST', '/api/admin/update-bill-match-types/ri'],
       ['GET', '/api/admin/superadmin/check'],
@@ -35,6 +38,15 @@ describe('tenantSurface allowlist matcher', () => {
       ['POST', '/api/admin/anomaly-watch'],
       ['POST', '/api/admin/trigger-sync'],
       ['POST', '/api/admin/backfill-match-types'],
+      // state ownership and cutovers are operator-only
+      ['GET', '/api/admin/state-providers'],
+      ['POST', '/api/admin/state-providers/dc'],
+      ['POST', '/api/admin/state-providers/dc/cutover'],
+      ['POST', '/api/admin/state-providers/dc/undo-cutover'],
+      // provider syncs and imports are operator-only
+      ['POST', '/api/admin/providers/dc/sync'],
+      ['POST', '/api/admin/lims-sync'],
+      ['POST', '/api/admin/lims-import'],
       ['POST', '/api/tenants/ri/demo-reset'],
       ['POST', '/api/tenants/ri/run-digest'],
       ['POST', '/api/tenants/ri/refresh-metadata'],
@@ -55,6 +67,8 @@ describe('tenantSurface allowlist matcher', () => {
       ['POST', '/api/tenants/reprocess/ri/extra'],
       ['GET', '/api/admin/superadmin/check/extra'],
       ['POST', '/api/admin/superadmin'],
+      ['POST', '/api/bills/labels'],
+      ['GET', '/api/bills/labels/extra'],
     ]
     it.each(blocked)('blocks %s %s', (method, path) => {
       expect(isTenantSurfaceAllowed(method, path)).toBe(false)
@@ -120,7 +134,10 @@ describe('tenantSurface allowlist matcher', () => {
       ['GET',  '/api/bills/legiscan:123/text/9',               'billsApi/textRoutes.ts (text panel)'],
       ['GET',  '/api/bills/legiscan:123/changes',              'billsApi/lookupRoutes.ts'],
       ['GET',  '/api/bills/sessions?state=RI',                 'routes/configApi.ts'],
+      ['GET',  '/api/bills/labels?state=DC',                   'billsApi/labelRoutes.ts (status explainers)'],
       ['GET',  '/api/tenants/ri/upcoming-hearings?days=14',    'routes/stats.ts'],
+      ['GET',  '/api/tenants/ri/body-events?from=2026-09-01&to=2027-01-31', 'lib/bodyEvents.ts (hourly body-event sync)'],
+      ['GET',  '/api/tenants/ri/body-event-options',            'lib/eventRules.ts (event rules settings)'],
       ['GET',  '/api/tenants/current-session/RI',              'billsApi/draftRoutes.ts (draft default year)'],
       ['GET',  '/api/admin/superadmin/emails',                 'lib/superadminCentral.ts'],
       ['POST', '/api/tenants/register',                        'index.ts, cron/sync.ts'],

@@ -1,0 +1,336 @@
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { env, SELF } from 'cloudflare:test'
+import { eq } from 'drizzle-orm'
+import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedCalendarEvent } from '../helpers'
+import { getDb } from '../../src/db/client'
+import { associationConfig, calendarEvents, calendarEventBills } from '../../src/db/schema'
+import { syncBodyEvents, type CentralBodyEvent } from '../../src/lib/bodyEvents'
+import { hearingUid } from '../../src/lib/hearingUid'
+import { app } from '../../src/index'
+
+// Body events on an instance (#297): central's answer to
+// GET /tenants/:id/body-events in (fetch stubbed), and the instance's
+// calendar, ICS feed, and config out.
+
+const isoDay = (offsetDays: number) => new Date(Date.now() + offsetDays * 86400_000).toISOString().slice(0, 10)
+const HANDLE = 'legiscan:1012600769'
+const IDENTITY = 'hearing|2026-10-23|public hearing on b26-0769'
+const HEARING_UID = hearingUid(HANDLE, IDENTITY, 'bpc-test')
+const CAPABLE = { DC: { bodyEvents: true, deadlines: true } }
+const LIMS_CREDIT = { id: 'lims', name: 'DC Council LIMS', url: 'https://lims.dccouncil.gov', note: 'Legislative data comes from the Council of the District of Columbia\'s LIMS.' }
+const LEGISCAN_CREDIT = { id: 'legiscan', name: 'LegiScan', url: 'https://legiscan.com', note: 'From LegiScan.', license: { name: 'CC BY 4.0', url: 'https://creativecommons.org/licenses/by/4.0/' } }
+const DC_ATTRIBUTION = { providers: [LIMS_CREDIT] }
+
+function bodyEvent(o: Partial<CentralBodyEvent> = {}): CentralBodyEvent {
+  return {
+    uid: 'council-2408@lims.dccouncil.gov', state: 'DC', kind: 'hearing', type: 'Roundtable',
+    date: isoDay(5), time: '10:00', timezone: 'America/New_York',
+    committee: { committeeId: '3000000001', name: 'Committee on Housing' }, jointWith: null,
+    location: 'Room 123 (Track C)', title: 'Housing roundtable',
+    agenda: [{ topic: 'Improving Housing Conditions', billNumber: null }],
+    url: 'https://lims.dccouncil.gov/Hearings/hearings/2408', eventHash: 'e1', cancelled: false,
+    bills: [], covers: [], ...o,
+  }
+}
+
+/** The Committee of the Whole's hearing on B26-0769, which covers the bill's own entry that day. */
+const stadiumHearing = (o: Partial<CentralBodyEvent> = {}) => bodyEvent({
+  uid: 'council-2405@lims.dccouncil.gov', type: 'Hearing', date: isoDay(10), time: '10:00',
+  committee: { committeeId: '3000000002', name: 'Committee of the Whole' }, location: 'Room 412 (Track B)',
+  title: 'Committee of the Whole hearing',
+  agenda: [{ topic: 'Soccer Stadium Redevelopment and Maintenance Act of 2026', billNumber: 'B26-0769' }],
+  url: 'https://lims.dccouncil.gov/Hearings/hearings/2405', eventHash: 'e2',
+  bills: [HANDLE], covers: [{ billId: HANDLE, identityKey: IDENTITY }], ...o,
+})
+
+/** What central answers next. */
+let central: { status?: number; capabilities?: Record<string, unknown>; attribution?: unknown; events?: CentralBodyEvent[] }
+const fetchMock = vi.fn()
+
+let token: string
+let billId: string
+
+beforeEach(async () => {
+  await resetDb()
+  await applyMigrations()
+  token = await seedSession(await seedUser({ email: 'a@b.com' }))
+  const db = getDb(env.DB)
+  await db.insert(associationConfig).values({ key: 'state_coverage', value: '["DC"]' })
+  billId = await seedBill({ billNumber: 'B26-0769', state: 'DC', session: '2025-2026 Council Period 26', priority: 'high', externalId: HANDLE })
+  // The bill's own hearing, as a notification from central left it.
+  await seedCalendarEvent(billId, { uid: HEARING_UID, date: isoDay(10), time: '', location: '', description: 'Public Hearing on B26-0769' })
+  central = { capabilities: CAPABLE, attribution: DC_ATTRIBUTION, events: [bodyEvent(), stadiumHearing()] }
+  fetchMock.mockReset()
+  fetchMock.mockImplementation(async (url: string) => {
+    expect(String(url)).toMatch(/^https:\/\/central\.test\/api\/tenants\/bpc-test\/body-events\?from=\d{4}-\d{2}-\d{2}&to=\d{4}-\d{2}-\d{2}$/)
+    if (central.status) return new Response('down', { status: central.status })
+    return new Response(JSON.stringify({ capabilities: central.capabilities, attribution: central.attribution, events: central.events }), { headers: { 'content-type': 'application/json' } })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+})
+
+const sync = () => syncBodyEvents(env as any, getDb(env.DB))
+
+async function calendar() {
+  const res = await SELF.fetch(`http://localhost/api/calendar/events?from=${isoDay(-30)}&to=${isoDay(60)}`, { headers: { Cookie: `session=${token}` } })
+  expect(res.status).toBe(200)
+  return res.json() as Promise<any[]>
+}
+
+async function feed() {
+  const info = await (await SELF.fetch('http://localhost/api/calendar/info', { headers: { Cookie: `session=${token}` } })).json() as { slug: string }
+  // Unfolded, so a long line reads whole.
+  return (await (await SELF.fetch(`http://localhost/api/calendar/feed/${info.slug}.ics`)).text()).replace(/\r?\n /g, '')
+}
+
+const row = (uid: string) => getDb(env.DB).select().from(calendarEvents).where(eq(calendarEvents.uid, uid)).get()
+
+describe('body events on an instance', () => {
+  it('show on the calendar and in the ICS feed under central\'s UIDs, with their agenda bills, and the hearing they cover shows once', async () => {
+    // Before: the bill's own hearing.
+    expect((await calendar()).map(e => e.uid)).toEqual([HEARING_UID])
+
+    await sync()
+    const events = await calendar()
+    expect(events.map(e => e.uid)).toEqual(['council-2408@lims.dccouncil.gov', 'council-2405@lims.dccouncil.gov'])
+    expect(events[0]).toMatchObject({
+      source: 'body', kind: 'hearing', time: '10:00', location: 'Room 123 (Track C)',
+      description: 'Housing roundtable: Improving Housing Conditions',
+      url: 'https://lims.dccouncil.gov/Hearings/hearings/2408', bills: [],
+    })
+    expect(events[1]).toMatchObject({
+      description: 'Committee of the Whole hearing: Soccer Stadium Redevelopment and Maintenance Act of 2026',
+      details: '- Soccer Stadium Redevelopment and Maintenance Act of 2026 (B26-0769)',
+      bills: [expect.objectContaining({ id: billId, billNumber: 'B26-0769', priority: 'high' })],
+    })
+    expect((await row(HEARING_UID))?.coveredBy).toBe('council-2405@lims.dccouncil.gov')
+
+    const ics = await feed()
+    expect(ics).toContain('UID:council-2408@lims.dccouncil.gov')
+    expect(ics).toContain('UID:council-2405@lims.dccouncil.gov')
+    expect(ics).not.toContain(`UID:${HEARING_UID}`)
+    expect(ics).toContain('SUMMARY:Committee of the Whole hearing: Soccer Stadium Redevelopment and Maintenance Act of 2026 — B26-0769')
+    expect(ics).toContain('TZID=America/New_York')
+  })
+
+  it('bump an event\'s sequence when it changes, is cancelled, or comes back, and not otherwise', async () => {
+    const uid = 'council-2408@lims.dccouncil.gov'
+    await sync()
+    await sync()
+    expect(await row(uid)).toMatchObject({ sequence: 0, status: 'confirmed' })
+
+    central.events = [bodyEvent({ time: '11:00', eventHash: 'e1b' }), stadiumHearing()]
+    await sync()
+    expect(await row(uid)).toMatchObject({ sequence: 1, time: '11:00' })
+
+    central.events = [bodyEvent({ time: '11:00', eventHash: 'e1b', cancelled: true }), stadiumHearing()]
+    await sync()
+    expect(await row(uid)).toMatchObject({ sequence: 2, status: 'cancelled' })
+    expect((await calendar()).find(e => e.uid === uid)).toMatchObject({ status: 'cancelled' })
+    expect(await feed()).toMatch(/UID:council-2408@lims\.dccouncil\.gov[\s\S]*?STATUS:CANCELLED/)
+
+    central.events = [bodyEvent({ time: '11:00', eventHash: 'e1b' }), stadiumHearing()]
+    await sync()
+    expect(await row(uid)).toMatchObject({ sequence: 3, status: 'confirmed' })
+  })
+
+  it('leave out an event cancelled before the instance ever had it', async () => {
+    central.events = [bodyEvent({ cancelled: true })]
+    await sync()
+    expect(await row('council-2408@lims.dccouncil.gov')).toBeUndefined()
+  })
+
+  it('go when central stops sending them, and the hearing they covered shows again', async () => {
+    await sync()
+    central = { capabilities: {}, events: [] }
+    await sync()
+    expect((await calendar()).map(e => e.uid)).toEqual([HEARING_UID])
+    expect((await row(HEARING_UID))?.coveredBy).toBeNull()
+    expect(await getDb(env.DB).select().from(calendarEventBills).all()).toEqual([])
+  })
+
+  it('uncover an entry an event no longer covers', async () => {
+    await sync()
+    central.events = [bodyEvent(), stadiumHearing({ covers: [] })]
+    await sync()
+    expect((await row(HEARING_UID))?.coveredBy).toBeNull()
+    expect((await calendar()).map(e => e.uid)).toContain(HEARING_UID)
+  })
+
+  it('are cancelled, never deleted, when central stops sending one while the state still has body events', async () => {
+    await sync()
+    central.events = [bodyEvent()]
+    await sync()
+    expect(await row('council-2405@lims.dccouncil.gov')).toMatchObject({ status: 'cancelled', sequence: 1 })
+    // Central sends a cancelled event as cancelled. One it stops sending left
+    // the instance's coverage or its state's provider, and the bill's own
+    // hearing, still confirmed, shows again rather than hide behind it.
+    expect((await row(HEARING_UID))?.coveredBy).toBeNull()
+    expect((await calendar()).map(e => e.uid)).toContain(HEARING_UID)
+    await sync()
+    expect(await row('council-2405@lims.dccouncil.gov')).toMatchObject({ status: 'cancelled', sequence: 1 })
+  })
+
+  it('keep covering the entry when central sends the event as cancelled, so the cancellation shows once', async () => {
+    await sync()
+    central.events = [bodyEvent(), stadiumHearing({ cancelled: true })]
+    await sync()
+    expect(await row('council-2405@lims.dccouncil.gov')).toMatchObject({ status: 'cancelled' })
+    expect((await row(HEARING_UID))?.coveredBy).toBe('council-2405@lims.dccouncil.gov')
+  })
+
+  it('stay as they are when central answers without its events or capabilities', async () => {
+    await sync()
+    for (const answer of [{ capabilities: CAPABLE }, { events: [bodyEvent()] }, { capabilities: CAPABLE, events: null }]) {
+      central = answer as typeof central
+      await expect(sync()).rejects.toThrow('no events or capabilities')
+    }
+    expect((await calendar()).map(e => e.uid)).toEqual(['council-2408@lims.dccouncil.gov', 'council-2405@lims.dccouncil.gov'])
+  })
+
+  it('stay as they are when central fails', async () => {
+    await sync()
+    central.status = 503
+    await expect(sync()).rejects.toThrow('HTTP 503')
+    expect((await calendar()).map(e => e.uid)).toEqual(['council-2408@lims.dccouncil.gov', 'council-2405@lims.dccouncil.gov'])
+  })
+
+  it('stand in for the entry they cover when the dashboard widget links to it', async () => {
+    await sync()
+    const covering = (await calendar()).find(e => e.uid === 'council-2405@lims.dccouncil.gov')
+    // seedCalendarEvent's hash for the bill's own hearing.
+    expect(covering.eventHashes).toEqual(['e2', 'h1'])
+  })
+
+  it('load a whole season of the legislature\'s calendar on the calendar page and in the feed', async () => {
+    central.events = Array.from({ length: 150 }, (_, i) => bodyEvent({
+      uid: `council-${3000 + i}@lims.dccouncil.gov`, date: isoDay(1 + (i % 50)), eventHash: `e${i}`,
+      ...(i % 3 === 0 ? { bills: [HANDLE] } : {}),
+    }))
+    await sync()
+    expect((await calendar()).filter(e => e.source === 'body')).toHaveLength(150)
+    expect((await feed()).match(/UID:council-/g)).toHaveLength(150)
+  })
+
+  it('take over a fork\'s Council events in place, under the same UID and sequence', async () => {
+    await getDb(env.DB).insert(calendarEvents).values({
+      id: crypto.randomUUID(), uid: 'council-2408@lims.dccouncil.gov', billId: null, source: 'council', sequence: 4,
+      date: isoDay(5), time: '10:00', description: 'Housing roundtable: Improving Housing Conditions', status: 'confirmed', eventHash: 'e1',
+    })
+    await sync()
+    expect(await row('council-2408@lims.dccouncil.gov')).toMatchObject({ source: 'body', sequence: 4 })
+  })
+})
+
+describe('state capabilities', () => {
+  it('reach GET /config from the body-event sync', async () => {
+    await sync()
+    const config = await (await SELF.fetch('http://localhost/api/config', { headers: { Cookie: `session=${token}` } })).json() as any
+    expect(config.capabilities).toEqual(CAPABLE)
+  })
+
+  it('are asked for every hour while no covered state has body events, so a newly claimed state shows within the hour', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-10T12:00:00Z'))
+    central = { capabilities: {}, attribution: DC_ATTRIBUTION, events: [] }
+    expect(await sync()).not.toBeNull()
+    expect(await sync()).toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    vi.setSystemTime(new Date('2026-10-10T12:29:00Z'))
+    expect(await sync()).toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    vi.setSystemTime(new Date('2026-10-10T12:31:00Z'))
+    expect(await sync()).not.toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    vi.setSystemTime(new Date('2026-10-10T13:31:00Z'))
+    central = { capabilities: CAPABLE, events: [bodyEvent()] }
+    expect((await sync())?.upserted).toBe(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('data attribution', () => {
+  const configAttribution = async () => (await (await SELF.fetch('http://localhost/api/config', { headers: { Cookie: `session=${token}` } })).json() as any).attribution
+
+  it('credits LegiScan on GET /config until central has answered', async () => {
+    expect(await configAttribution()).toMatchObject({ providers: [{ id: 'legiscan', name: 'LegiScan', url: 'https://legiscan.com', license: { name: 'CC BY 4.0' } }] })
+  })
+
+  it('reaches GET /config from the body-event sync, as central declares it', async () => {
+    await sync()
+    expect(await configAttribution()).toEqual(DC_ATTRIBUTION)
+    // A claim moves a state to another provider, and the next answer says so.
+    central.attribution = { providers: [LEGISCAN_CREDIT, LIMS_CREDIT] }
+    await sync()
+    expect(await configAttribution()).toEqual({ providers: [LEGISCAN_CREDIT, LIMS_CREDIT] })
+  })
+
+  it('keeps what it has when central sends none', async () => {
+    await sync()
+    central = { capabilities: {}, events: [] }
+    await sync()
+    expect(await configAttribution()).toEqual(DC_ATTRIBUTION)
+  })
+
+  it('drops a credit that is not a name and http(s) link, and falls back to LegiScan when none is left', async () => {
+    central.attribution = {
+      providers: [
+        { ...LIMS_CREDIT, url: 'javascript:alert(1)' },
+        { ...LEGISCAN_CREDIT, id: 'ok', license: undefined },
+        { id: 'x', name: '', url: 'https://example.test' },
+      ],
+    }
+    await sync()
+    expect((await configAttribution()).providers).toEqual([{ id: 'ok', name: 'LegiScan', url: 'https://legiscan.com', note: 'From LegiScan.' }])
+    central.attribution = { providers: [{ ...LIMS_CREDIT, url: '/relative' }] }
+    await sync()
+    expect((await configAttribution()).providers[0]).toMatchObject({ id: 'legiscan', license: { name: 'CC BY 4.0' } })
+  })
+
+  it('keeps a credit with no note, with or without a license, and still keeps a note when one is sent', async () => {
+    const { note: _n, ...licensedNoNote } = LEGISCAN_CREDIT
+    const { note: _m, ...limsNoNote } = LIMS_CREDIT
+    central.attribution = { providers: [licensedNoNote, limsNoNote, { ...LIMS_CREDIT, id: 'noted' }] }
+    await sync()
+    expect(await configAttribution()).toEqual({ providers: [licensedNoNote, limsNoNote, { ...LIMS_CREDIT, id: 'noted' }] })
+  })
+
+  it('drops the whole credit, not just its license, when the license has no usable link', async () => {
+    central.attribution = {
+      providers: [
+        { ...LEGISCAN_CREDIT, license: { name: 'CC BY 4.0', url: 'javascript:alert(1)' } },
+        { ...LEGISCAN_CREDIT, id: 'nameless', license: { url: 'https://creativecommons.org/licenses/by/4.0/' } },
+        LIMS_CREDIT,
+      ],
+    }
+    await sync()
+    expect(await configAttribution()).toEqual(DC_ATTRIBUTION)
+  })
+
+  it('accepts an http link, and cuts a name and note to a sensible length', async () => {
+    central.attribution = { providers: [{ id: 'long', name: 'N'.repeat(300), url: 'http://legislature.example.test', note: 'T'.repeat(900) }] }
+    await sync()
+    expect((await configAttribution()).providers).toEqual([{ id: 'long', name: 'N'.repeat(200), url: 'http://legislature.example.test', note: 'T'.repeat(500) }])
+  })
+
+  it('serves LegiScan\'s credit when the stored attribution is corrupt', async () => {
+    const db = getDb(env.DB)
+    for (const value of ['not json', '{"data":"x"}', '{"data":{"providers":"x"}}', 'null']) {
+      await db.insert(associationConfig).values({ key: 'data_attribution', value }).onConflictDoUpdate({ target: associationConfig.key, set: { value } })
+      expect((await configAttribution()).providers).toEqual([expect.objectContaining({ id: 'legiscan', name: 'LegiScan' })])
+    }
+  })
+
+  it('ignores DATA_SOURCES, which an earlier release read from the instance\'s own settings', async () => {
+    await sync()
+    const res = await app.request('/api/config', { headers: { Cookie: `session=${token}` } }, { ...env, DATA_SOURCES: 'legiscan' })
+    const body = await res.json() as any
+    expect(body.attribution).toEqual(DC_ATTRIBUTION)
+    expect(body.dataSources).toBeUndefined()
+  })
+})

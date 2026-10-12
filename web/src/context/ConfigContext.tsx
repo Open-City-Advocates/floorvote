@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { apiFetch } from '../lib/api'
+import type { Attribution } from '../../../shared/dataAttribution'
 
 export interface OperatorConfig {
   name: string
@@ -26,7 +27,25 @@ export interface AppConfig {
   demoLocked?: boolean
   demoBanner?: string
   operator?: OperatorConfig
+  /**
+   * The providers the covered states' data comes from, each with the credit it
+   * declares. The footer credits every one. Absent = LegiScan's.
+   */
+  attribution?: Attribution
   accountDeletionEnabled?: boolean
+  /**
+   * What each covered state's data can do, by state, from the provider central
+   * reads it from. A state left out has none. Gate features on these, never on
+   * a state's name.
+   */
+  capabilities?: Record<string, StateCapabilities>
+}
+
+export interface StateCapabilities {
+  /** The legislature's own calendar (hearings without bills) reaches the instance's calendar. */
+  bodyEvents: boolean
+  /** Bills carry deadlines as calendar entries. */
+  deadlines: boolean
 }
 
 interface ConfigValue {

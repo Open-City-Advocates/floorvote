@@ -1,19 +1,36 @@
 import { eq, and, isNull, sql } from 'drizzle-orm'
-import { DEFAULT_PROVIDER_ID, getProvider, type CentralMeasure, type Provider } from '../providers'
+import { DEFAULT_PROVIDER_ID, findProvider, getProvider, type CentralMeasure, type MeasureRef, type Provider } from '../providers'
 import {
   bills, billHistory, billSponsors, billTexts, billSupplements, billAmendments,
-  billSasts, billSubjects, billReferrals, billCalendar, billTenants,
-  billChangeLog, rollCalls, people, tenants,
+  billSasts, billSubjects, billReferrals, billTenants,
+  billChangeLog, rollCalls, people, tenants, sessions, providerRecords,
 } from '../db/schema'
-import { detectChanges, detectCalendarChanges, calendarIdentityKey, type BillSnapshot, type ChangeRecord, type CalendarChange, type PriorCalendarRow } from '../lib/detect-changes'
+import { detectChanges, type BillSnapshot, type ChangeRecord } from '../lib/detect-changes'
+import {
+  calendarBlockEvents, carryCalendar, logCalendarChanges, planCalendarPull, planCalendarRecheck, readCalendarRows, writeCalendarRows,
+  type CalendarChange, type CalendarPlan, type CalendarRow,
+} from '../lib/billCalendar'
+import { carriedPeopleIds, measureWithCarriedPeople } from '../lib/carriedIds'
+import { clearProviderData } from '../lib/cutover'
+import { calendarCoverage } from '../lib/bodyEvents'
 import type { Env, Db, IngestorMessage, BillMessage, NotificationMessage, CalendarBlock } from '../types'
 import { personRow } from '../lib/people'
+import { writeMemberVotes, type RollCallMemberVotes } from '../lib/rollCallVotes'
 import { loadVoteDataset, VOTE_DATASET_DEFER_SECONDS, VOTE_DATASET_RETRY_SECONDS } from '../cron/vote-datasets'
 import { nowDb } from '../lib/dbTime'
 import { providerContext } from '../lib/providerContext'
 import { deliverToTenant } from '../lib/tenantDelivery'
 import { safeFetch } from '../lib/safeFetch'
 import { toHandle } from '../lib/billHandle'
+import { replaceBillExtras } from '../lib/billExtras'
+import { upsertCommittees } from '../lib/committees'
+import { httpUrl } from '../../../shared/httpUrl'
+
+/**
+ * How many ingests of a bill a cutover moved may come with no calendar at
+ * all before its carry-over stops waiting for one (lib/cutover.ts).
+ */
+const MAX_CARRY_WAITS = 3
 
 export async function processIngestorQueue(
   batch: MessageBatch<IngestorMessage>,
@@ -57,8 +74,28 @@ async function processBill(msg: BillMessage, env: Env, db: Db): Promise<void> {
   const forceMetadata = msg.forceMetadata ?? false
   const forceAI = msg.forceAI ?? false
   const interactive = msg.interactive ?? false
-  // Bills don't record their provider yet, so every bill is the default provider's.
-  const provider = getProvider(DEFAULT_PROVIDER_ID)
+  // The provider that wrote the bill, by its row's `provider` column, and its
+  // session, in one read. A bill central has no row for is the default's.
+  const known = await db.select({ provider: bills.provider, sessionId: bills.sessionId, carriedFrom: bills.carriedFrom })
+    .from(bills).where(eq(bills.billId, msg.billId)).get()
+  const provider = getProvider(known?.provider ?? DEFAULT_PROVIDER_ID)
+
+  // A moved bill's message from a provider it has since moved off, or an
+  // untracked bill's first ingest that has already happened (types.ts).
+  const queuedBy = msg.firstIngestFor ?? msg.queuedBy
+  if (queuedBy && known?.provider !== queuedBy) {
+    console.log(`[processor-ls] bill ${msg.billId} now syncs from ${known?.provider ?? 'nowhere'}; skipping its ${queuedBy} ingest`)
+    return
+  }
+  if (msg.firstIngestFor && !known?.carriedFrom) {
+    console.log(`[processor-ls] bill ${msg.billId} already had its first ${msg.firstIngestFor} ingest; skipped`)
+    return
+  }
+
+  if (msg.calendarRecheck !== undefined) {
+    await recheckCalendar(msg.billId, msg.calendarRecheck, provider, env, db)
+    return
+  }
 
   if (msg.skipFetch) {
     // Data already in DB from bulk seed — skip the provider's API, just download text and notify
@@ -86,32 +123,68 @@ async function processBill(msg: BillMessage, env: Env, db: Db): Promise<void> {
     return
   }
 
-  const known = await db.select({ sessionId: bills.sessionId }).from(bills).where(eq(bills.billId, msg.billId)).get()
-  const measure = await provider.fetchMeasure(
-    { billId: msg.billId, sessionId: known?.sessionId ?? null },
-    providerContext(provider, env, db),
-  )
+  const measure = await fetchMeasure(msg.billId, known?.sessionId ?? null, provider, env, db)
   await ingestMeasure(measure, provider, env, db, {
     forceMetadata, forceAI, interactive,
     forceTextRefetch: msg.forceTextRefetch ?? false,
   })
 }
 
-type IngestOptions = {
+/**
+ * Fetch one bill's full record from its provider. A snapshot provider gets the
+ * record core stored for the bill, and the bill's session. When the provider
+ * also fetched a details response, store it beside the record, and when, for
+ * its details refresh.
+ */
+async function fetchMeasure(billId: number, sessionId: number | null, provider: Provider, env: Env, db: Db): Promise<CentralMeasure> {
+  let ref: MeasureRef
+  if (provider.snapshot) {
+    const row = await db.select().from(providerRecords)
+      .where(and(eq(providerRecords.billId, billId), eq(providerRecords.provider, provider.id))).get()
+    if (!row) throw new Error(`bill ${billId} has no stored ${provider.id} record; the ${provider.id} sync has not seen it`)
+    const s = await db.select().from(sessions).where(eq(sessions.sessionId, row.sessionId)).get()
+    ref = {
+      billId,
+      sessionId: row.sessionId,
+      nativeKey: row.nativeKey,
+      record: { raw: JSON.parse(row.rawJson), hash: row.rawHash },
+      session: s ? {
+        sessionId: s.sessionId, state: s.state, sessionTag: s.sessionTag,
+        yearStart: s.yearStart, yearEnd: s.yearEnd, sessionName: s.sessionName, prior: s.prior,
+      } : undefined,
+    }
+  } else {
+    ref = { billId, sessionId }
+  }
+
+  const fetched = await provider.fetchMeasure(ref, providerContext(provider, env, db))
+  if (!('measure' in fetched)) return fetched
+  // The whole response, so a field the mapping ignores today can be read later
+  // without fetching it again. raw_hash is left alone: it is the listed
+  // record's, which the snapshot sync compares.
+  await db.update(providerRecords).set({
+    detailsJson: fetched.details == null ? null : JSON.stringify(fetched.details),
+    detailsFetchedAt: nowDb(),
+  }).where(eq(providerRecords.billId, billId))
+  return fetched.measure
+}
+
+export type IngestOptions = {
   forceMetadata: boolean
   forceAI: boolean
   interactive: boolean
   /** Re-download every text even when R2 already has it (admin refetch-fragment-texts). */
-  forceTextRefetch: boolean
+  forceTextRefetch?: boolean
 }
 
 /**
  * Write one measure into central: change detection, the bill row and its child
  * tables, text downloads to R2, and the tenant notifications. Provider-neutral:
- * the caller fetches the measure from its provider and hands it here.
+ * the caller fetches the measure from its provider and hands it here, and new
+ * rows record that provider.
  */
-async function ingestMeasure(
-  bill: CentralMeasure,
+export async function ingestMeasure(
+  measure: CentralMeasure,
   provider: Provider,
   env: Env,
   db: Db,
@@ -123,15 +196,49 @@ async function ingestMeasure(
   // --- Change detection ---
   // Read existing bill to check change_hash and build before-snapshot
   const existingBillRow = await db
-    .select({ changeHash: bills.changeHash, status: bills.status, title: bills.title, description: bills.description })
+    .select({
+      changeHash: bills.changeHash, status: bills.status, title: bills.title, description: bills.description,
+      provider: bills.provider, carriedFrom: bills.carriedFrom, carriedWaits: bills.carriedWaits,
+    })
     .from(bills)
-    .where(eq(bills.billId, bill.bill_id))
+    .where(eq(bills.billId, measure.bill_id))
     .get()
+
+  // A cutover moved the bill to another provider while this ingest ran: the
+  // bill's new provider writes it now, so this one writes nothing.
+  if (existingBillRow && existingBillRow.provider !== provider.id) {
+    console.warn(`[processor-ls] bill ${measure.bill_id} now syncs from ${existingBillRow.provider}; dropping its ${provider.id} ingest`)
+    return
+  }
+  // A legislator a cutover matched keeps their person id (lib/carriedIds.ts).
+  // Only a snapshot provider can be cut over to.
+  const bill = provider.snapshot ? measureWithCarriedPeople(measure, await carriedPeopleIds(db, provider.id)) : measure
+
+  // The first ingest of a bill a cutover moved here (lib/cutover.ts). Its rows
+  // still hold the previous provider's data, so this ingest replaces them
+  // without telling instances about any change, and carries the bill's
+  // calendar entries over under the identities instances know.
+  const carriedFrom = existingBillRow?.carriedFrom
+    ? findProvider(existingBillRow.carriedFrom) ?? provider
+    : null
+  // A measure with no calendar at all is no evidence about the bill's
+  // entries, so the carry-over waits for one that has a calendar, up to
+  // MAX_CARRY_WAITS ingests, and then carries the entries over to nothing.
+  const carryWaits = !!carriedFrom && bill.calendar === undefined && (existingBillRow?.carriedWaits ?? 0) < MAX_CARRY_WAITS - 1
+  if (carriedFrom) {
+    console.log(`[processor-ls] first ${provider.id} ingest of bill ${bill.bill_id} since its cutover from ${carriedFrom.id}: no changes sent`)
+    if (bill.calendar === undefined && !carryWaits) {
+      console.warn(`[processor-ls] bill ${bill.bill_id} came from ${provider.id} with no calendar ${MAX_CARRY_WAITS} times since its cutover; ` +
+        `cancelling its ${carriedFrom.id} calendar entries`)
+    }
+    await clearProviderData(env.DB, [bill.bill_id])
+  }
 
   let detectedChanges: ChangeRecord[] = []
   let calendarChanges: CalendarChange[] = []
+  let priorCalendar: CalendarRow[] = []
 
-  if (existingBillRow) {
+  if (existingBillRow && !carriedFrom) {
     // Read before-snapshot from child tables
     const [historyRows, textRows, supplementRows, amendmentRows, voteRows, sponsorRows, priorCalRows] = await Promise.all([
       db.select({ seq: billHistory.seq }).from(billHistory).where(eq(billHistory.billId, bill.bill_id)).all(),
@@ -144,9 +251,9 @@ async function ingestMeasure(
         .leftJoin(people, eq(billSponsors.peopleId, people.peopleId))
         .where(eq(billSponsors.billId, bill.bill_id))
         .all(),
-      db.select({ typeId: billCalendar.typeId, description: billCalendar.description, date: billCalendar.date, time: billCalendar.time, location: billCalendar.location, eventHash: billCalendar.eventHash })
-        .from(billCalendar).where(eq(billCalendar.billId, bill.bill_id)).all(),
+      readCalendarRows(db, bill.bill_id),
     ])
+    priorCalendar = priorCalRows
 
     const sponsorKeys = new Set<string>()
     const sponsorDetailByKey = new Map<string, string>()
@@ -170,54 +277,39 @@ async function ingestMeasure(
     }
 
     detectedChanges = detectChanges(snapshot, bill, provider)
+  }
 
-    // Write change records
-    if (detectedChanges.length > 0) {
-      for (const change of detectedChanges) {
-        await db.insert(billChangeLog).values({
-          id:         crypto.randomUUID(),
-          billId:     bill.bill_id,
-          changeType: change.changeType,
-          oldValue:   change.oldValue ?? null,
-          newValue:   change.newValue ?? null,
-          detail:     change.detail ?? null,
-          detectedAt: now,
-        })
-      }
-    }
-
-    const priorCalendar: PriorCalendarRow[] = priorCalRows.map(r => ({
-      identityKey: calendarIdentityKey({ type_id: r.typeId, description: r.description, date: r.date }),
-      eventHash: r.eventHash,
-      date: r.date,
-      description: r.description,
-      time: r.time,
-      location: r.location,
-    }))
-    calendarChanges = detectCalendarChanges(priorCalendar, bill.calendar ?? [], now.slice(0, 10))
-
-    if (calendarChanges.length > 0) {
-      for (const change of calendarChanges) {
-        await db.insert(billChangeLog).values({
-          id: crypto.randomUUID(),
-          billId: bill.bill_id,
-          changeType: change.changeType,
-          oldValue: null,
-          newValue: change.description ?? null,
-          detail: change.date ?? null,
-          detectedAt: now,
-        })
-      }
-    }
+  // This pull's effect on the bill's calendar. A new bill's entries are all
+  // new, and like its other data they aren't reported as changes. Nor is a
+  // cutover's carry-over. While a carry-over waits, instances' calendars are
+  // left as they are.
+  let calendarPlan: CalendarPlan | null
+  if (carriedFrom && !carryWaits) {
+    const incoming = bill.calendar ?? []
+    const carry = carryCalendar(carriedFrom, provider, await readCalendarRows(db, bill.bill_id), incoming, now)
+    const pulled = planCalendarPull(provider, bill.bill_id, carry.rows, incoming, bill.change_hash, now)
+    const writes = new Map([...carry.writes, ...pulled.writes].map(r => [r.id, r]))
+    calendarPlan = { ...pulled, writes: [...writes.values()], changes: [] }
+  } else if (carryWaits) {
+    calendarPlan = null
+  } else {
+    calendarPlan = planCalendarPull(provider, bill.bill_id, priorCalendar, bill.calendar, bill.change_hash, now)
+    if (existingBillRow) calendarChanges = calendarPlan.changes
   }
   // --- End change detection ---
 
-  // Upsert core bill row
-  await db.insert(bills).values({
+  // Upsert core bill row. It writes only while the row is still this
+  // provider's: a cutover (or its undo) that landed before this point gave
+  // the bill to another provider, and this ingest then writes nothing. One
+  // that lands after it leaves the rest of this ingest writing, which the
+  // other provider's quiet first ingest clears up (see the carried_from
+  // update below).
+  const written = await db.insert(bills).values({
     billId:             bill.bill_id,
     changeHash:         bill.change_hash,
     sessionId:          bill.session_id,
     state:              bill.state,
+    provider:           provider.id,
     stateId:            bill.state_id,
     billNumber:         bill.bill_number,
     billType:           bill.bill_type,
@@ -242,6 +334,10 @@ async function ingestMeasure(
     target: bills.billId,
     set: {
       changeHash:         bill.change_hash,
+      // A bill first inserted from a masterlist (which carries no type) keeps the
+      // column default 'B' until this runs, so write the type on every ingest.
+      billType:           bill.bill_type,
+      billTypeId:         bill.bill_type_id,
       title:              bill.title,
       description:        bill.description || null,
       status:             bill.status,
@@ -253,10 +349,30 @@ async function ingestMeasure(
       progressJson:       bill.progress ? JSON.stringify(bill.progress) : null,
       currentBody:        bill.current_body,
       currentBodyId:      bill.current_body_id,
-      updatedAt:          detectedChanges.length > 0 ? now : sql`updated_at`,
+      // A cutover's first ingest changes the bill's data without reporting a
+      // change, so instances still see it moved and fetch it again.
+      updatedAt:          detectedChanges.length > 0 || carriedFrom ? now : sql`updated_at`,
       textsFetchedAt:     now,
     },
-  })
+    setWhere: eq(bills.provider, provider.id),
+  }).returning({ billId: bills.billId })
+  if (written.length === 0) {
+    console.warn(`[processor-ls] bill ${bill.bill_id} changed provider during its ${provider.id} ingest; nothing written`)
+    return
+  }
+
+  for (const change of detectedChanges) {
+    await db.insert(billChangeLog).values({
+      id:         crypto.randomUUID(),
+      billId:     bill.bill_id,
+      changeType: change.changeType,
+      oldValue:   change.oldValue ?? null,
+      newValue:   change.newValue ?? null,
+      detail:     change.detail ?? null,
+      detectedAt: now,
+    })
+  }
+  await logCalendarChanges(db, bill.bill_id, calendarChanges, now)
 
   // Replace child rows
   await db.delete(billHistory).where(eq(billHistory.billId, bill.bill_id))
@@ -267,6 +383,7 @@ async function ingestMeasure(
       date: h.date, action: h.action,
       chamber: h.chamber || null, chamberId: h.chamber_id,
       importance: h.importance, seq: i,
+      videoUrl: httpUrl(h.video_url),
     })
   }
 
@@ -281,7 +398,8 @@ async function ingestMeasure(
     if (s.people_id) {
       const personValues = personRow(s, bill.state_id ?? null)
       const { peopleId: _omit, ...personUpdate } = personValues
-      await db.insert(people).values(personValues).onConflictDoUpdate({
+      // A person keeps the provider that first wrote them: set on insert only.
+      await db.insert(people).values({ ...personValues, provider: provider.id }).onConflictDoUpdate({
         target: people.peopleId,
         set: personUpdate,
       })
@@ -313,6 +431,8 @@ async function ingestMeasure(
     })
   }
 
+  // The committees the bill names, before the referrals that point at them.
+  await upsertCommittees(db, bill, provider)
   await db.delete(billReferrals).where(eq(billReferrals.billId, bill.bill_id))
   for (const r of bill.referrals ?? []) {
     await db.insert(billReferrals).values({
@@ -323,16 +443,12 @@ async function ingestMeasure(
     })
   }
 
-  await db.delete(billCalendar).where(eq(billCalendar.billId, bill.bill_id))
-  for (const cal of bill.calendar ?? []) {
-    await db.insert(billCalendar).values({
-      id: crypto.randomUUID(), billId: bill.bill_id,
-      typeId: cal.type_id || null, eventHash: cal.event_hash || null,
-      type: cal.type || null, date: cal.date || null,
-      time: cal.time || null, location: cal.location || null,
-      description: cal.description || null,
-    })
-  }
+  // Calendar rows are updated in place, never deleted (lib/billCalendar.ts).
+  if (calendarPlan) await writeCalendarRows(db, calendarPlan.writes)
+
+  // The provider's extras. Display only: change detection above never sees
+  // them, so an extra changing alone notifies no one.
+  await replaceBillExtras(db, bill, provider)
 
   // Upsert texts — preserve existing r2_key
   for (const t of bill.texts ?? []) {
@@ -430,8 +546,10 @@ async function ingestMeasure(
   }
 
   // Upsert roll calls (vote summaries from getBill). Per-legislator vote rows
-  // (roll_call_votes) would cost a getRollCall call each, so they come from the
-  // weekly vote-dataset load instead (cron/vote-datasets.ts).
+  // (roll_call_votes) would cost a getRollCall call each, so for LegiScan they
+  // come from the weekly vote-dataset load instead (cron/vote-datasets.ts).
+  // Providers whose records carry them inline, such as DC LIMS, set member_votes.
+  const memberVotes: RollCallMemberVotes[] = []
   for (const v of bill.votes ?? []) {
     await db.insert(rollCalls).values({
       rollCallId:  v.roll_call_id,
@@ -465,20 +583,71 @@ async function ingestMeasure(
         stateLink:   v.state_link || null,
       },
     })
+
+    if (v.member_votes) {
+      memberVotes.push({
+        rollCallId: v.roll_call_id,
+        // A vote whose member the provider couldn't resolve has no person to
+        // show it under (the bill API skips those), so it isn't stored.
+        votes: v.member_votes.filter(mv => mv.people_id != null)
+          .map(mv => ({ peopleId: mv.people_id!, voteId: mv.vote_id, voteText: mv.vote_text })),
+      })
+    }
+  }
+  // One write for every member vote of the bill: a Virginia budget bill has
+  // thousands, and one query each would pass D1's per-invocation query limit.
+  if (memberVotes.length > 0) await writeMemberVotes(env.DB, memberVotes, { replace: true })
+
+  // Only once everything above is written does a cutover's first ingest stop
+  // being one, so an ingest that fails partway is retried as quiet as it began.
+  // An undo that landed after this ingest's upsert gave the bill back to its
+  // previous provider while this one kept writing: the bill now holds this
+  // provider's data, so it is carried from this provider, and the previous
+  // one's next ingest is the quiet one that replaces it.
+  if (carriedFrom) {
+    const stillOurs = sql`${bills.provider} = ${provider.id}`
+    await db.update(bills)
+      .set(carryWaits
+        ? {
+            carriedFrom: sql`CASE WHEN ${stillOurs} THEN ${bills.carriedFrom} ELSE ${provider.id} END`,
+            carriedWaits: sql`CASE WHEN ${stillOurs} THEN COALESCE(${bills.carriedWaits}, 0) + 1 ELSE NULL END`,
+          }
+        : { carriedFrom: sql`CASE WHEN ${stillOurs} THEN NULL ELSE ${provider.id} END`, carriedWaits: null })
+      .where(and(eq(bills.billId, bill.bill_id), eq(bills.carriedFrom, existingBillRow!.carriedFrom!)))
   }
 
-  const calendarBlock: CalendarBlock = {
-    events: (bill.calendar ?? []).map(e => ({
-      identityKey: calendarIdentityKey(e),
-      date: e.date || null,
-      time: e.time || null,
-      location: e.location || null,
-      description: e.description || null,
-      eventHash: e.event_hash || null,
-    })),
+  const calendarBlock: CalendarBlock | undefined = calendarPlan ? {
+    events: calendarBlockEvents(provider, calendarPlan.live, await calendarCoverage(db, provider, bill.bill_id, calendarPlan.live)),
     changes: calendarChanges,
-  }
+  } : undefined
   await notifyTenants(bill.bill_id, env, db, now, forceMetadata, forceAI, detectedChanges, calendarBlock, interactive)
+}
+
+/**
+ * A sync pass listed the bill with `pullHash`, the change hash of the pull its
+ * missing calendar entries were missing from: count one more pull, cancel what
+ * that makes two, and tell instances. Calls no provider.
+ */
+async function recheckCalendar(billId: number, pullHash: string, provider: Provider, env: Env, db: Db): Promise<void> {
+  const bill = await db.select({ changeHash: bills.changeHash }).from(bills).where(eq(bills.billId, billId)).get()
+  // The bill has moved on since the pass listed it, and its ingest pulls it fresh.
+  if (bill?.changeHash !== pullHash) return
+  const now = nowDb()
+  const prior = await readCalendarRows(db, billId)
+  // Nothing was missing from the pull with this hash.
+  if (!prior.some(r => r.missedHash === pullHash)) return
+  const plan = planCalendarRecheck(provider, prior, pullHash, now)
+  if (plan.writes.length > 0) {
+    await writeCalendarRows(db, plan.writes)
+    await logCalendarChanges(db, billId, plan.changes, now)
+  }
+  // Sent even when there is nothing new to write: a retried recheck whose
+  // first try wrote its rows and then failed to reach instances must still
+  // reach them, and instances reconcile the same block idempotently.
+  await notifyTenants(billId, env, db, now, false, false, [], {
+    events: calendarBlockEvents(provider, plan.live, await calendarCoverage(db, provider, billId, plan.live)),
+    changes: plan.changes,
+  })
 }
 
 /**
@@ -590,7 +759,8 @@ async function downloadTextToR2(
 
   // Attempt 2: the provider's own copy, when it keeps one (LegiScan's
   // getBillText). That can cost an API call per document, so it only runs when
-  // the direct fetch produced nothing usable.
+  // the direct fetch produced nothing usable. The provider is the bill's own,
+  // so it is only ever asked for documents it issued.
   if (!body && provider.fetchDocument) {
     console.warn(`[processor-ls] doc ${docId}: ${failure} — falling back to the ${provider.id} copy`)
     try {

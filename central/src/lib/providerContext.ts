@@ -1,13 +1,15 @@
-import { apiCallLog } from '../db/schema'
+import { asc, eq, sql } from 'drizzle-orm'
+import { apiCallLog, people } from '../db/schema'
 import { nowDb } from './dbTime'
+import { knownProviderIds, providerIdsFor } from './providerIds'
 import type { Provider, ProviderContext } from '../providers'
 import type { Env, Db } from '../types'
 
 /**
  * What core hands a provider: a frozen copy of only the env keys it declared,
- * and a call log that writes each outbound API call to api_call_log.
- * `logParams` are added to every logged call's params, so a caller can record
- * why it spent the calls.
+ * a call log that writes each outbound API call to api_call_log, and the reads
+ * and id minting a provider may need, done by core. `logParams` are added to
+ * every logged call's params, so a caller can record why it spent the calls.
  */
 export function providerContext(
   provider: Provider,
@@ -16,11 +18,31 @@ export function providerContext(
   logParams: Record<string, unknown> = {},
 ): ProviderContext {
   return {
-    env: Object.freeze(Object.fromEntries(provider.envKeys.map(key => [key, env[key]]))),
+    env: providerEnv(provider, env),
     logCall(callType, params) {
       db.insert(apiCallLog)
         .values({ loggedAt: nowDb(), callType, params: JSON.stringify({ ...params, ...logParams }) })
         .catch(err => console.error('[rate-limit] failed to log API call:', err))
     },
+    today: nowDb().slice(0, 10),
+    ids: (kind, nativeKeys) => providerIdsFor(db, provider.id, kind, nativeKeys),
+    knownIds: (kind, nativeKeys) => knownProviderIds(db, provider.id, kind, nativeKeys),
+    // People a cutover carried over (lib/carriedIds.ts) come last, so a
+    // provider that indexes them by name, latest first (LIMS), keeps giving a
+    // legislator the id instances already have, even once the provider lists
+    // them under a new id of its own (a new Council Period, say).
+    people: () => db.select({ peopleId: people.peopleId, name: people.name, role: people.role })
+      .from(people)
+      .where(eq(people.provider, provider.id))
+      .orderBy(
+        asc(sql`EXISTS (SELECT 1 FROM cutover_people cp JOIN cutovers c ON c.id = cp.cutover_id
+          WHERE cp.people_id = ${people.peopleId} AND c.to_provider = ${provider.id} AND c.undone_at IS NULL)`),
+        asc(people.peopleId))
+      .all(),
   }
+}
+
+/** A frozen copy of only the env keys a provider declared. */
+export function providerEnv(provider: Provider, env: Env): ProviderContext['env'] {
+  return Object.freeze(Object.fromEntries(provider.envKeys.map(key => [key, env[key]])))
 }

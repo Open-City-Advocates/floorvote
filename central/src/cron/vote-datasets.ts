@@ -22,6 +22,7 @@ import { sessions, tenants } from '../db/schema'
 import { DEFAULT_PROVIDER_ID, getProvider, type MeasurePerson } from '../providers'
 import { insertMissingPeople, personRow } from '../lib/people'
 import { providerContext } from '../lib/providerContext'
+import { loadStateOwners, ownerOf } from '../lib/stateProviders'
 import { storedVoteCounts, writeMemberVotes, type RollCallMemberVotes } from '../lib/rollCallVotes'
 import { loadTrackedStates } from './sync'
 import type { VoteDatasetMessage, Db, Env } from '../types'
@@ -70,9 +71,11 @@ function entryKind(name: string): EntryKind | null {
  * its votes were last loaded. "Covered" is what the hourly sync covers: a
  * session of a state an active instance tracks, with sync enabled and not
  * adjourned sine die. Older sessions are backfilled with the bulk seeder.
+ * States another provider owns, and its sessions, are left out like the sync
+ * leaves them out.
  */
 export async function checkVoteDatasets(env: Env, db: Db): Promise<void> {
-  // States don't record their provider yet, so every state uses the default.
+  // LegiScan's datasets, for the states LegiScan owns, as in the LegiScan sync.
   const provider = getProvider(DEFAULT_PROVIDER_ID)
   if (!provider.listVoteDatasets || !provider.fetchVoteDataset) return
   const ctx = providerContext(provider, env, db)
@@ -81,6 +84,8 @@ export async function checkVoteDatasets(env: Env, db: Db): Promise<void> {
     .from(tenants).where(eq(tenants.active, true)).all()
   if (activeTenants.length === 0) return
   const trackedStates = await loadTrackedStates(db, activeTenants)
+  const owners = await loadStateOwners(env, db)
+  for (const state of trackedStates) if (ownerOf(owners, state) !== provider.id) trackedStates.delete(state)
   if (trackedStates.size === 0) return
 
   const due = await db.select({
@@ -91,6 +96,7 @@ export async function checkVoteDatasets(env: Env, db: Db): Promise<void> {
     .from(sessions)
     .where(and(
       inArray(sessions.state, [...trackedStates]),
+      eq(sessions.provider, provider.id),
       eq(sessions.syncEnabled, true),
       ne(sessions.sineDie, 1),
       or(isNull(sessions.votesCheckedAt), lt(sessions.votesCheckedAt, sql`datetime('now', ${CHECK_INTERVAL})`)),

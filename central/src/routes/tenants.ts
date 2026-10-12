@@ -1,12 +1,18 @@
 import { Hono, type Context } from 'hono'
 import { drizzle } from 'drizzle-orm/d1'
-import { eq, and, isNull, inArray, desc } from 'drizzle-orm'
+import { eq, and, isNull, inArray, asc, desc } from 'drizzle-orm'
 import { matchesUnion } from '../lib/keywords'
 import * as schema from '../db/schema'
 import { secretsMatch } from '../lib/auth'
 import { nowDb } from '../lib/dbTime'
-import type { Env } from '../types'
-import { calendarBlockFromRows, type StoredCalendarRow } from '../lib/detect-changes'
+import type { Db, Env } from '../types'
+import { calendarBlockEvents, calendarKind, type CalendarRow } from '../lib/billCalendar'
+import { bodyEventDetails, bodyEventOptions, calendarCoverage, type BodyEventDetail, type BodyEventOptions } from '../lib/bodyEvents'
+import { coverageCapabilities } from '../lib/capabilities'
+import { coverageAttribution } from '../lib/attribution'
+import { listStateOwnership } from '../lib/stateProviders'
+import { DEFAULT_PROVIDER_ID, findProvider, getProvider } from '../providers'
+import { ownerOfState } from '../lib/stateProviders'
 import { getTenantQueue, tenantQueueBindingName } from '../lib/tenantQueue'
 import { deliverBatchToTenant } from '../lib/tenantDelivery'
 import { ensureQueue, resolveQueueId, queuesRestEnabled } from '../lib/queuesRest'
@@ -43,7 +49,9 @@ tenantsRoutes.get('/current-session/:state', async (c) => {
     })
     .from(schema.sessions)
     .where(and(eq(schema.sessions.state, state), eq(schema.sessions.special, 0)))
-    .orderBy(desc(schema.sessions.yearStart))
+    // Of two providers' sessions for one year (a cutover leaves the old one
+    // marked ended), the one still in progress.
+    .orderBy(desc(schema.sessions.yearStart), asc(schema.sessions.sineDie))
     .limit(1)
     .get()
   if (!row) return c.json({ error: 'no session for state' }, 404)
@@ -214,6 +222,21 @@ tenantsRoutes.post('/seed-session/:tenantId', async (c) => {
 
   const db = drizzle(c.env.DB, { schema })
 
+  // Only the provider that owns the session's state (state_providers) links
+  // its bills. Another provider's session there (such as the LegiScan session
+  // a cutover moved DC off) would hand the tenant copies of bills it already
+  // holds from the owner, which nothing syncs any more.
+  const sessRow = await db.select({ state: schema.sessions.state, provider: schema.sessions.provider })
+    .from(schema.sessions).where(eq(schema.sessions.sessionId, sessionId)).get()
+  if (!sessRow) return c.json({ error: `session ${sessionId} not found` }, 404)
+  const owner = await ownerOfState(db, sessRow.state)
+  if (owner !== sessRow.provider) {
+    return c.json({
+      error: `${sessRow.state} syncs from ${owner}, and session ${sessionId} is ${sessRow.provider}'s. Seed one of ${owner}'s sessions instead.`,
+      owner,
+    }, 409)
+  }
+
   // Load keyword union for this tenant
   const kwRows = await db.select({ keyword: schema.keywordRegistry.keyword })
     .from(schema.keywordRegistry)
@@ -250,14 +273,19 @@ tenantsRoutes.post('/seed-session/:tenantId', async (c) => {
 
   // Bulk-insert bill_tenants — INSERT OR IGNORE so existing rows ('keyword', 'manual')
   // are never overwritten. D1 does not support WHERE in ON CONFLICT DO UPDATE.
-  // D1 HTTP API limit: 100 bound params per query. Each row binds 3 (bill_id, tenant_id,
-  // match_type), so max 33 rows per batch — use 30 to stay safely under.
-  const INSERT_CHUNK = 30
-  for (let i = 0; i < sessionBills.length; i += INSERT_CHUNK) {
-    const slice = sessionBills.slice(i, i + INSERT_CHUNK)
-    await db.insert(schema.billTenants)
-      .values(slice.map(b => ({ billId: b.billId, tenantId, matchType: null as string | null })))
-      .onConflictDoNothing()
+  // One statement for the page, with the ids as one JSON parameter (D1 binds at
+  // most 100 parameters), written only while the session's provider still owns
+  // its state, as the sync's links are (insertLinkWhileOwner).
+  await c.env.DB.prepare(`
+    INSERT INTO bill_tenants (bill_id, tenant_id, notified_at, match_type)
+    SELECT value, ?1, NULL, NULL FROM json_each(?2)
+    WHERE COALESCE((SELECT provider FROM state_providers WHERE state = ?3), ?4) = ?5
+    ON CONFLICT DO NOTHING`)
+    .bind(tenantId, JSON.stringify(sessionBills.map(b => b.billId)), sessRow.state, DEFAULT_PROVIDER_ID, sessRow.provider)
+    .run()
+  // The state changed provider during the request: link and send nothing more.
+  if (await ownerOfState(db, sessRow.state) !== sessRow.provider) {
+    return c.json({ error: `${sessRow.state} changed provider during the seed; nothing was sent`, offset }, 409)
   }
 
   // Promote null rows to 'keyword' for keyword-matching bills.
@@ -301,11 +329,9 @@ tenantsRoutes.post('/seed-session/:tenantId', async (c) => {
   // never polled the state and the bills sat static. mergeCoverage is additive,
   // and /register also merges, so this isn't reverted by the tenant's next register.
   if (offset === 0) {
-    const sessRow = await db.select({ state: schema.sessions.state })
-      .from(schema.sessions).where(eq(schema.sessions.sessionId, sessionId)).get()
     const covRow = await db.select({ stateCoverage: schema.tenants.stateCoverage })
       .from(schema.tenants).where(eq(schema.tenants.tenantId, tenantId)).get()
-    if (sessRow?.state && covRow) {
+    if (covRow) {
       let cov: string[] | null = null
       try { cov = JSON.parse(covRow.stateCoverage) } catch { cov = null }
       const merged = JSON.stringify(mergeCoverage(cov, [sessRow.state]))
@@ -514,6 +540,7 @@ tenantsRoutes.get('/:tenantId/upcoming-hearings', guardCallerTenantParam(), asyn
     SELECT
       bc.event_hash AS eventHash,
       bc.type AS type,
+      bc.type_id AS typeId,
       bc.date AS date,
       bc.time AS time,
       bc.location AS location,
@@ -522,17 +549,78 @@ tenantsRoutes.get('/:tenantId/upcoming-hearings', guardCallerTenantParam(), asyn
       b.bill_number AS billNumber,
       b.title AS billTitle,
       b.state AS state,
+      b.provider AS provider,
       s.session_name AS sessionName
     FROM bill_calendar bc
     INNER JOIN bill_tenants bt ON bt.bill_id = bc.bill_id AND bt.tenant_id = ?
     INNER JOIN bills b ON b.bill_id = bc.bill_id
     LEFT JOIN sessions s ON s.session_id = b.session_id
-    WHERE bc.date >= ? AND bc.date <= ?${scopeClause}
+    WHERE bc.date >= ? AND bc.date <= ? AND bc.cancelled_at IS NULL${scopeClause}
     ORDER BY bc.date ASC, COALESCE(bc.time, '99:99:99') ASC
-  `).bind(tenantId, today, end, ...billIds).all()
+  `).bind(tenantId, today, end, ...billIds).all<{ typeId: number | null; provider: string } & Record<string, unknown>>()
 
-  return c.json(rows.results ?? [])
+  // Each entry's kind, from the vocabulary of the provider that wrote its bill.
+  return c.json((rows.results ?? []).map(({ typeId, provider, ...row }) => ({
+    ...row,
+    kind: calendarKind(findProvider(provider) ?? getProvider(DEFAULT_PROVIDER_ID), typeId),
+  })))
 })
+
+// The legislature's own calendar for each state the tenant covers whose
+// provider publishes one (lib/bodyEvents.ts), dated from `from` to `to`, with
+// each event's calendar UID, agenda bills, and the bill calendar entries it
+// covers. Also the capabilities of the states the tenant covers (a state left
+// out has none), so the instance can gate features on them, and the
+// attribution of the providers those states come from (lib/attribution.ts),
+// so its footer credits them. Each state's events come from the provider that
+// owns it. Cancelled events come too, marked, so the instance cancels its copy.
+tenantsRoutes.get('/:tenantId/body-events', guardCallerTenantParam(), async (c) => {
+  const tenantId = c.req.param('tenantId')
+  const from = c.req.query('from') ?? ''
+  const to = c.req.query('to') ?? ''
+  const isDate = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d)
+  if (!isDate(from) || !isDate(to) || from > to) return c.json({ error: 'from and to (YYYY-MM-DD, from <= to) are required' }, 400)
+  // Real days, at most a year apart, which bounds the read.
+  const span = Date.parse(to) - Date.parse(from)
+  if (Number.isNaN(span)) return c.json({ error: 'from and to must be real dates' }, 400)
+  if (span > 366 * 86400_000) return c.json({ error: 'at most a year from from to to' }, 400)
+
+  const db = drizzle(c.env.DB, { schema })
+  const { owners, capabilities, coverage } = await tenantCapabilities(db, tenantId)
+
+  const events: BodyEventDetail[] = []
+  for (const [state, caps] of Object.entries(capabilities)) {
+    if (!caps.bodyEvents) continue
+    const provider = findProvider(owners.get(state))
+    if (provider) events.push(...await bodyEventDetails(db, provider, state, from, to))
+  }
+  return c.json({ capabilities, attribution: coverageAttribution(owners, coverage), events })
+})
+
+// What the instance's event rules can choose from (#298), for each state it
+// covers whose provider publishes the legislature's own calendar: the
+// committees in `committees` and the kinds of the state's body events, each
+// from the provider that owns the state. A state left out has no body events.
+tenantsRoutes.get('/:tenantId/body-event-options', guardCallerTenantParam(), async (c) => {
+  const db = drizzle(c.env.DB, { schema })
+  const { owners, capabilities } = await tenantCapabilities(db, c.req.param('tenantId'))
+  const states: Record<string, BodyEventOptions> = {}
+  for (const [state, caps] of Object.entries(capabilities)) {
+    const provider = caps.bodyEvents ? findProvider(owners.get(state)) : undefined
+    if (provider) states[state] = await bodyEventOptions(db, provider, state)
+  }
+  return c.json({ states })
+})
+
+/** The states a tenant covers that have capabilities, each state's owner, and the coverage list itself. */
+async function tenantCapabilities(db: Db, tenantId: string) {
+  const tenant = await db.select({ stateCoverage: schema.tenants.stateCoverage }).from(schema.tenants)
+    .where(eq(schema.tenants.tenantId, tenantId)).get()
+  let coverage: string[] = []
+  try { coverage = tenant ? JSON.parse(tenant.stateCoverage) as string[] : [] } catch { coverage = [] }
+  const owners = new Map((await listStateOwnership(db)).map(r => [r.state, r.provider]))
+  return { owners, coverage, capabilities: coverageCapabilities(owners, coverage) }
+}
 
 tenantsRoutes.post('/reprocess/:tenantId', guardCallerTenantParam(), async (c) => {
   const tenantId = c.req.param('tenantId')
@@ -588,30 +676,30 @@ tenantsRoutes.post('/reprocess/:tenantId', guardCallerTenantParam(), async (c) =
 
     // Calendar blocks are attached ONLY on the targeted path; untargeted reprocess
     // stays lean metadata-only to avoid bloating 10k+ messages.
-    const calByBillId = new Map<number, StoredCalendarRow[]>()
+    const calByBillId = new Map<number, { provider: string; rows: CalendarRow[] }>()
     if (targeted) {
-      const calRows = await db.select({
-        billId:      schema.billCalendar.billId,
-        typeId:      schema.billCalendar.typeId,
-        description: schema.billCalendar.description,
-        date:        schema.billCalendar.date,
-        time:        schema.billCalendar.time,
-        location:    schema.billCalendar.location,
-        eventHash:   schema.billCalendar.eventHash,
-      }).from(schema.billCalendar).where(inArray(schema.billCalendar.billId, chunk.map(r => r.billId))).all()
-      for (const row of calRows) {
-        const arr = calByBillId.get(row.billId) ?? []
-        arr.push({ typeId: row.typeId, description: row.description, date: row.date, time: row.time, location: row.location, eventHash: row.eventHash })
-        calByBillId.set(row.billId, arr)
+      // The entries that aren't cancelled, each under the identity instances know it by.
+      const calRows = await db.select({ row: schema.billCalendar, provider: schema.bills.provider })
+        .from(schema.billCalendar)
+        .innerJoin(schema.bills, eq(schema.bills.billId, schema.billCalendar.billId))
+        .where(and(inArray(schema.billCalendar.billId, chunk.map(r => r.billId)), isNull(schema.billCalendar.cancelledAt)))
+        .all()
+      for (const { row, provider } of calRows) {
+        const entry = calByBillId.get(row.billId) ?? { provider, rows: [] }
+        entry.rows.push(row)
+        calByBillId.set(row.billId, entry)
       }
     }
 
-    const bodies = chunk.map(r => {
+    const bodies = await Promise.all(chunk.map(async r => {
       const msg: Record<string, unknown> = { tenantId, billId: toHandle(r.billId), forceMetadata: true }
       const cal = calByBillId.get(r.billId)
-      if (targeted && cal && cal.length > 0) msg.calendar = calendarBlockFromRows(cal)
+      if (targeted && cal) {
+        const provider = findProvider(cal.provider) ?? getProvider(DEFAULT_PROVIDER_ID)
+        msg.calendar = { events: calendarBlockEvents(provider, cal.rows, await calendarCoverage(db, provider, r.billId, cal.rows)), changes: [] }
+      }
       return msg
-    })
+    }))
     const outcome = await deliverBatchToTenant(c.env, tenantId, queueId, bodies)
     // Invariant backstop: the upfront guard already rejects the no-delivery-path case,
     // so this can't normally fire — it only trips if that guard ever drifts from

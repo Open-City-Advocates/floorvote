@@ -1,0 +1,1919 @@
+{
+ "about": "What upstream's central sends the fork's instance after the upgrade, recorded from central/test/cron/fork-upgrade.test.ts: the notifications its first DC sync and the LIMS re-ingest queued, the bill API's answer for each of their bills after the Council calendar sync, the instance's body events, and the committees and kinds its event rules can choose from (GET /tenants/oca/body-event-options). api/test/migrations/forkUpgrade.test.ts replays them.",
+ "notifications": [
+  {
+   "tenantId": "oca",
+   "billId": "legiscan:1012600769",
+   "forceMetadata": false,
+   "forceAI": false,
+   "matchType": "keyword",
+   "changes": [
+    {
+     "changeType": "text_added",
+     "oldValue": null,
+     "newValue": "2000224385",
+     "detail": "Introduced",
+     "detectedAt": "2026-09-29 09:00:00"
+    }
+   ],
+   "calendar": {
+    "events": [
+     {
+      "identityKey": "1|public hearing on b26-0769",
+      "kind": "hearing",
+      "date": "2026-10-23",
+      "time": null,
+      "location": null,
+      "description": "Public Hearing on B26-0769",
+      "eventHash": "6597c19112bc56442f7901e85a9ec539",
+      "coveredBy": null
+     },
+     {
+      "identityKey": "1|public hearing on b26-0769 (2)",
+      "kind": "hearing",
+      "date": "2026-11-06",
+      "time": null,
+      "location": null,
+      "description": "Public Hearing on B26-0769",
+      "eventHash": "770164d55f1730d42d9c3cd7423c6c6f",
+      "coveredBy": null
+     }
+    ],
+    "changes": [
+     {
+      "changeType": "hearing_changed",
+      "identityKey": "1|public hearing on b26-0769 (2)",
+      "kind": "hearing",
+      "date": "2026-11-06",
+      "time": null,
+      "location": null,
+      "description": "Public Hearing on B26-0769",
+      "eventHash": "770164d55f1730d42d9c3cd7423c6c6f"
+     }
+    ]
+   }
+  },
+  {
+   "tenantId": "oca",
+   "billId": "legiscan:1062600153",
+   "forceMetadata": false,
+   "forceAI": false,
+   "matchType": "keyword"
+  },
+  {
+   "tenantId": "oca",
+   "billId": "legiscan:1012600400",
+   "forceMetadata": false,
+   "forceAI": false,
+   "matchType": "keyword",
+   "calendar": {
+    "events": [
+     {
+      "identityKey": "1|public hearing on b26-0400",
+      "kind": "hearing",
+      "date": "2025-11-13",
+      "time": null,
+      "location": null,
+      "description": "Public Hearing on B26-0400",
+      "eventHash": "e3964c3a0bbd280017f56495c7ba3c63",
+      "coveredBy": null
+     },
+     {
+      "identityKey": "3|committee mark-up of b26-0400 by the youth affairs committee",
+      "kind": "markup",
+      "date": "2026-01-27",
+      "time": null,
+      "location": null,
+      "description": "Committee Mark-up of B26-0400 by the Youth Affairs Committee",
+      "eventHash": "bcef176cb0b77baa3c6384b763fc7525",
+      "coveredBy": null
+     },
+     {
+      "identityKey": "3|committee mark-up of b26-0400 by the judiciary and public safety committee",
+      "kind": "markup",
+      "date": "2026-02-23",
+      "time": null,
+      "location": null,
+      "description": "Committee Mark-up of B26-0400 by the Judiciary and Public Safety Committee",
+      "eventHash": "10d0db659a28fb3f878650b26eeeda7e",
+      "coveredBy": null
+     },
+     {
+      "identityKey": "10|mayor's response due",
+      "kind": "deadline",
+      "date": "2026-04-28",
+      "time": null,
+      "location": null,
+      "description": "Mayor's response due",
+      "eventHash": "7a092c46f311c01987ff568500acbfc9",
+      "coveredBy": null
+     }
+    ],
+    "changes": []
+   }
+  },
+  {
+   "tenantId": "oca",
+   "billId": "legiscan:1012600769",
+   "forceMetadata": false,
+   "forceAI": false,
+   "matchType": "keyword",
+   "changes": [
+    {
+     "changeType": "text_added",
+     "oldValue": null,
+     "newValue": "2000224385",
+     "detail": "Introduced",
+     "detectedAt": "2026-09-29 09:00:00"
+    }
+   ],
+   "calendar": {
+    "events": [
+     {
+      "identityKey": "1|public hearing on b26-0769",
+      "kind": "hearing",
+      "date": "2026-10-23",
+      "time": null,
+      "location": null,
+      "description": "Public Hearing on B26-0769",
+      "eventHash": "6597c19112bc56442f7901e85a9ec539",
+      "coveredBy": null
+     },
+     {
+      "identityKey": "1|public hearing on b26-0769 (2)",
+      "kind": "hearing",
+      "date": "2026-11-06",
+      "time": null,
+      "location": null,
+      "description": "Public Hearing on B26-0769",
+      "eventHash": "770164d55f1730d42d9c3cd7423c6c6f",
+      "coveredBy": null
+     }
+    ],
+    "changes": []
+   }
+  },
+  {
+   "tenantId": "oca",
+   "billId": "legiscan:1062600153",
+   "forceMetadata": false,
+   "forceAI": false,
+   "matchType": "keyword"
+  },
+  {
+   "tenantId": "oca",
+   "billId": "legiscan:1082600171",
+   "forceMetadata": false,
+   "forceAI": false,
+   "matchType": "keyword",
+   "calendar": {
+    "events": [
+     {
+      "identityKey": "1|public oversight roundtable on department of behavioral health’s financial challenges",
+      "kind": "hearing",
+      "date": "2026-10-02",
+      "time": null,
+      "location": "Committee on Health",
+      "description": "Public Oversight Roundtable on Department of Behavioral Health’s Financial Challenges",
+      "eventHash": "4c60f7aadf9743290069bb6450f64ce5",
+      "coveredBy": null
+     }
+    ],
+    "changes": []
+   }
+  }
+ ],
+ "bills": {
+  "legiscan:1012600769": {
+   "billId": "legiscan:1012600769",
+   "sessionId": "1000000026",
+   "sessionName": "2025-2026 Council Period 26",
+   "sessionSlug": "cp26",
+   "yearStart": 2025,
+   "yearEnd": 2026,
+   "state": "DC",
+   "number": "B26-0769",
+   "title": "Statutory Neglect Amendment Act of 2025",
+   "abstract": "BILL SUMMARY - As introduced, Bill 26-400 would update the statutory definition of neglect and clarify that the Child and Family Services Agency shall not use a parent or guardian’s eligibility or use of public benefits as the sole evidence that parental failure is unrelated to neglect. It would also clarify that homelessness or lack of stable housing shall not be used as sole evidence of neglect.",
+   "status": "Under Council Review",
+   "statusStage": "in_committee",
+   "statusRank": 201,
+   "statusDate": "2026-09-25",
+   "lastAction": "Re-Referral published.",
+   "lastActionDate": "2026-09-25",
+   "billType": "Permanent Bill",
+   "body": "",
+   "updatedAt": "2026-09-29 09:00:00",
+   "stateUrl": "https://lims.dccouncil.gov/Legislation/B26-0769",
+   "legiscanUrl": null,
+   "textHash": "e7dd85f3d4798f70e63fa68ba71f136919b6e335358ab2772cb3fa2b605bcdb5",
+   "textR2Key": "bills/legiscan-1012600769/texts/2000243163.pdf",
+   "texts": [
+    {
+     "docId": "2000243163",
+     "note": "Introduced",
+     "date": "2026-07-13",
+     "links": [
+      {
+       "url": "https://lims.dccouncil.gov/downloads/LIMS/62322/Introduction/B26-0769-Introduction.pdf?Id=243163",
+       "mediaType": "application/pdf"
+      }
+     ]
+    }
+   ],
+   "textStatus": "in_r2",
+   "actions": [
+    {
+     "description": "B26-0769 Introduced by Chairman Mendelson at Office of the Secretary",
+     "date": "2026-07-13",
+     "chamber": "C",
+     "classification": [],
+     "order": 0,
+     "videoUrl": null
+    },
+    {
+     "description": "Referred to Committee of the Whole",
+     "date": "2026-07-14",
+     "chamber": "C",
+     "classification": [],
+     "order": 1,
+     "videoUrl": null
+    },
+    {
+     "description": "Notice of Intent to Act on B26-0769 Published in the District of Columbia Register",
+     "date": "2026-07-17",
+     "chamber": "C",
+     "classification": [],
+     "order": 2,
+     "videoUrl": null
+    },
+    {
+     "description": "Notice of Public Hearing filed in the Office of Secretary by Committee of the Whole",
+     "date": "2026-09-08",
+     "chamber": "C",
+     "classification": [],
+     "order": 3,
+     "videoUrl": null
+    },
+    {
+     "description": "Re-Referred to Committee of the Whole with comments from the Committee on Human Services",
+     "date": "2026-09-22",
+     "chamber": "C",
+     "classification": [],
+     "order": 4,
+     "videoUrl": null
+    },
+    {
+     "description": "Re-Referral published.",
+     "date": "2026-09-25",
+     "chamber": "C",
+     "classification": [],
+     "order": 5,
+     "videoUrl": null
+    },
+    {
+     "description": "Public Hearing on B26-0769",
+     "date": "2026-10-23",
+     "chamber": "C",
+     "classification": [],
+     "order": 6,
+     "videoUrl": null
+    },
+    {
+     "description": "Public Hearing on B26-0769",
+     "date": "2026-11-06",
+     "chamber": "C",
+     "classification": [],
+     "order": 7,
+     "videoUrl": null
+    }
+   ],
+   "sponsors": [
+    {
+     "name": "Zachary Parker",
+     "party": null,
+     "role": "Councilmember",
+     "primary": true,
+     "personId": "1000000194",
+     "url": "https://dccouncil.gov/councilmembers/"
+    },
+    {
+     "name": "Anita Bonds",
+     "party": null,
+     "role": "Councilmember",
+     "primary": false,
+     "personId": "1000000190",
+     "url": "https://dccouncil.gov/councilmembers/"
+    }
+   ],
+   "votes": [],
+   "relatedBills": [],
+   "calendar": [
+    {
+     "eventHash": "6597c19112bc56442f7901e85a9ec539",
+     "typeId": 1,
+     "type": "Hearing",
+     "kind": "hearing",
+     "date": "2026-10-23",
+     "time": null,
+     "location": null,
+     "description": "Public Hearing on B26-0769",
+     "coveredBy": "council-2405@lims.dccouncil.gov"
+    },
+    {
+     "eventHash": "770164d55f1730d42d9c3cd7423c6c6f",
+     "typeId": 1,
+     "type": "Hearing",
+     "kind": "hearing",
+     "date": "2026-11-06",
+     "time": null,
+     "location": null,
+     "description": "Public Hearing on B26-0769",
+     "coveredBy": null
+    }
+   ],
+   "supplements": [
+    {
+     "supplementId": 2000244736,
+     "typeId": 7,
+     "type": "Hearing Notice",
+     "date": "2026-09-08",
+     "dateResolved": "2026-09-08",
+     "dateInferred": false,
+     "title": "Notice of Public Hearing filed in the Office of Secretary by Committee of the Whole",
+     "description": null,
+     "mime": "application/pdf",
+     "url": null,
+     "stateLink": "https://lims.dccouncil.gov/downloads/LIMS/62322/Hearing_Notice/B26-0769-Hearing_Notice1.pdf?Id=244736"
+    }
+   ],
+   "amendments": [],
+   "subjects": [],
+   "committee": null,
+   "referrals": [
+    {
+     "date": "2025-10-07",
+     "committeeId": "3000000001",
+     "name": "Committee on Youth Affairs",
+     "chamber": "C"
+    },
+    {
+     "date": "2025-10-07",
+     "committeeId": "3000000002",
+     "name": "Committee on Judiciary and Public Safety",
+     "chamber": "C"
+    }
+   ],
+   "extras": null
+  },
+  "legiscan:1062600153": {
+   "billId": "legiscan:1062600153",
+   "sessionId": "1000000026",
+   "sessionName": "2025-2026 Council Period 26",
+   "sessionSlug": "cp26",
+   "yearStart": 2025,
+   "yearEnd": 2026,
+   "state": "DC",
+   "number": "REPROG26-0153",
+   "title": "FY 2026 Reprogramming Request for $750,000.00 of Local Funds within the Department of Youth Rehabilitation Services Dear",
+   "abstract": "FY 2026 Reprogramming Request for $750,000.00 of Local Funds within the Department of Youth Rehabilitation Services Dear",
+   "status": "New",
+   "statusStage": "introduced",
+   "statusRank": 101,
+   "statusDate": "2026-09-25",
+   "lastAction": "Retained by the Council with comments from the Committee on Youth Affairs",
+   "lastActionDate": "2026-09-25",
+   "billType": "Reprogramming",
+   "body": "",
+   "updatedAt": "2026-09-28 09:00:00",
+   "stateUrl": "https://lims.dccouncil.gov/Legislation/REPROG26-0153",
+   "legiscanUrl": null,
+   "textHash": "cc41b0485f53b275a9c4661a22447fe04ffabcec8add0d13eb7756600518c7fc",
+   "textR2Key": "bills/legiscan-1062600153/texts/2000246261.pdf",
+   "texts": [
+    {
+     "docId": "2000246261",
+     "note": "Introduced",
+     "date": "2026-09-24",
+     "links": [
+      {
+       "url": "https://lims.dccouncil.gov/downloads/LIMS/62569/Introduction/REPROG26-0153-Introduction.pdf?Id=246261",
+       "mediaType": "application/pdf"
+      }
+     ]
+    }
+   ],
+   "textStatus": "in_r2",
+   "actions": [
+    {
+     "description": "REPROG26-0153 Introduced by Chairman Mendelson at Office of the Secretary",
+     "date": "2026-09-24",
+     "chamber": "C",
+     "classification": [],
+     "order": 0,
+     "videoUrl": null
+    },
+    {
+     "description": "Retained by the Council with comments from the Committee on Youth Affairs",
+     "date": "2026-09-25",
+     "chamber": "C",
+     "classification": [],
+     "order": 1,
+     "videoUrl": null
+    }
+   ],
+   "sponsors": [
+    {
+     "name": "Phil Mendelson",
+     "party": null,
+     "role": "Chairman",
+     "primary": true,
+     "personId": "1000000188",
+     "url": "https://dccouncil.gov/councilmembers/"
+    }
+   ],
+   "votes": [],
+   "relatedBills": [],
+   "calendar": [],
+   "supplements": [
+    {
+     "supplementId": 2000246262,
+     "typeId": 7,
+     "type": "Memorandum",
+     "date": null,
+     "dateResolved": null,
+     "dateInferred": false,
+     "title": "Memorandum",
+     "description": null,
+     "mime": "application/pdf",
+     "url": null,
+     "stateLink": "https://lims.dccouncil.gov/downloads/LIMS/62569/Memo/REPROG26-0153_Memorandum.pdf?Id=246262"
+    }
+   ],
+   "amendments": [],
+   "subjects": [],
+   "committee": null,
+   "referrals": [
+    {
+     "date": "2026-09-25",
+     "committeeId": null,
+     "name": "Retained by the Council",
+     "chamber": "C"
+    }
+   ],
+   "extras": {
+    "providerName": "DC Council",
+    "fields": [
+     {
+      "key": "requestedBy",
+      "label": "Introduced at the request of",
+      "explainer": "Who asked for the measure. The Chairman often introduces measures at the request of the Mayor.",
+      "display": "text",
+      "value": "Mayor"
+     },
+     {
+      "key": "commentCommittees",
+      "label": "Committees asked for comments",
+      "explainer": "Committees that may comment on the measure. The committee it was referred to, or the full Council, still acts on it.",
+      "display": "text",
+      "value": "Youth Affairs"
+     }
+    ]
+   }
+  },
+  "legiscan:1012600400": {
+   "billId": "legiscan:1012600400",
+   "sessionId": "1000000026",
+   "sessionName": "2025-2026 Council Period 26",
+   "sessionSlug": "cp26",
+   "yearStart": 2025,
+   "yearEnd": 2026,
+   "state": "DC",
+   "number": "B26-0400",
+   "title": "Statutory Neglect Amendment Act of 2025",
+   "abstract": "BILL SUMMARY - As introduced, Bill 26-400 would update the statutory definition of neglect and clarify that the Child and Family Services Agency shall not use a parent or guardian’s eligibility or use of public benefits as the sole evidence that parental failure is unrelated to neglect. It would also clarify that homelessness or lack of stable housing shall not be used as sole evidence of neglect.",
+   "status": "Official Law",
+   "statusStage": "enacted",
+   "statusRank": 705,
+   "statusDate": "2026-06-26",
+   "lastAction": "Law L26-0129, Effective from Jun 11, 2026 Published in DC Register Vol 73 and Page 008883",
+   "lastActionDate": "2026-06-26",
+   "billType": "Permanent Bill",
+   "body": "",
+   "updatedAt": "2026-09-28 09:00:00",
+   "stateUrl": "https://lims.dccouncil.gov/Legislation/B26-0400",
+   "legiscanUrl": null,
+   "textHash": "7a9357cf9a02b13c8f535c553314b0492cf80eb2ee9aa9bedb4ab3ef5d1ba28e",
+   "textR2Key": "bills/legiscan-1012600400/texts/2000236895.pdf",
+   "texts": [
+    {
+     "docId": "2000224385",
+     "note": "Introduced",
+     "date": "2025-10-06",
+     "links": [
+      {
+       "url": "https://lims.dccouncil.gov/downloads/LIMS/60460/Introduction/B26-0400-Introduction.pdf?Id=224385",
+       "mediaType": "application/pdf"
+      }
+     ]
+    },
+    {
+     "docId": "2000231796",
+     "note": "Committee Print",
+     "date": "2026-01-27",
+     "links": [
+      {
+       "url": "https://lims.dccouncil.gov/downloads/LIMS/60460/Committee_Print/B26-0400-Committee_Print1.pdf?Id=231796",
+       "mediaType": "application/pdf"
+      }
+     ]
+    },
+    {
+     "docId": "2000232948",
+     "note": "Committee Print",
+     "date": "2026-02-23",
+     "links": [
+      {
+       "url": "https://lims.dccouncil.gov/downloads/LIMS/60460/Committee_Print/B26-0400-Committee_Print2.pdf?Id=232948",
+       "mediaType": "application/pdf"
+      }
+     ]
+    },
+    {
+     "docId": "2000233777",
+     "note": "Engrossed",
+     "date": "2026-03-03",
+     "links": [
+      {
+       "url": "https://lims.dccouncil.gov/downloads/LIMS/60460/Meeting1/Engrossment/B26-0400-Engrossment1.pdf?Id=233777",
+       "mediaType": "application/pdf"
+      }
+     ]
+    },
+    {
+     "docId": "2000236164",
+     "note": "Enrolled",
+     "date": "2026-03-31",
+     "links": [
+      {
+       "url": "https://lims.dccouncil.gov/downloads/LIMS/60460/Meeting2/Enrollment/B26-0400-Enrollment1.pdf?Id=236164",
+       "mediaType": "application/pdf"
+      }
+     ]
+    },
+    {
+     "docId": "2000236895",
+     "note": "Signed Act",
+     "date": "2026-04-24",
+     "links": [
+      {
+       "url": "https://lims.dccouncil.gov/downloads/LIMS/60460/Signed_Act/B26-0400-Signed_Act.pdf?Id=236895",
+       "mediaType": "application/pdf"
+      }
+     ]
+    }
+   ],
+   "textStatus": "in_r2",
+   "actions": [
+    {
+     "description": "B26-0400 Introduced by Councilmember Parker at Office of the Secretary",
+     "date": "2025-10-06",
+     "chamber": "C",
+     "classification": [],
+     "order": 0,
+     "videoUrl": null
+    },
+    {
+     "description": "Referred to Committee on Youth Affairs, and Committee on Judiciary and Public Safety",
+     "date": "2025-10-07",
+     "chamber": "C",
+     "classification": [],
+     "order": 1,
+     "videoUrl": null
+    },
+    {
+     "description": "Notice of Intent to Act on B26-0400 Published in the District of Columbia Register",
+     "date": "2025-10-10",
+     "chamber": "C",
+     "classification": [],
+     "order": 2,
+     "videoUrl": null
+    },
+    {
+     "description": "Notice of Public Hearing filed in the Office of Secretary by Judiciary and Public Safety, Youth Affairs",
+     "date": "2025-10-21",
+     "chamber": "C",
+     "classification": [],
+     "order": 3,
+     "videoUrl": null
+    },
+    {
+     "description": "Notice of Public Hearing Published in the District of Columbia Register",
+     "date": "2025-10-24",
+     "chamber": "C",
+     "classification": [],
+     "order": 4,
+     "videoUrl": null
+    },
+    {
+     "description": "Public Hearing on B26-0400 View Public Hearing Record",
+     "date": "2025-11-13",
+     "chamber": "C",
+     "classification": [],
+     "order": 5,
+     "videoUrl": "http://video.oct.dc.gov/VOD/DCC/2025_11/11_13_25_Youth_Judici.html"
+    },
+    {
+     "description": "Committee Mark-up of B26-0400 by the Youth Affairs Committee",
+     "date": "2026-01-27",
+     "chamber": "C",
+     "classification": [],
+     "order": 6,
+     "videoUrl": "http://video.oct.dc.gov/VOD/DCC/2026_01/01_27_26_Youth.html"
+    },
+    {
+     "description": "Committee Mark-up of B26-0400 by the Judiciary and Public Safety Committee",
+     "date": "2026-02-23",
+     "chamber": "C",
+     "classification": [],
+     "order": 7,
+     "videoUrl": "http://video.oct.dc.gov/VOD/DCC/2026_02/02_23_26_Judici.html"
+    },
+    {
+     "description": "First Reading, CC",
+     "date": "2026-03-03",
+     "chamber": "C",
+     "classification": [],
+     "order": 8,
+     "videoUrl": "https://dc.granicus.com/player/clip/10385?view_id=2&redirect=true"
+    },
+    {
+     "description": "Final Reading, CC",
+     "date": "2026-03-31",
+     "chamber": "C",
+     "classification": [],
+     "order": 9,
+     "videoUrl": "https://dc.granicus.com/player/clip/10467?view_id=2&redirect=true"
+    },
+    {
+     "description": "Transmitted to Mayor, Response Due on Apr 28, 2026",
+     "date": "2026-04-13",
+     "chamber": "C",
+     "classification": [],
+     "order": 10,
+     "videoUrl": null
+    },
+    {
+     "description": "Signed by the Mayor and Enacted with Act Number A26-0309",
+     "date": "2026-04-24",
+     "chamber": "C",
+     "classification": [],
+     "order": 11,
+     "videoUrl": null
+    },
+    {
+     "description": "Returned from Mayor",
+     "date": "2026-04-24",
+     "chamber": "C",
+     "classification": [],
+     "order": 12,
+     "videoUrl": null
+    },
+    {
+     "description": "Transmitted to Congress",
+     "date": "2026-04-29",
+     "chamber": "C",
+     "classification": [],
+     "order": 13,
+     "videoUrl": null
+    },
+    {
+     "description": "Act A26-0309 Published in DC Register Vol 73 and Page 006825",
+     "date": "2026-05-01",
+     "chamber": "C",
+     "classification": [],
+     "order": 14,
+     "videoUrl": null
+    },
+    {
+     "description": "Law L26-0129, Effective from Jun 11, 2026 Published in DC Register Vol 73 and Page 008883",
+     "date": "2026-06-26",
+     "chamber": "C",
+     "classification": [],
+     "order": 15,
+     "videoUrl": null
+    }
+   ],
+   "sponsors": [
+    {
+     "name": "Zachary Parker",
+     "party": null,
+     "role": "Councilmember",
+     "primary": true,
+     "personId": "1000000194",
+     "url": "https://dccouncil.gov/councilmembers/"
+    },
+    {
+     "name": "Anita Bonds",
+     "party": null,
+     "role": "Councilmember",
+     "primary": false,
+     "personId": "1000000190",
+     "url": "https://dccouncil.gov/councilmembers/"
+    }
+   ],
+   "votes": [
+    {
+     "id": "1001260040000",
+     "legislatorVotes": [
+      {
+       "personId": "1000000190",
+       "name": "Anita Bonds",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000191",
+       "name": "Brianne K. Nadeau",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000195",
+       "name": "Brooke Pinto",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000189",
+       "name": "Charles Allen",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000196",
+       "name": "Christina Henderson",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000202",
+       "name": "Doni Crawford",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000197",
+       "name": "Janeese Lewis George",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000193",
+       "name": "Matthew Frumin",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000188",
+       "name": "Phil Mendelson",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000198",
+       "name": "Robert C. White, Jr.",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000199",
+       "name": "Trayon White, Sr.",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000200",
+       "name": "Wendell Felder",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000194",
+       "name": "Zachary Parker",
+       "vote": "Yes"
+      }
+     ],
+     "motionText": "First Reading, CC — Voice Vote",
+     "date": "2026-03-03",
+     "result": "pass",
+     "chamber": "C",
+     "counts": [
+      {
+       "option": "yes",
+       "value": 13
+      },
+      {
+       "option": "no",
+       "value": 0
+      },
+      {
+       "option": "not voting",
+       "value": 0
+      },
+      {
+       "option": "absent",
+       "value": 0
+      }
+     ]
+    },
+    {
+     "id": "1001260040001",
+     "legislatorVotes": [
+      {
+       "personId": "1000000190",
+       "name": "Anita Bonds",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000191",
+       "name": "Brianne K. Nadeau",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000195",
+       "name": "Brooke Pinto",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000189",
+       "name": "Charles Allen",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000196",
+       "name": "Christina Henderson",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000202",
+       "name": "Doni Crawford",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000197",
+       "name": "Janeese Lewis George",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000193",
+       "name": "Matthew Frumin",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000188",
+       "name": "Phil Mendelson",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000198",
+       "name": "Robert C. White, Jr.",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000199",
+       "name": "Trayon White, Sr.",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000200",
+       "name": "Wendell Felder",
+       "vote": "Yes"
+      },
+      {
+       "personId": "1000000194",
+       "name": "Zachary Parker",
+       "vote": "Yes"
+      }
+     ],
+     "motionText": "Final Reading, CC — Voice Vote",
+     "date": "2026-03-31",
+     "result": "pass",
+     "chamber": "C",
+     "counts": [
+      {
+       "option": "yes",
+       "value": 13
+      },
+      {
+       "option": "no",
+       "value": 0
+      },
+      {
+       "option": "not voting",
+       "value": 0
+      },
+      {
+       "option": "absent",
+       "value": 0
+      }
+     ]
+    }
+   ],
+   "relatedBills": [],
+   "calendar": [
+    {
+     "eventHash": "e3964c3a0bbd280017f56495c7ba3c63",
+     "typeId": 1,
+     "type": "Hearing",
+     "kind": "hearing",
+     "date": "2025-11-13",
+     "time": null,
+     "location": null,
+     "description": "Public Hearing on B26-0400",
+     "coveredBy": null
+    },
+    {
+     "eventHash": "bcef176cb0b77baa3c6384b763fc7525",
+     "typeId": 3,
+     "type": "Markup Session",
+     "kind": "markup",
+     "date": "2026-01-27",
+     "time": null,
+     "location": null,
+     "description": "Committee Mark-up of B26-0400 by the Youth Affairs Committee",
+     "coveredBy": null
+    },
+    {
+     "eventHash": "10d0db659a28fb3f878650b26eeeda7e",
+     "typeId": 3,
+     "type": "Markup Session",
+     "kind": "markup",
+     "date": "2026-02-23",
+     "time": null,
+     "location": null,
+     "description": "Committee Mark-up of B26-0400 by the Judiciary and Public Safety Committee",
+     "coveredBy": null
+    },
+    {
+     "eventHash": "7a092c46f311c01987ff568500acbfc9",
+     "typeId": 10,
+     "type": "Deadline",
+     "kind": "deadline",
+     "date": "2026-04-28",
+     "time": null,
+     "location": null,
+     "description": "Mayor's response due",
+     "coveredBy": null
+    }
+   ],
+   "supplements": [
+    {
+     "supplementId": 2000224386,
+     "typeId": 7,
+     "type": "Memorandum",
+     "date": null,
+     "dateResolved": null,
+     "dateInferred": false,
+     "title": "Memorandum",
+     "description": null,
+     "mime": "application/pdf",
+     "url": null,
+     "stateLink": "https://lims.dccouncil.gov/downloads/LIMS/60460/Memo/B26-0400_Memorandum.pdf?Id=224386"
+    },
+    {
+     "supplementId": 2000225465,
+     "typeId": 7,
+     "type": "Hearing Notice",
+     "date": "2025-10-21",
+     "dateResolved": "2025-10-21",
+     "dateInferred": false,
+     "title": "Notice of Public Hearing filed in the Office of Secretary by Judiciary and Public Safety, Youth Affairs",
+     "description": null,
+     "mime": "application/pdf",
+     "url": null,
+     "stateLink": "https://lims.dccouncil.gov/downloads/LIMS/60460/Hearing_Notice/B26-0400-Hearing_Notice1.pdf?Id=225465"
+    },
+    {
+     "supplementId": 2000229135,
+     "typeId": 7,
+     "type": "Hearing Record",
+     "date": "2025-11-13",
+     "dateResolved": "2025-11-13",
+     "dateInferred": false,
+     "title": "Public Hearing on B26-0400 View Public Hearing Record",
+     "description": null,
+     "mime": "application/pdf",
+     "url": null,
+     "stateLink": "https://lims.dccouncil.gov/downloads/LIMS/60460/Hearing_Record/B26-0400-Hearing_Record1.pdf?Id=229135"
+    },
+    {
+     "supplementId": 2000231798,
+     "typeId": 2,
+     "type": "Committee Report",
+     "date": "2026-02-03",
+     "dateResolved": "2026-02-03",
+     "dateInferred": false,
+     "title": "Committee Report",
+     "description": null,
+     "mime": "application/pdf",
+     "url": null,
+     "stateLink": "https://lims.dccouncil.gov/downloads/LIMS/60460/Committee_Report/B26-0400-Committee_Report1.pdf?Id=231798"
+    },
+    {
+     "supplementId": 2000232895,
+     "typeId": 7,
+     "type": "Other",
+     "date": null,
+     "dateResolved": null,
+     "dateInferred": false,
+     "title": "REIA B26-0400 Statutory Neglect Print",
+     "description": null,
+     "mime": "application/pdf",
+     "url": null,
+     "stateLink": "https://lims.dccouncil.gov/downloads/LIMS/60460/Other/B26-0400-REIA_B26-0400_Statutory_Neglect_Print.pdf?Id=232895"
+    },
+    {
+     "supplementId": 2000232950,
+     "typeId": 2,
+     "type": "Committee Report",
+     "date": "2026-02-25",
+     "dateResolved": "2026-02-25",
+     "dateInferred": false,
+     "title": "Committee Report",
+     "description": null,
+     "mime": "application/pdf",
+     "url": null,
+     "stateLink": "https://lims.dccouncil.gov/downloads/LIMS/60460/Committee_Report/B26-0400-Committee_Report2.pdf?Id=232950"
+    },
+    {
+     "supplementId": 2000233032,
+     "typeId": 7,
+     "type": "Other",
+     "date": null,
+     "dateResolved": null,
+     "dateInferred": false,
+     "title": "Request to Agendize",
+     "description": null,
+     "mime": "application/pdf",
+     "url": null,
+     "stateLink": "https://lims.dccouncil.gov/downloads/LIMS/60460/Other/B26-0400-Request_to_Agendize.pdf?Id=233032"
+    },
+    {
+     "supplementId": 2000240910,
+     "typeId": 7,
+     "type": "Other",
+     "date": null,
+     "dateResolved": null,
+     "dateInferred": false,
+     "title": "Law Notice 26-129",
+     "description": null,
+     "mime": "application/pdf",
+     "url": null,
+     "stateLink": "https://lims.dccouncil.gov/downloads/LIMS/60460/Other/B26-0400-Law_Notice_26-129.pdf?Id=240910"
+    }
+   ],
+   "amendments": [],
+   "subjects": [],
+   "committee": null,
+   "referrals": [
+    {
+     "date": "2025-10-07",
+     "committeeId": "3000000001",
+     "name": "Committee on Youth Affairs",
+     "chamber": "C"
+    },
+    {
+     "date": "2025-10-07",
+     "committeeId": "3000000002",
+     "name": "Committee on Judiciary and Public Safety",
+     "chamber": "C"
+    }
+   ],
+   "extras": {
+    "providerName": "DC Council",
+    "fields": [
+     {
+      "key": "lawNumber",
+      "label": "D.C. Law number",
+      "explainer": "The number an act takes when it becomes law after Congressional review.",
+      "display": "identifier",
+      "value": "L26-0129"
+     },
+     {
+      "key": "actNumber",
+      "label": "Act number",
+      "explainer": "The number a measure takes when it is enacted: signed by the Mayor, left unsigned past the Mayor's deadline, or passed over a veto.",
+      "display": "identifier",
+      "value": "A26-0309"
+     },
+     {
+      "key": "sentToMayor",
+      "label": "Sent to the Mayor",
+      "explainer": null,
+      "display": "date",
+      "value": "2026-04-13"
+     },
+     {
+      "key": "mayorDeadline",
+      "label": "Mayor's deadline",
+      "explainer": "The Mayor has 10 working days to sign or veto an act. Unsigned by then, it takes effect as if signed.",
+      "display": "date",
+      "value": "2026-04-28"
+     },
+     {
+      "key": "signedByMayor",
+      "label": "Signed by the Mayor",
+      "explainer": null,
+      "display": "date",
+      "value": "2026-04-24"
+     },
+     {
+      "key": "enacted",
+      "label": "Enacted",
+      "explainer": null,
+      "display": "date",
+      "value": "2026-04-24"
+     },
+     {
+      "key": "sentToCongress",
+      "label": "Sent to Congress",
+      "explainer": null,
+      "display": "date",
+      "value": "2026-04-29"
+     },
+     {
+      "key": "lawEffective",
+      "label": "Law effective",
+      "explainer": null,
+      "display": "date",
+      "value": "2026-06-11"
+     }
+    ]
+   }
+  },
+  "legiscan:1082600171": {
+   "billId": "legiscan:1082600171",
+   "sessionId": "1000000026",
+   "sessionName": "2025-2026 Council Period 26",
+   "sessionSlug": "cp26",
+   "yearStart": 2025,
+   "yearEnd": 2026,
+   "state": "DC",
+   "number": "HN26-0171",
+   "title": "Public Oversight Roundtable on Department of Behavioral Health’s Financial Challenges",
+   "abstract": "Committee on Health",
+   "status": "Not Applicable",
+   "statusStage": null,
+   "statusRank": 0,
+   "statusDate": null,
+   "lastAction": null,
+   "lastActionDate": null,
+   "billType": "Oversight Hearing/Roundtable Notice",
+   "body": "",
+   "updatedAt": "2026-09-28 09:00:00",
+   "stateUrl": "https://lims.dccouncil.gov/Legislation/HN26-0171",
+   "legiscanUrl": null,
+   "textHash": null,
+   "textR2Key": null,
+   "texts": [],
+   "textStatus": "no_texts",
+   "actions": [],
+   "sponsors": [],
+   "votes": [],
+   "relatedBills": [],
+   "calendar": [
+    {
+     "eventHash": "4c60f7aadf9743290069bb6450f64ce5",
+     "typeId": 1,
+     "type": "Hearing",
+     "kind": "hearing",
+     "date": "2026-10-02",
+     "time": null,
+     "location": "Committee on Health",
+     "description": "Public Oversight Roundtable on Department of Behavioral Health’s Financial Challenges",
+     "coveredBy": "council-2428@lims.dccouncil.gov"
+    }
+   ],
+   "supplements": [],
+   "amendments": [],
+   "subjects": [],
+   "committee": null,
+   "referrals": [
+    {
+     "date": null,
+     "committeeId": "3000000003",
+     "name": "Committee on Health",
+     "chamber": "C"
+    }
+   ],
+   "extras": null
+  }
+ },
+ "bodyEvents": {
+  "capabilities": {
+   "DC": {
+    "bodyEvents": true,
+    "deadlines": true
+   }
+  },
+  "events": [
+   {
+    "uid": "council-2408@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Roundtable",
+    "date": "2026-10-01",
+    "time": "10:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000004",
+     "name": "Committee on Housing"
+    },
+    "jointWith": null,
+    "location": "Room 123 (Track C)",
+    "title": "Housing roundtable",
+    "agenda": [
+     {
+      "topic": "Improving Housing Conditions and Strengthening Landlord Accountability in the District",
+      "billNumber": null
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2408",
+    "eventHash": "78a22f7cd5a0a207615d710558b8f192",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2413@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Hearing",
+    "date": "2026-10-01",
+    "time": "10:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000005",
+     "name": "Committee on Transportation and the Environment"
+    },
+    "jointWith": null,
+    "location": "Room 120 (Track D)",
+    "title": "Transportation and the Environment hearing",
+    "agenda": [
+     {
+      "topic": "Department of Energy and Environment Reporting Requirements Amendment Act of 2026",
+      "billNumber": "B26-0697"
+     },
+     {
+      "topic": "Public Trust in Utility Regulation Act of 2026",
+      "billNumber": "B26-0704"
+     },
+     {
+      "topic": "Retail Energy Market Consumer Protection Amendment Act of 2026",
+      "billNumber": "B26-0750"
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2413",
+    "eventHash": "42ed53c6c07e24aa355e3ba7e6e6019b",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2428@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Roundtable",
+    "date": "2026-10-02",
+    "time": "09:30",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000003",
+     "name": "Committee on Health"
+    },
+    "jointWith": null,
+    "location": "Room 123 (Track C)",
+    "title": "Health roundtable",
+    "agenda": [
+     {
+      "topic": "Public Oversight Roundtable on Department of Behavioral Health’s Financial Challenges",
+      "billNumber": null
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2428",
+    "eventHash": "cc3058d8d2ab2226b90377333bdff785",
+    "cancelled": false,
+    "bills": [
+     "legiscan:1082600171"
+    ],
+    "covers": [
+     {
+      "billId": "legiscan:1082600171",
+      "identityKey": "1|public oversight roundtable on department of behavioral health’s financial challenges"
+     }
+    ]
+   },
+   {
+    "uid": "council-2403@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Hearing",
+    "date": "2026-10-02",
+    "time": "10:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000006",
+     "name": "Committee of the Whole"
+    },
+    "jointWith": null,
+    "location": "Room 412 (Track B)",
+    "title": "Committee of the Whole hearing",
+    "agenda": [
+     {
+      "topic": "William Brockenberry Way Designation Act of 2026",
+      "billNumber": "B26-0589"
+     },
+     {
+      "topic": "Transfer of Jurisdiction over a Portion of Lot 1008 in Square 1299, being a Portion of Reservation 357, S.O. 25-01882, Approval Resolution of 2026",
+      "billNumber": "PR26-0544"
+     },
+     {
+      "topic": "Closing of a Portion of a Public Alley in Square 762, S.O. 23-01974, Act of 2026",
+      "billNumber": "B26-0601"
+     },
+     {
+      "topic": "Dr. William Keelan Collins, Sr. Way Designation Act of 2026",
+      "billNumber": "B26-0626"
+     },
+     {
+      "topic": "Transfer of Jurisdiction Over a Portion of Reservation 360 and Reservation 639, S.O. 25-01393, Approval Resolution of 2026",
+      "billNumber": "PR26-0581"
+     },
+     {
+      "topic": "Closing of Portions of a Public Alley in Square 571, S.O. 25-01939, Act of 2026",
+      "billNumber": "B26-0642"
+     },
+     {
+      "topic": "Closing of a Portion of a Public Alley in Square 785, S.O. 21-03369, Act of 2026",
+      "billNumber": "B26-0689"
+     },
+     {
+      "topic": "William “Spence” Spencer, IV Way Designation Act of 2026",
+      "billNumber": "B26-0705"
+     },
+     {
+      "topic": "Closing of the Unimproved Portion of 35th Street N.W., Abutting Squares 1178 and 1179, S.O. 26-01008, Act of 2026",
+      "billNumber": "B26-0772"
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2403",
+    "eventHash": "2fbea9e523430376d0046decd1a126f9",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2431@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Roundtable",
+    "date": "2026-10-05",
+    "time": "09:30",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000007",
+     "name": "Committee on Public Works and Operations"
+    },
+    "jointWith": null,
+    "location": "Room 500 (Track A)",
+    "title": "Public Works and Operations roundtable",
+    "agenda": [
+     {
+      "topic": "Commission on Human Rights Monika Nemeth Confirmation Resolution of 2026",
+      "billNumber": "PR26-0718"
+     },
+     {
+      "topic": "Commission on Human Rights Niranjan Adhikari Confirmation Resolution of 2026",
+      "billNumber": "PR26-0717"
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2431",
+    "eventHash": "bdd0af643b04ab1228fc412b59aaafd2",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2045@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "meeting",
+    "type": "Meeting",
+    "date": "2026-10-06",
+    "time": "12:00",
+    "timezone": "America/New_York",
+    "committee": null,
+    "jointWith": null,
+    "location": "Room 500 (Track A)",
+    "title": "Legislative Meeting",
+    "agenda": [
+     {
+      "topic": "Legislative Meeting",
+      "billNumber": null
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2045",
+    "eventHash": "f44bd33784ef288762909e85171ec7aa",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2415@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Roundtable",
+    "date": "2026-10-07",
+    "time": "12:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000001",
+     "name": "Committee on Youth Affairs"
+    },
+    "jointWith": null,
+    "location": "Room 412 (Track B)",
+    "title": "Youth Affairs roundtable",
+    "agenda": [
+     {
+      "topic": "DYRS' Fifth Rulemaking on the Community Placement of Juvenile Offenders",
+      "billNumber": null
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2415",
+    "eventHash": "10437b0a36c4399e9c4b9ea808659d51",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2421@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Roundtable",
+    "date": "2026-10-08",
+    "time": "10:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000008",
+     "name": "Committee on Human Services"
+    },
+    "jointWith": null,
+    "location": "Room 500 (Track A)",
+    "title": "Human Services roundtable",
+    "agenda": [
+     {
+      "topic": "The Eligibility Determination Process at the Virginia Williams Family Resource Center",
+      "billNumber": null
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2421",
+    "eventHash": "705d03ae256493b30e71f7456210957c",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2420@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Joint Hearing",
+    "date": "2026-10-08",
+    "time": "10:30",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000006",
+     "name": "Committee of the Whole"
+    },
+    "jointWith": "Joint with Facilities",
+    "location": "Room 412 (Track B)",
+    "title": "Committee of the Whole joint hearing",
+    "agenda": [
+     {
+      "topic": "Stuck on the Ground Floor: Out-of-Service Elevators in the District of Columbia’s Public Schools",
+      "billNumber": null
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2420",
+    "eventHash": "63345d09ad46e4d12f44a7f3ff1649e9",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2419@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Oversight Hearing",
+    "date": "2026-10-09",
+    "time": "10:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000006",
+     "name": "Committee of the Whole"
+    },
+    "jointWith": null,
+    "location": "Room 412 (Track B)",
+    "title": "Committee of the Whole oversight hearing",
+    "agenda": [
+     {
+      "topic": "Technology in Schools",
+      "billNumber": null
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2419",
+    "eventHash": "86e54537c7d51b40be9860bdfc8ce332",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2407@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Hearing",
+    "date": "2026-10-13",
+    "time": "12:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000006",
+     "name": "Committee of the Whole"
+    },
+    "jointWith": null,
+    "location": "Room 412 (Track B)",
+    "title": "Committee of the Whole hearing",
+    "agenda": [
+     {
+      "topic": "Restoration of Covenanted Roads and Alleys by the District Government Clarification Amendment Act of 2026",
+      "billNumber": "B26-0770"
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2407",
+    "eventHash": "0724972f7a2e33b43aca7a4fbf26b2a4",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2423@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "meeting",
+    "type": "Meeting",
+    "date": "2026-10-14",
+    "time": "10:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000003",
+     "name": "Committee on Health"
+    },
+    "jointWith": null,
+    "location": "Room 500 (Track A)",
+    "title": "Health meeting",
+    "agenda": [
+     {
+      "topic": "Streamlining Medicaid Credentialing Amendment Act of 2025",
+      "billNumber": "B26-0523"
+     },
+     {
+      "topic": "Captive Insurance Company Amendment Act of 2026",
+      "billNumber": "B26-0588"
+     },
+     {
+      "topic": "Rodent Education and Management Yields (\"REMY\") Results Amendment Act of 2026",
+      "billNumber": "B26-0707"
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2423",
+    "eventHash": "18e57c10352e97ff354c3113b29b2713",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2427@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Hearing",
+    "date": "2026-10-14",
+    "time": "10:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000008",
+     "name": "Committee on Human Services"
+    },
+    "jointWith": null,
+    "location": "Room 412 (Track B)",
+    "title": "Human Services hearing",
+    "agenda": [
+     {
+      "topic": "Fletcher-Johnson Surplus Declaration and Disposition Approval Act of 2026",
+      "billNumber": "B26-0720"
+     },
+     {
+      "topic": "Georgetown Boathouse Surplus Declaration and Disposition Approval Act of 2026",
+      "billNumber": "B26-0740"
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2427",
+    "eventHash": "ea252d3860e5e06d2d1384099b1e490f",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2422@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Hearing",
+    "date": "2026-10-14",
+    "time": "11:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000003",
+     "name": "Committee on Health"
+    },
+    "jointWith": null,
+    "location": "Room 500 (Track A)",
+    "title": "Health hearing",
+    "agenda": [
+     {
+      "topic": "HealthCare Facilities Regulation Amendment Act of 2026",
+      "billNumber": "B26-0799"
+     },
+     {
+      "topic": "Health Benefit Exchange Authority Technical Amendment Act of 2026",
+      "billNumber": "B26-0809"
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2422",
+    "eventHash": "516d68040822c034ea81c850d51c7566",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2398@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Roundtable",
+    "date": "2026-10-15",
+    "time": "13:30",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000003",
+     "name": "Committee on Health"
+    },
+    "jointWith": null,
+    "location": "Room 412 (Track B)",
+    "title": "Health roundtable",
+    "agenda": [
+     {
+      "topic": "A Public Roundtable on Long-Term Care for District Residents with Complex Needs",
+      "billNumber": null
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2398",
+    "eventHash": "0dc88caabc7f9019d01ec4bbcc949380",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2400@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Hearing",
+    "date": "2026-10-16",
+    "time": "10:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000006",
+     "name": "Committee of the Whole"
+    },
+    "jointWith": null,
+    "location": "Room 412 (Track B)",
+    "title": "Committee of the Whole hearing",
+    "agenda": [
+     {
+      "topic": "Wealth Proceeds Tax Amendment Act of 2026",
+      "billNumber": "B26-0749"
+     },
+     {
+      "topic": "Revenue Stabilization and Land Value Assessment Amendment Act of 2026",
+      "billNumber": "B26-0777"
+     },
+     {
+      "topic": "Business Activity Tax",
+      "billNumber": null
+     },
+     {
+      "topic": "Pied-a-Terre Tax",
+      "billNumber": null
+     },
+     {
+      "topic": "Sales Tax",
+      "billNumber": null
+     },
+     {
+      "topic": "Real Property Tax",
+      "billNumber": null
+     },
+     {
+      "topic": "Individual Income Tax",
+      "billNumber": null
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2400",
+    "eventHash": "f8d4d7b6e5e8a3839519160575f0a4f3",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2424@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Oversight Hearing",
+    "date": "2026-10-21",
+    "time": "14:30",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000006",
+     "name": "Committee of the Whole"
+    },
+    "jointWith": null,
+    "location": "Room 412 (Track B)",
+    "title": "Committee of the Whole oversight hearing",
+    "agenda": [
+     {
+      "topic": "Career and Technical Education",
+      "billNumber": null
+     },
+     {
+      "topic": "Advanced Technical Centers",
+      "billNumber": null
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2424",
+    "eventHash": "90654af0b02e587b1d4951ff344830e6",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2426@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Hearing",
+    "date": "2026-10-22",
+    "time": "11:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000008",
+     "name": "Committee on Human Services"
+    },
+    "jointWith": null,
+    "location": "Room 500 (Track A)",
+    "title": "Human Services hearing",
+    "agenda": [
+     {
+      "topic": "Health and Human Service Programs and Benefits Eligibility and Delivery Data-Sharing Clarifications Amendment Act of 2026",
+      "billNumber": "B26-0753"
+     },
+     {
+      "topic": "Green Workforce Pilot Amendment Act of 2026",
+      "billNumber": "B26-0808"
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2426",
+    "eventHash": "8b06eea246828d21ae68f0c44b895157",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   },
+   {
+    "uid": "council-2405@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Hearing",
+    "date": "2026-10-23",
+    "time": "10:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000006",
+     "name": "Committee of the Whole"
+    },
+    "jointWith": null,
+    "location": "Room 412 (Track B)",
+    "title": "Committee of the Whole hearing",
+    "agenda": [
+     {
+      "topic": "Soccer Stadium Redevelopment and Maintenance Act of 2026",
+      "billNumber": "B26-0769"
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2405",
+    "eventHash": "8a354c2cc25dc319f2d50a1bf4f414bc",
+    "cancelled": false,
+    "bills": [
+     "legiscan:1012600769"
+    ],
+    "covers": [
+     {
+      "billId": "legiscan:1012600769",
+      "identityKey": "1|public hearing on b26-0769"
+     }
+    ]
+   },
+   {
+    "uid": "council-2430@lims.dccouncil.gov",
+    "state": "DC",
+    "kind": "hearing",
+    "type": "Roundtable",
+    "date": "2026-10-29",
+    "time": "10:00",
+    "timezone": "America/New_York",
+    "committee": {
+     "committeeId": "3000000003",
+     "name": "Committee on Health"
+    },
+    "jointWith": "Joint with Human Services and Health",
+    "location": "Room 412 (Track B)",
+    "title": "Health roundtable",
+    "agenda": [
+     {
+      "topic": "A Joint Public Oversight Roundtable on The DC Access System and Implementing SNAP and Medicaid Work Requirements",
+      "billNumber": null
+     }
+    ],
+    "url": "https://lims.dccouncil.gov/Hearings/hearings/2430",
+    "eventHash": "ea6dd109bde43d7478acf5883a10ce4d",
+    "cancelled": false,
+    "bills": [],
+    "covers": []
+   }
+  ]
+ },
+ "bodyEventOptions": {
+  "states": {
+   "DC": {
+    "committees": [
+     {
+      "committeeId": "3000000006",
+      "name": "Committee of the Whole",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000003",
+      "name": "Committee on Health",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000004",
+      "name": "Committee on Housing",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000008",
+      "name": "Committee on Human Services",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000002",
+      "name": "Committee on Judiciary and Public Safety",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000007",
+      "name": "Committee on Public Works and Operations",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000005",
+      "name": "Committee on Transportation and the Environment",
+      "chamber": "C"
+     },
+     {
+      "committeeId": "3000000001",
+      "name": "Committee on Youth Affairs",
+      "chamber": "C"
+     }
+    ],
+    "kinds": [
+     {
+      "kind": "hearing",
+      "types": [
+       "Hearing",
+       "Joint Hearing",
+       "Oversight Hearing",
+       "Roundtable"
+      ]
+     },
+     {
+      "kind": "meeting",
+      "types": [
+       "Meeting"
+      ]
+     }
+    ]
+   }
+  }
+ }
+}

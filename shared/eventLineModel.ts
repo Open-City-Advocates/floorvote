@@ -2,7 +2,11 @@ import { color, fontSize, fontWeight, radius } from './tokens'
 import { formatHearingTimeShort } from './hearingTime'
 import { CARD_STYLE } from './billCardModel'
 
-export interface EventEdgeSource { source: string }
+export interface EventEdgeSource {
+  source: string
+  /** A synced entry's kind, from central: 'hearing', 'markup', 'meeting', or 'deadline'. */
+  kind?: string | null
+}
 
 export interface EventForBodyModel {
   description?: string | null
@@ -43,20 +47,26 @@ export const EVENT_CARD_BASE = {
 } as const
 
 export interface EventSourceDescriptor {
-  icon: 'gavel' | 'calendar_today'
-  color: string  // icon fill: navy (hearing) | blue (custom)
+  icon: 'gavel' | 'calendar_today' | 'schedule'
+  color: string  // icon fill: navy (hearing) | blue (custom) | amber (deadline)
   tint: string   // tile background behind the icon
   /** Human label — used by the web aria-label/hover tip AND the email title
    *  tooltip, so the wording can't drift across surfaces. */
   label: string
 }
 
-// Source marker for an event: gavel for data-pulled hearings, calendar_today
-// for custom/editable events. Replaces the old navy/blue left-edge color.
+/** The label of a synced event by its kind. An event without one is a hearing, as every synced event was before kinds. */
+const KIND_LABELS: Record<string, string> = { markup: 'Markup', meeting: 'Meeting' }
+
+// Source marker for an event: gavel for data-pulled events (a bill's hearing,
+// or the legislature's own calendar), labeled by kind, and calendar_today for
+// custom/editable events, and a clock in amber for a bill's deadline, which is
+// a date, not a meeting. Replaces the old navy/blue left-edge color.
 export function eventSourceIcon(event: EventEdgeSource): EventSourceDescriptor {
-  return event.source === 'custom'
-    ? { icon: 'calendar_today', color: color.accentBlue,    tint: color.bgInfo, label: 'Custom event' }
-    : { icon: 'gavel',          color: color.billBadgeNavy, tint: color.bgInfo, label: 'Hearing' }
+  if (event.source === 'custom') return { icon: 'calendar_today', color: color.accentBlue, tint: color.bgInfo, label: 'Custom event' }
+  // Web-only: deadlines stay out of the week-ahead email, so no email PNG is needed.
+  if (event.kind === 'deadline') return { icon: 'schedule', color: color.textAmberDark, tint: color.bgAmberPriority, label: 'Deadline' }
+  return { icon: 'gavel', color: color.billBadgeNavy, tint: color.bgInfo, label: KIND_LABELS[event.kind ?? ''] ?? 'Hearing' }
 }
 
 // The tinted source-icon tile dimensions, shared by the web EventSourceIcon and

@@ -3,6 +3,11 @@ import { WorkerEntrypoint } from 'cloudflare:workers'
 import { drizzle } from 'drizzle-orm/d1'
 import * as schema from './db/schema'
 import { runSync } from './cron/sync'
+import { assignSessionSlugs } from './lib/sessionSlugs'
+import { loadStateOwners } from './lib/stateProviders'
+import { isSnapshotProvider, runSnapshotSync } from './cron/sync-snapshots'
+import { runBodyEventSync } from './cron/body-events'
+import { PROVIDERS } from './providers'
 import { checkVoteDatasets, VOTE_DATASET_CHECK_HOUR_ET } from './cron/vote-datasets'
 import { getCurrentEtHour } from './lib/sync-schedule'
 import { pullEngagementStats, shouldRunEngagementPull } from './cron/engagement-pull'
@@ -84,7 +89,28 @@ export default {
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     const db = drizzle(env.DB, { schema })
+    // Slugs for sessions written without one: every existing session on the
+    // first tick after migration 0031, and any a seed script wrote since.
+    // Ownership first, which seeds env-var owners, since the plain slug goes
+    // to the owning provider's session.
+    ctx.waitUntil(runJob(env, 'session-slugs', async () => {
+      await loadStateOwners(env, db)
+      await assignSessionSlugs(db)
+    }))
     ctx.waitUntil(runJob(env, 'ls-sync', () => runSync(env, db)))
+    // One job per snapshot provider, so one failing never stops another, run
+    // one after another: a pass holds a session's whole snapshot in memory
+    // (Virginia's largest session needs a 40 MB heap), and two at
+    // once could pass a Worker's 128 MB. See "Memory" in docs/internal/sync-pipeline.md.
+    ctx.waitUntil((async () => {
+      for (const provider of PROVIDERS.filter(isSnapshotProvider)) {
+        await runJob(env, `${provider.id}-sync`, () => runSnapshotSync(provider, env, db))
+      }
+    })())
+    // The legislature's own calendar, for providers that publish one, as its own job.
+    for (const provider of PROVIDERS.filter(p => p.listBodyEvents)) {
+      ctx.waitUntil(runJob(env, `${provider.id}-body-events`, () => runBodyEventSync(provider, env, db)))
+    }
     if (getCurrentEtHour() === VOTE_DATASET_CHECK_HOUR_ET) {
       ctx.waitUntil(runJob(env, 'vote-datasets', () => checkVoteDatasets(env, db)))
     }

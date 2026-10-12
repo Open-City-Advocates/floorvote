@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { DatabaseSync } from 'node:sqlite'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { buildBillStatements, esc, num } from './build-bill-statements'
 
 // Fixture mirrors the shape returned by LegiScan's getBill / bulk JSON.
@@ -152,10 +155,28 @@ describe('buildBillStatements', () => {
     expect(stmts[0]).toContain('INSERT OR REPLACE INTO bills')
   })
 
+  it('writes a committees row for every committee a referral names, once each', () => {
+    const stmts = buildBillStatements({
+      ...completeBill,
+      referrals: [
+        ...completeBill.referrals,
+        { date: '2026-02-03', committee_id: 120, chamber: 'S', chamber_id: 27, name: 'Judiciary' },
+        { date: '2026-02-04', committee_id: 0, chamber: 'S', chamber_id: 27, name: 'Rules' },
+      ],
+    }, 'WI', 2154)
+    const committeeStmts = stmts.filter(s => s.includes('INTO committees'))
+    // The pending committee (99) is also the first referral: one row for it.
+    expect(committeeStmts).toHaveLength(2)
+    expect(committeeStmts[0]).toContain('VALUES (99,')
+    expect(committeeStmts[1]).toContain("VALUES (120, 'WI', 2154, 'S', 27, 'Judiciary', 'legiscan')")
+    expect(committeeStmts[1]).toContain('ON CONFLICT(committee_id) DO UPDATE')
+    expect(committeeStmts[1]).toContain('excluded.session_id >= committees.session_id')
+  })
+
   it('handles committee being an empty array (not an object) without writing committees', () => {
     // LegiScan returns committee:[] for bills with no committee; the script must
     // treat that as "no committee" rather than crashing.
-    const stmts = buildBillStatements({ ...completeBill, committee: [] }, 'WI', 2154)
+    const stmts = buildBillStatements({ ...completeBill, committee: [], referrals: [] }, 'WI', 2154)
     expect(stmts.some(s => s.includes('INTO committees'))).toBe(false)
     // bills row should still have NULL pending_committee_id (column present, value NULL)
     expect(stmts[0]).toContain('INTO bills')
@@ -178,5 +199,41 @@ describe('buildBillStatements', () => {
     const noState = { ...completeBill, state: undefined }
     const stmts = buildBillStatements(noState, 'OR', 2154)
     expect(stmts[0]).toContain("'OR'")
+  })
+})
+
+describe('the seeded calendar', () => {
+  // Central's real schema: every central migration, in filename order.
+  const migrated = () => {
+    const db = new DatabaseSync(':memory:')
+    const dir = join(__dirname, '../../central/migrations-legiscan')
+    for (const file of readdirSync(dir).filter(f => f.endsWith('.sql')).sort()) db.exec(readFileSync(join(dir, file), 'utf8'))
+    return db
+  }
+  const bill = {
+    ...completeBill,
+    calendar: [
+      { type_id: 1, event_hash: 'ev1', type: 'Hearing', date: '2026-02-10', time: '10:00', location: 'Room 412', description: 'Public hearing' },
+      { type_id: 3, event_hash: 'ev2', type: 'Markup Session', date: '2026-02-17', time: '10:00', location: 'Room 412', description: 'Executive session' },
+    ],
+  }
+  const seed = (db: DatabaseSync) => { for (const s of buildBillStatements(bill, 'WI', 2154)) db.exec(s) }
+  const calendar = (db: DatabaseSync) => db.prepare('SELECT event_hash, cancelled_at FROM bill_calendar ORDER BY event_hash').all()
+
+  it('writes every entry of a bill central holds no calendar for', () => {
+    const db = migrated()
+    seed(db)
+    expect(calendar(db)).toEqual([{ event_hash: 'ev1', cancelled_at: null }, { event_hash: 'ev2', cancelled_at: null }])
+  })
+
+  it('leaves a calendar central already holds alone when seeded again, so nothing cancelled comes back', () => {
+    const db = migrated()
+    seed(db)
+    // The ingest has since cancelled the markup, and keeps its row.
+    db.exec(`UPDATE bill_calendar SET cancelled_at = '2026-02-15 12:00:00' WHERE event_hash = 'ev2'`)
+    db.exec(`DELETE FROM bill_calendar WHERE event_hash = 'ev1'`)
+    db.exec(`INSERT INTO bill_calendar (id, bill_id, type_id, event_hash, description, identity_key) VALUES ('ingest-row', 12345, 1, 'ev1', 'Public hearing', '1|public hearing')`)
+    seed(db)
+    expect(calendar(db)).toEqual([{ event_hash: 'ev1', cancelled_at: null }, { event_hash: 'ev2', cancelled_at: '2026-02-15 12:00:00' }])
   })
 })

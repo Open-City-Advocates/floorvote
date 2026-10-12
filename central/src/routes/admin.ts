@@ -4,12 +4,17 @@ import { eq, and, isNull, isNotNull, inArray, like } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { bills, billTenants, tenants, keywordRegistry, sessions } from '../db/schema'
 import { matchesUnion } from '../lib/keywords'
-import { DEFAULT_PROVIDER_ID, getProvider, type SessionRef, type SyncEntry } from '../providers'
+import { DEFAULT_PROVIDER_ID, findProvider, getProvider, type SessionRef, type SyncEntry } from '../providers'
 import { secretsMatch } from '../lib/auth'
 import { isSuperadminEmail } from '../lib/superadminIssuer'
 import { revokeSuperadminJti } from '../lib/superadminRevocation'
 import { SUPERADMIN_TOKEN_TTL_SEC } from '../lib/superadminJwt'
 import { runSync } from '../cron/sync'
+import { importProviderMeasures, isSnapshotProvider, runSnapshotSync } from '../cron/sync-snapshots'
+import { runBodyEventSync } from '../cron/body-events'
+import { ingestQueueFor, providerConfigured } from '../lib/providerRouting'
+import { claimState, listStateOwnership, loadStateOwners, ownerOf } from '../lib/stateProviders'
+import { applyCutover, applyUndo, CutoverError, cutoverReport, planCutover, planUndo, undoReport } from '../lib/cutover'
 import { runAnomalyWatch } from '../lib/anomalyWatch'
 import { nowDb } from '../lib/dbTime'
 import { providerContext } from '../lib/providerContext'
@@ -41,6 +46,162 @@ adminRoutes.post('/trigger-sync', async (c) => {
   const db = drizzle(c.env.DB, { schema })
   await runSync(c.env, db)
   return c.json({ ok: true, message: 'sync triggered' })
+})
+
+// Run a snapshot provider's sync now (cron/sync-snapshots.ts) instead of waiting
+// for its full-pass hours: the provider refreshes its sessions, then every
+// synced session gets a full pass. /lims-sync is the original name for DC.
+async function runSnapshotNow(c: Context<{ Bindings: Env }>, id: string) {
+  const provider = findProvider(id)
+  if (!isSnapshotProvider(provider)) return c.json({ error: `unknown provider "${id}"` }, 404)
+  if (!providerConfigured(provider, c.env)) return c.json({ error: `provider "${id}" is not configured on this central` }, 400)
+  const db = drizzle(c.env.DB, { schema })
+  const passes = await runSnapshotSync(provider, c.env, db, { force: true })
+  // The provider's own calendar too, when it publishes one.
+  const bodyEvents = provider.listBodyEvents ? await runBodyEventSync(provider, c.env, db) : undefined
+  return c.json({ ok: true, passes, ...(bodyEvents ? { bodyEvents } : {}) })
+}
+adminRoutes.post('/providers/:id/sync', c => runSnapshotNow(c, c.req.param('id')))
+adminRoutes.post('/lims-sync', c => runSnapshotNow(c, 'lims'))
+
+// State ownership (lib/stateProviders.ts): which provider each state syncs
+// from. A state with no row is the default provider's. Operator-only, so
+// neither route is on the tenant surface allowlist.
+adminRoutes.get('/state-providers', async (c) => {
+  const db = drizzle(c.env.DB, { schema })
+  return c.json({ defaultProvider: DEFAULT_PROVIDER_ID, states: await listStateOwnership(db) })
+})
+
+// Claim a state for a provider. Body: { "provider": "lims" }. Answers 409,
+// naming the current owner, its tracked bill count, and the instances tracking
+// them, and leaves the row as it is, while the owner has tracked bills there:
+// only a cutover moves those.
+adminRoutes.post('/state-providers/:state', async (c) => {
+  const state = c.req.param('state').toUpperCase()
+  if (!/^[A-Z]{2}$/.test(state)) return c.json({ error: 'state must be a two-letter code' }, 400)
+  const body = await c.req.json<{ provider?: unknown } | null>().catch(() => null)
+  if (!body || typeof body.provider !== 'string') return c.json({ error: 'provider is required' }, 400)
+  const provider = findProvider(body.provider)
+  if (!provider) return c.json({ error: `unknown provider "${body.provider}"` }, 400)
+  // Only the default provider's sync and the snapshot sync read the table.
+  if (provider.id !== DEFAULT_PROVIDER_ID && !isSnapshotProvider(provider)) {
+    return c.json({ error: `nothing syncs provider "${provider.id}" by state` }, 400)
+  }
+  if (provider.states && !provider.states.includes(state)) {
+    return c.json({ error: `provider "${provider.id}" serves ${provider.states.join(', ')}, not ${state}` }, 400)
+  }
+  if (!providerConfigured(provider, c.env)) {
+    return c.json({ error: `provider "${provider.id}" is not configured on this central` }, 400)
+  }
+  const db = drizzle(c.env.DB, { schema })
+  const result = await claimState(db, state, provider.id)
+  if (!result.ok) {
+    const { ok: _ok, ...refusal } = result
+    return c.json({
+      error: `${state} syncs from ${refusal.owner}, which has ${refusal.trackedBills} tracked bills there. ` +
+        `A cutover has to move them before ${state} can change provider.`,
+      ...refusal,
+    }, 409)
+  }
+  return c.json({ ok: true, changed: result.changed, ownership: result.ownership })
+})
+
+// Cut a state that instances already track over to another provider
+// (lib/cutover.ts). Body: { "provider": "lims" }. A dry run unless
+// ?confirm=true: it reads the new provider's feed, reports matched and
+// unmatched bills, calendar entries, and people, and writes nothing but the API call log. With
+// confirm, every matched bill keeps its row id and handle, ownership flips
+// last, and the new provider's sync runs at once. Operator-only, like the
+// claim, so it isn't on the tenant surface allowlist.
+adminRoutes.post('/state-providers/:state/cutover', async (c) => {
+  const state = c.req.param('state').toUpperCase()
+  if (!/^[A-Z]{2}$/.test(state)) return c.json({ error: 'state must be a two-letter code' }, 400)
+  const body = await c.req.json<{ provider?: unknown } | null>().catch(() => null)
+  if (!body || typeof body.provider !== 'string') return c.json({ error: 'provider is required' }, 400)
+  const db = drizzle(c.env.DB, { schema })
+  const dryRun = c.req.query('confirm') !== 'true'
+  try {
+    // ?calendar=false skips the dry run's calendar preview, which costs LIMS a details call per bill with entries.
+    const plan = await planCutover(c.env, db, state, body.provider, { dryRun, calendar: c.req.query('calendar') !== 'false' })
+    if (dryRun) return c.json({ dryRun: true, ...cutoverReport(plan) })
+    const { id } = await applyCutover(c.env, db, plan)
+    // The new provider's first pass stores its records under the kept ids and
+    // queues the moved bills' first ingests. If it fails, the hourly sync runs it.
+    let sync: { passes: Awaited<ReturnType<typeof runSnapshotSync>> } | { error: string }
+    try {
+      sync = { passes: await runSnapshotSync(plan.to, c.env, db, { force: true }) }
+    } catch (err) {
+      console.error(`[cutover] ${plan.to.id}'s first sync of ${state} failed; the hourly sync will retry:`, err)
+      sync = { error: err instanceof Error ? err.message : String(err) }
+    }
+    const report = cutoverReport(plan)
+    return c.json({
+      ok: true, cutover: id, state, from: plan.from.id, to: plan.to.id,
+      bills: { matched: report.bills.matched, tracked: report.bills.tracked,
+        unmatched: { old: report.bills.unmatched.old.length, new: report.bills.unmatched.new.length } },
+      people: { matched: report.people.matched, weak: report.people.weak },
+      sync,
+    })
+  } catch (err) {
+    if (err instanceof CutoverError) return c.json({ error: err.message }, err.status)
+    // A provider's feed failing closed, or the batch failing: nothing was written.
+    console.error(`[cutover] ${state} stopped:`, err)
+    return c.json({ error: `the cutover stopped, and nothing changed: ${err instanceof Error ? err.message : String(err)}` }, 502)
+  }
+})
+
+// Undo a state's latest cutover: the state goes back to its previous
+// provider, whose sync then rewrites the moved bills. A dry run unless
+// ?confirm=true.
+adminRoutes.post('/state-providers/:state/undo-cutover', async (c) => {
+  const state = c.req.param('state').toUpperCase()
+  if (!/^[A-Z]{2}$/.test(state)) return c.json({ error: 'state must be a two-letter code' }, 400)
+  const db = drizzle(c.env.DB, { schema })
+  try {
+    const plan = await planUndo(c.env, db, state)
+    if (c.req.query('confirm') !== 'true') return c.json({ dryRun: true, ...undoReport(plan) })
+    await applyUndo(c.env, db, plan)
+    // A snapshot provider syncs the state back now. LegiScan's hourly sync does it on its own schedule.
+    let sync: { passes: Awaited<ReturnType<typeof runSnapshotSync>> } | { error: string } | undefined
+    if (isSnapshotProvider(plan.from)) {
+      try {
+        sync = { passes: await runSnapshotSync(plan.from, c.env, db, { force: true }) }
+      } catch (err) {
+        sync = { error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+    return c.json({ ok: true, ...undoReport(plan), ...(sync ? { sync } : {}) })
+  } catch (err) {
+    if (err instanceof CutoverError) return c.json({ error: err.message }, err.status)
+    console.error(`[cutover] undo of ${state} stopped:`, err)
+    return c.json({ error: `the undo stopped, and nothing changed: ${err instanceof Error ? err.message : String(err)}` }, 502)
+  }
+})
+
+// Import specific LIMS measures from any Council Period and track them for one
+// tenant as manual picks (full ingest + AI). Body: { "tenantId": "oca",
+// "numbers": ["B25-0345", "B25-0291"] }. See importProviderMeasures in
+// cron/sync-snapshots.ts and importMeasures in providers/lims.
+adminRoutes.post('/lims-import', async (c) => {
+  if (!c.env.LIMS_API_KEY) return c.json({ error: 'LIMS is not configured (LIMS_API_KEY unset)' }, 400)
+  const body = await c.req.json<{ tenantId?: string; numbers?: unknown }>().catch(() => ({} as { tenantId?: string; numbers?: unknown }))
+  const numbers = Array.isArray(body.numbers) ? body.numbers.filter((n): n is string => typeof n === 'string') : []
+  if (!body.tenantId || numbers.length === 0) return c.json({ error: 'tenantId and a non-empty numbers array are required' }, 400)
+  if (numbers.length > 200) return c.json({ error: 'at most 200 numbers per request' }, 400)
+  const db = drizzle(c.env.DB, { schema })
+  // The sync links bills only in states their provider owns, so an import
+  // into a state LIMS doesn't own would leave its bills half linked.
+  const owners = await loadStateOwners(c.env, db)
+  const unowned = (getProvider('lims').states ?? []).filter(state => ownerOf(owners, state) !== 'lims')
+  if (unowned.length > 0) {
+    return c.json({ error: `lims doesn't own ${unowned.join(', ')}. Claim it first (POST /api/admin/state-providers/:state).` }, 409)
+  }
+  try {
+    const result = await importProviderMeasures(getProvider('lims'), c.env, db, body.tenantId, numbers)
+    return c.json({ ok: true, ...result })
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 404)
+  }
 })
 
 // Superadmin email check (login-request path). Central is the SOLE issuer of the
@@ -467,12 +628,12 @@ adminRoutes.post('/backfill-stub-actions/:tenantId', async (c) => {
   const hasDeliveryPath = !!getTenantQueue(c.env, tenantId) || (!!tenant.queueId && queuesRestEnabled(c.env))
   if (!hasDeliveryPath) return c.json({ error: `no delivery path for tenant ${tenantId} (no binding, no queue_id)` }, 400)
 
-  // Resolve which sessions to check, as the provider needs them.
+  // Resolve which sessions to check, as their provider needs them.
   const sessionRef = {
     sessionId: sessions.sessionId, state: sessions.state, sessionTag: sessions.sessionTag,
-    yearStart: sessions.yearStart, yearEnd: sessions.yearEnd,
+    yearStart: sessions.yearStart, yearEnd: sessions.yearEnd, provider: sessions.provider,
   }
-  let sessionRefs: SessionRef[]
+  let sessionRefs: (SessionRef & { provider: string })[]
   if (sessionIdParam) {
     const sid = parseInt(sessionIdParam, 10)
     if (isNaN(sid)) return c.json({ error: 'invalid sessionId' }, 400)
@@ -501,15 +662,17 @@ adminRoutes.post('/backfill-stub-actions/:tenantId', async (c) => {
   const notifyIds = new Set<number>()
   let refreshed = 0
 
-  // Sessions don't record their provider yet, so every session is the default provider's.
-  const provider = getProvider(DEFAULT_PROVIDER_ID)
-  // The provider logs each call as it goes out, so the row records the outbound
-  // attempt, not the intent to make one; these params say why it was spent.
-  const ctx = providerContext(provider, c.env, db, { reason: 'backfill-stub-actions', tenantId })
-
   for (const session of sessionRefs) {
     const { sessionId } = session
-    // 1 LegiScan call per session.
+    // Each session's list comes from its own provider, by the row's `provider`
+    // column. A snapshot provider has no list to call here: its stubs refresh
+    // on its own sync.
+    const provider = findProvider(session.provider)
+    if (!provider?.listMeasures) continue
+    // The provider logs each call as it goes out, so the row records the outbound
+    // attempt, not the intent to make one; these params say why it was spent.
+    const ctx = providerContext(provider, c.env, db, { reason: 'backfill-stub-actions', tenantId })
+    // 1 LegiScan call per LegiScan session.
     let list: SyncEntry[]
     try {
       list = await provider.listMeasures(session, ctx)
@@ -686,32 +849,44 @@ adminRoutes.post('/reingest-bill/:billId', async (c) => {
 //
 // SAFETY: defaults to dry run. Pass ?confirm=true to actually queue. Each queued
 // message triggers one getBill() LegiScan call — be mindful of the monthly quota (10k on the free tier).
+//
+// ?provider=<id> limits it to that provider's bills, on that provider's ingest
+// queue. `?provider=lims` re-ingests a tenant's DC bills with one LIMS details
+// call each and no LegiScan calls (after a LIMS mapping change, say).
 adminRoutes.post('/reingest-tenant/:tenantId', async (c) => {
   const tenantId = c.req.param('tenantId')
   const confirm = c.req.query('confirm') === 'true'
+  const providerId = c.req.query('provider')
+  const provider = providerId ? findProvider(providerId) : undefined
+  if (providerId && !provider) return c.json({ error: `unknown provider ${providerId}` }, 400)
+  // Every message would fail at fetchMeasure (LIMS without LIMS_API_KEY, say).
+  if (provider && !providerConfigured(provider, c.env)) return c.json({ error: `${provider.id} isn't configured on this central` }, 409)
   const db = drizzle(c.env.DB, { schema })
 
   const tenant = await db.select().from(tenants).where(eq(tenants.tenantId, tenantId)).get()
   if (!tenant) return c.json({ error: 'tenant not found' }, 404)
 
-  const rows = await db.select({ billId: billTenants.billId })
-    .from(billTenants)
-    .where(and(
-      eq(billTenants.tenantId, tenantId),
-      isNotNull(billTenants.matchType),
-    ))
-    .all()
+  const tracked = and(eq(billTenants.tenantId, tenantId), isNotNull(billTenants.matchType))
+  const rows = provider
+    ? await db.select({ billId: billTenants.billId }).from(billTenants)
+      .innerJoin(bills, eq(bills.billId, billTenants.billId))
+      .where(and(tracked, eq(bills.provider, provider.id))).all()
+    : await db.select({ billId: billTenants.billId }).from(billTenants).where(tracked).all()
 
   if (!confirm) {
     return c.json({
       tenantId,
+      ...(provider ? { provider: provider.id } : {}),
       matched: rows.length,
       wouldQueue: rows.length,
       dryRun: true,
-      note: 'Pass ?confirm=true to actually queue. Each queued message triggers one getBill() LegiScan call.',
+      note: provider && provider.id !== DEFAULT_PROVIDER_ID
+        ? `Pass ?confirm=true to actually queue. Each queued message makes ${provider.id}'s per-bill calls, and no LegiScan call.`
+        : 'Pass ?confirm=true to actually queue. Each queued message triggers one getBill() LegiScan call.',
     })
   }
 
+  const queue = provider ? ingestQueueFor(provider, c.env) : c.env.INGESTOR_QUEUE
   let queued = 0
   const BATCH = 100
   for (let i = 0; i < rows.length; i += BATCH) {
@@ -719,10 +894,10 @@ adminRoutes.post('/reingest-tenant/:tenantId', async (c) => {
       body: { billId: r.billId } as IngestorMessage,
     }))
     if (batch.length > 0) {
-      await c.env.INGESTOR_QUEUE.sendBatch(batch)
+      await queue.sendBatch(batch)
       queued += batch.length
     }
   }
 
-  return c.json({ tenantId, matched: rows.length, queued, dryRun: false })
+  return c.json({ tenantId, ...(provider ? { provider: provider.id } : {}), matched: rows.length, queued, dryRun: false })
 })

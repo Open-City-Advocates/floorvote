@@ -94,8 +94,18 @@ export const bills = sqliteTable('bills', {
   title: text('title').notNull(),
   state: text('state').notNull(),
   status: text('status').notNull().default(''),
+  // The status's common stage and its sort rank, as central sends them from
+  // the provider's vocabulary (migration 0076). The bill list filters on the
+  // stage and sorts status by rank. No stage and rank 0 for a draft or a
+  // status central has no vocabulary entry for.
+  statusStage: text('status_stage'),
+  statusRank: integer('status_rank').notNull().default(0),
   session: text('session').notNull().default(''),
   sessionId: text('session_id'),
+  // The SESSION in /STATE/SESSION/BILL, as central assigned it (unique within
+  // the state). Null for a bill central hasn't sent one for: lib/sessionSlug.ts
+  // computes it from `session` then.
+  sessionSlug: text('session_slug'),
   yearStart: integer('year_start'),
   yearEnd: integer('year_end'),
   abstract: text('abstract'),
@@ -343,7 +353,25 @@ export const calendarEvents = sqliteTable('calendar_events', {
   id: text('id').primaryKey(),
   uid: text('uid').notNull().unique(),
   billId: text('bill_id'),
+  // 'hearing': a bill's calendar entry, from central. 'custom': the instance's
+  // own. 'body': an event on a legislature's own calendar, from central
+  // (lib/bodyEvents.ts), which links its agenda bills in calendar_event_bills.
   source: text('source').notNull().default('hearing'),
+  // A bill calendar entry's kind, as central sent it: 'hearing', 'markup',
+  // 'meeting', or 'deadline' (shared/calendarKinds.ts). Null for custom
+  // events, and for an entry central hasn't sent since migration 0079.
+  kind: text('kind'),
+  // The calendar UID of the body event central says covers this bill entry
+  // (migration 0082): the entry is shown as that event, so a hearing appears
+  // once. Null for an entry nothing covers, and for every other event.
+  coveredBy: text('covered_by'),
+  // A body event's committee, kind, type, title, and agenda topics, as JSON
+  // (shared/eventRules.ts EventFacets), for the instance's event rules
+  // (migration 0083, lib/eventRules.ts). Null for every other event.
+  ruleFacets: text('rule_facets'),
+  // Whether the instance's event rules select this body event: null while the
+  // instance has none (it shows), 1 (it shows), or 0 (it's hidden).
+  ruleMatch: integer('rule_match'),
   sequence: integer('sequence').notNull().default(0),
   date: text('date'),
   time: text('time'),

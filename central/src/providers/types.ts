@@ -1,4 +1,8 @@
 import type { Env } from '../types'
+import type { StatusStage } from '../../../shared/statusStages'
+import type { ExtraDisplay } from '../../../shared/providerExtras'
+import type { CalendarKind } from '../../../shared/calendarKinds'
+import type { DataAttribution } from '../../../shared/dataAttribution'
 
 /**
  * The provider interface, and every shape that crosses the boundary between
@@ -25,10 +29,58 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
   readonly id: string
 
   /**
+   * The provider's name as members and operators read it, such as "DC
+   * Council". It titles the bill page's panel of the provider's extras
+   * ("Additional information from DC Council"), so it names the publisher
+   * rather than the system.
+   */
+  readonly displayName: string
+
+  /**
+   * The credit instances show for this provider's data, in the footer of
+   * every instance covering one of its states: the publisher's name and link,
+   * one plain sentence on where the data comes from and its terms, and the
+   * license when it has one that asks for credit. Central sends it to an
+   * instance with the states the provider owns for it (lib/attribution.ts),
+   * so a provider needs no web code and no instance setting.
+   */
+  readonly attribution: DataAttribution
+
+  /**
+   * Who maintains the provider and how far to trust it, for the published
+   * State coverage page (scripts/gen-state-coverage.ts). A provider can't
+   * ship without it.
+   */
+  readonly coverage: ProviderCoverage
+
+  /**
    * The env keys this provider reads, such as its API key. `ctx.env` holds
    * these and nothing else.
    */
   readonly envKeys: readonly K[]
+
+  /**
+   * The states the provider can serve. Every snapshot provider lists them.
+   * LegiScan leaves it out, since it serves any state. Which provider a state
+   * actually syncs from is core's state ownership table
+   * (lib/stateProviders.ts), and a claim for a state not listed here is refused.
+   */
+  readonly states?: readonly string[]
+
+  /**
+   * Whether this deployment has what the provider needs to run, such as its
+   * API key, judged from its own env keys. Omitted when it needs nothing. A
+   * claim for a provider that isn't configured is refused, and its sync skips.
+   */
+  configured?(env: Readonly<Pick<Env, K>>): boolean
+
+  /**
+   * The env key that named the provider's states before the ownership table,
+   * such as 'LIMS_STATES' (comma-separated). For one release, the first sync
+   * writes an ownership row for each state it names that has no row, under the
+   * same refusal rule as a claim. Goes away with that seeding.
+   */
+  readonly statesEnvKey?: K
 
   /** Every session the provider lists for a state, current and prior. */
   listSessions(state: string, ctx: ProviderContext<K>): Promise<SyncSession[]>
@@ -36,8 +88,9 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
   /**
    * One entry per measure in a session, with enough to keyword-match it and a
    * `change_hash` that moves whenever the measure does. Drives the full pass.
+   * A provider lists a session's measures either this way or with `snapshot`.
    */
-  listMeasures(session: SessionRef, ctx: ProviderContext<K>): Promise<SyncEntry[]>
+  listMeasures?(session: SessionRef, ctx: ProviderContext<K>): Promise<SyncEntry[]>
 
   /**
    * The cheap form of `listMeasures`: each measure's id, number, and change
@@ -47,8 +100,11 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
    */
   listChangeHashes?(session: SessionRef, ctx: ProviderContext<K>): Promise<SyncHashEntry[]>
 
-  /** One measure's full record. */
-  fetchMeasure(measure: MeasureRef, ctx: ProviderContext<K>): Promise<CentralMeasure>
+  /**
+   * One measure's full record. A provider that builds it from a per-measure
+   * details response returns that response too.
+   */
+  fetchMeasure(measure: MeasureRef, ctx: ProviderContext<K>): Promise<CentralMeasure | MeasureWithDetails>
 
   /**
    * The provider's own copy of one text document (`MeasureText.doc_id`), for
@@ -58,17 +114,48 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
    */
   fetchDocument?(docId: number, ctx: ProviderContext<K>): Promise<ProviderDocument>
 
-  /** Labels for the status codes this provider writes to `bills.status`, as the bill API sends them. */
-  readonly statusLabels: Readonly<Record<number, string>>
-
   /**
-   * Labels for the old and new values of a `status_change` record, when they
-   * differ from `statusLabels`. Defaults to `statusLabels`.
+   * What the provider's codes mean: a label, stage, rank, terminal flag, and
+   * explainer for every status code it writes to `bills.status`, and labels
+   * for its bill and calendar event types. Kept in the provider's
+   * `vocabulary.ts`. The bill API sends each bill's label, stage, and rank,
+   * and `/bills/labels` serves the explainers.
    */
-  readonly statusChangeLabels?: Readonly<Record<number, string>>
+  readonly vocabulary: ProviderVocabulary
 
   /** A sponsor's profile page on the provider's site, for a person record with no link of its own. */
   personUrl?(person: { state: string; name: string; peopleId: number }): string
+
+  /**
+   * Keep the calendar identity central gave every entry before identities
+   * were stored: the event type id plus the description, without the date.
+   * Only LegiScan sets this. Its entries' identities are in every subscriber's
+   * calendar UIDs, so they never change. Every other provider's entries are
+   * identified by the shared rule in core's lib/billCalendar.ts: the
+   * provider's own event id, or else the kind, date, and description.
+   */
+  readonly legacyCalendarIdentity?: boolean
+
+  /**
+   * The legislature's own calendar for a state: its hearings, roundtables,
+   * and meetings, with or without bills on the agenda, dated from `range.from`
+   * to `range.to` (YYYY-MM-DD, both inclusive). Core asks for one month at a
+   * time and keeps each event under its `event_id` (lib/bodyEvents.ts). List
+   * every event the feed shows for the range, past ones too. Throw on an
+   * error or a shape the mapping doesn't read, and core changes nothing for
+   * that month. An empty list is no evidence that anything went away.
+   * Omitted when the provider publishes no calendar of its own.
+   */
+  listBodyEvents?(state: string, range: { from: string; to: string }, ctx: ProviderContext<K>): Promise<BodyEvent[]>
+
+  /**
+   * The calendar UID instances give one of the provider's body events. Only
+   * a provider whose events already have UIDs in someone's calendars sets
+   * this: LIMS keeps the UIDs the contributor's fork issued for Council
+   * hearings. Every other provider's events get core's (bodyEventUid in
+   * lib/bodyEvents.ts). Must never change for an event.
+   */
+  bodyEventUid?(eventId: string): string
 
   /**
    * The provider's per-member vote datasets for a state, one per session, each
@@ -88,7 +175,199 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
    * entries and fails a load that has none of the three.
    */
   fetchVoteDataset?(dataset: VoteDataset, ctx: ProviderContext<K>): Promise<ReadableStream<Uint8Array>>
+
+  // Snapshot providers. A feed with no modified-since filter and no cheap
+  // change list is read as a snapshot: every record of a session, raw, with a
+  // hash. Core's snapshot sync (cron/sync-snapshots.ts) stores each changed
+  // record and hands it back, to `toEntry` for the full pass and to
+  // `fetchMeasure` for the ingest. Its sessions refresh through `listSessions`
+  // once a day, and whenever none is due to sync.
+
+  /** Which of the provider's stored sessions for a state to sync now. */
+  selectSessions?<S extends StoredSession>(sessions: S[], today: string): S[]
+
+  /**
+   * Every record the provider lists for one session, and any legislators the
+   * listing names. A provider whose feed answers conditional requests can
+   * return its file's ETag, and say the file is unchanged when a later
+   * request with `session.etag` comes back 304.
+   */
+  snapshot?(session: SnapshotSession, ctx: ProviderContext<K>): Promise<ProviderSnapshot>
+
+  /**
+   * The full-pass entry for one record. `stored` is what central already holds
+   * for the measure, which a listed record may lack.
+   */
+  toEntry?(record: ProviderRecord, stored: { description: string | null }, ctx: ProviderContext<K>): Promise<SyncEntry>
+
+  /**
+   * The provider's legislators, for core to upsert into `people` after a
+   * session refresh. `sessions` are the sessions just listed and every other
+   * session central holds this provider's measures in, so a sponsor who has
+   * since left still resolves.
+   */
+  listPeople?(sessions: StoredSession[], ctx: ProviderContext<K>): Promise<ProviderPerson[]>
+
+  /**
+   * Specific measures by number, from any session, for an operator importing
+   * measures the scheduled sync doesn't cover. Core creates each session that
+   * is missing, stores the records, and tracks the measures for the instance.
+   */
+  importMeasures?(numbers: string[], ctx: ProviderContext<K>): Promise<ProviderImport>
+
+  /**
+   * The env key of a queue binding for this provider's ingests, for an API
+   * that needs less concurrency than the shared ingestor queue allows. Core
+   * falls back to INGESTOR_QUEUE when the binding is unset. The provider never
+   * sees the queue itself.
+   */
+  readonly ingestQueue?: ProviderEnvKey
+
+  /**
+   * For a provider whose per-measure details can change while its listed
+   * record doesn't: core re-queues tracked measures whose status isn't
+   * terminal in the vocabulary once their details are older than `maxAge` (an
+   * SQLite datetime modifier, such as '-2 days'), at most `perPass` per pass.
+   */
+  readonly detailsRefresh?: { maxAge: string; perPass: number }
 }
+
+/** What a provider declares about itself for the State coverage page (`Provider.coverage`). */
+export interface ProviderCoverage {
+  /** GitHub handles, without the @. The same people CODEOWNERS names for the provider's directory. */
+  readonly maintainers: readonly string[]
+  /** `stable` once the provider has run in production for a legislative session. */
+  readonly status: 'experimental' | 'stable'
+  /**
+   * Whether the provider supplies how each member voted. Code can't show it,
+   * since a measure's roll calls carry it or a vote dataset does. Each
+   * provider's mapping test asserts it against its recorded fixtures (LegiScan
+   * has none, so a test checks it against `listVoteDatasets`).
+   */
+  readonly memberVotes: boolean
+  /**
+   * Whether bills have text core can fetch and show: stored text, or a
+   * document core downloads from the legislature's link (Maryland's PDFs). Not
+   * true of a provider that only links a bill to a page. Asserted like
+   * `memberVotes`.
+   */
+  readonly billText: boolean
+}
+
+/**
+ * What a provider supplies, as the State coverage page lists it. Everything
+ * but `memberVotes` and `billText` is read from the provider's code
+ * (`listedCapabilities`), and `bodyEvents` and `deadlines` are the very values
+ * tenants receive per state (`Capabilities` in lib/capabilities.ts).
+ */
+export interface ListedCapabilities {
+  /** Every provider supplies bills. */
+  bills: true
+  memberVotes: boolean
+  /** The legislature's own calendar, hearings without bills included. */
+  bodyEvents: boolean
+  billText: boolean
+  /** Fields only this provider publishes, shown on the bill page. */
+  extras: boolean
+  deadlines: boolean
+}
+
+/** A provider's vocabulary (`Provider.vocabulary`). */
+export interface ProviderVocabulary {
+  /** Every status code the provider writes to `bills.status`. */
+  readonly statuses: Readonly<Record<number, VocabularyStatus>>
+  /** Bill types, by the value the provider writes to `bills.bill_type` (compared without regard to case). */
+  readonly billTypes: Readonly<Record<string, VocabularyTerm>>
+  /**
+   * Calendar event types, by the `type_id` of the provider's calendar entries.
+   * Each names its kind, which central sends with every entry. An entry
+   * without an event id is identified partly by its kind (except LegiScan's,
+   * see `Provider.legacyCalendarIdentity`), so changing an event type's kind
+   * re-identifies its entries, and instances see them cancelled and recreated
+   * once.
+   */
+  readonly eventTypes: Readonly<Record<number, VocabularyEventType>>
+  /** The name of the legislature's own calendar, when the provider reads one. */
+  readonly calendarName?: string
+  /**
+   * Fields only this provider publishes, by the key its measures use in
+   * `CentralMeasure.extras`. The bill page shows them, in this order, under the
+   * provider's display name. Display only: a field that needs sorting,
+   * filtering, notifications, or AI, or that a second provider publishes,
+   * becomes a shared column instead.
+   */
+  readonly extras?: Readonly<Record<string, VocabularyExtra>>
+}
+
+/**
+ * One status. Changing a status's stage or rank changes how bills already in
+ * instances sort and filter, so it ships with a one-time metadata resend for
+ * the provider's states (see docs/internal/sync-pipeline.md).
+ */
+export interface VocabularyStatus {
+  /** What members see, and what the bill API sends as the bill's status. Unique within the provider. */
+  readonly label: string
+  /** The common stage, or null for a status outside the legislative path (a notice, say). */
+  readonly stage: StatusStage | null
+  /**
+   * The sort key: the stage's position (`stagePosition`, from 1) times 100,
+   * plus the provider's own order within the stage (1 to 99). 0 when `stage`
+   * is null. Unique within the provider.
+   */
+  readonly rank: number
+  /**
+   * Whether the measure is done changing: nothing more the provider publishes
+   * will move it. Stays in central, where it stops the details refresh.
+   */
+  readonly terminal: boolean
+  /** A plain-language sentence or two on what the status means for the bill. */
+  readonly explainer: string
+  /** The label for the change log, when it says something else (LegiScan's "Failed/Dead"). */
+  readonly changeLabel?: string
+}
+
+/** A bill type or calendar event type. */
+export interface VocabularyTerm {
+  readonly label: string
+  readonly explainer?: string
+}
+
+/** A calendar event type: a term, and the kind of entry it is. */
+export interface VocabularyEventType extends VocabularyTerm {
+  readonly kind: CalendarKind
+}
+
+/** One extra field (`ProviderVocabulary.extras`). */
+export interface VocabularyExtra {
+  /** What the bill page calls it. Unique within the provider. */
+  readonly label: string
+  /** What it means, shown on hover. */
+  readonly explainer?: string
+  /** How the bill page shows its value. */
+  readonly display: ExtraDisplay
+}
+
+/**
+ * Every field a provider's feed returns, and what the provider does with it,
+ * by path. A path is dotted from the response's root, and `[]` steps into an
+ * array's items (`Sponsors[].Name`). Each field is:
+ * - `'mapped'`: read into central's shapes;
+ * - `{ extra: key }`: shown as that extra from the vocabulary;
+ * - `{ ignored: reason }`: deliberately dropped, and why. An ignored object or
+ *   array covers everything inside it.
+ *
+ * Reviewers read it to see that nothing in the feed is dropped silently, and
+ * the provider's mapping test checks its recorded fixtures against it, so a
+ * field the feed starts sending fails the test until someone decides what to
+ * do with it. A provider with several responses (a listing and a per-measure
+ * details response, say) keeps one inventory for each.
+ */
+export type FieldInventory = Readonly<Record<string, FieldUse>>
+
+/** What a provider does with one feed field (`FieldInventory`). */
+export type FieldUse = 'mapped' | { readonly extra: string } | { readonly ignored: string }
+
+export type { StatusStage, ExtraDisplay, CalendarKind }
 
 /** One session's vote dataset, as `listVoteDatasets` lists it. */
 export interface VoteDataset {
@@ -107,11 +386,36 @@ export interface ProviderContext<K extends ProviderEnvKey = ProviderEnvKey> {
   /** The env keys the provider declared in `envKeys`, frozen. Nothing else. */
   env: Readonly<Pick<Env, K>>
   /**
-   * Record one outbound API call in `api_call_log`, which the dashboard counts
-   * against the monthly call budget. Call it once per request actually sent
-   * (pass it as `rateLimitedFetch`'s `onRequest`), not once per intent.
+   * Record one outbound API call in `api_call_log`. Name it
+   * `<provider id>:<operation>`: the dashboard shows only rows with no colon in
+   * the name (LegiScan's), so a provider's calls are logged but never shown
+   * there or counted against the LegiScan monthly budget. Call it once per request actually sent (pass it as
+   * `rateLimitedFetch`'s `onRequest`), not once per intent.
    */
   logCall(callType: string, params: Record<string, unknown>): void
+  /** Today's date (YYYY-MM-DD, UTC), by core's clock. */
+  today: string
+  /**
+   * Central ids for the provider's own keys of one kind (such as 'bill',
+   * 'session', 'person', or 'doc'), minted from central's id table on first
+   * sight and the same ever after. For a provider whose native ids aren't
+   * integers, or could collide with another provider's.
+   */
+  ids(kind: string, nativeKeys: readonly string[]): Promise<Map<string, number>>
+  /**
+   * The central ids already minted for these keys, without minting any: a key
+   * central has never seen is left out. For linking to a record the provider
+   * isn't sure exists, such as the earlier session's copy of a carried-over
+   * bill.
+   */
+  knownIds(kind: string, nativeKeys: readonly string[]): Promise<Map<string, number>>
+  /**
+   * The people core has stored for this provider, by central id ascending, for
+   * resolving the names its records use. People a cutover carried over from
+   * another provider come after the rest, so where two share a name, the
+   * last one listed is the person instances already know.
+   */
+  people(): Promise<{ peopleId: number; name: string; role: string | null }[]>
 }
 
 /** A session as central stores it, handed to the list methods. */
@@ -124,16 +428,108 @@ export interface SessionRef {
   yearEnd: number
 }
 
+/** A session handed to `snapshot`. */
+export interface SnapshotSession extends SessionRef {
+  /**
+   * The ETag the provider returned with the last snapshot central finished a
+   * pass on, for a conditional request. Null on the first pass, after the
+   * state is claimed, and on a forced run, when the provider reads in full.
+   */
+  etag: string | null
+}
+
 /** A measure as central knows it, handed to `fetchMeasure`. */
 export interface MeasureRef {
   billId: number
   /** The measure's session, when central already has a row for the measure. */
   sessionId: number | null
-  /**
-   * The provider's own key for the measure. Not set yet: central starts
-   * recording native keys when a provider mints its own ids.
-   */
+  /** The provider's own key for the measure, from the record core stored for a snapshot provider. */
   nativeKey?: string
+  /** A snapshot provider's stored record for the measure, and its hash. */
+  record?: { raw: unknown; hash: string }
+  /** The measure's session row, when central has one. */
+  session?: StoredSession
+}
+
+/** `fetchMeasure`'s result for a provider that also fetched a per-measure details response. */
+export interface MeasureWithDetails {
+  measure: CentralMeasure
+  /**
+   * The details response, whole (null when the provider found none). Core
+   * stores it beside the measure's listed record, so a field the mapping
+   * ignores today can be added later without fetching again, and records
+   * when it was fetched, for `detailsRefresh`.
+   */
+  details: unknown
+}
+
+/** A session as central stores it, with what `selectSessions` and `listPeople` read. */
+export interface StoredSession extends SessionRef {
+  sessionName: string
+  /** 1 when the session is no longer current. */
+  prior: number
+}
+
+/**
+ * One record a snapshot provider lists: the measure's central id, the
+ * provider's own key for it, the record as listed, and a hash that moves
+ * whenever the record does.
+ */
+export interface ProviderRecord {
+  billId: number
+  nativeKey: string
+  raw: unknown
+  hash: string
+}
+
+/** What `snapshot` returns. */
+export interface ProviderSnapshot {
+  records: ProviderRecord[]
+  /** Legislators the listing names, for core to upsert into `people`. */
+  people?: ProviderPerson[]
+  /**
+   * The ETag of what the provider read, opaque to core. Core stores it once
+   * the pass completes and hands it back as `SnapshotSession.etag`. A
+   * provider reading several files can pack their ETags into one string.
+   */
+  etag?: string | null
+  /**
+   * The feed answered `SnapshotSession.etag` with 304 Not Modified, and
+   * `records` is empty. Core runs the pass on the records it stored from the
+   * last full read, so matching and retries go on without the download, and
+   * keeps the stored ETag.
+   */
+  unchanged?: boolean
+}
+
+/**
+ * A legislator as a provider lists them, for core to upsert into `people`
+ * under the provider's id. A field left undefined is left alone on an existing
+ * row, and null clears it.
+ */
+export interface ProviderPerson {
+  people_id: number
+  name: string
+  state_id?: number
+  role?: string
+  role_id?: number
+  first_name?: string | null
+  middle_name?: string | null
+  last_name?: string | null
+  bio?: MeasurePerson['bio']
+}
+
+/** What `importMeasures` returns. */
+export interface ProviderImport {
+  /** Numbers that aren't any of the provider's measure numbers, as given. */
+  invalid: string[]
+  /** Numbers the provider looked for and didn't find. */
+  notFound: string[]
+  /**
+   * What it found, by session, with the numbers found there. A session may
+   * have no records, and core creates it anyway.
+   */
+  sessions: { state: string; session: SyncSession; records: ProviderRecord[]; numbers: string[] }[]
 }
 
 /** A document's bytes, from the provider's own copy (`Provider.fetchDocument`). */
@@ -173,6 +569,13 @@ export interface SyncEntry {
   last_action?: string
   last_action_date?: string
   url?: string
+  /**
+   * The provider's own page for the bill. LegiScan masterlists don't carry it
+   * (getBill fills it later); LIMS sets it so monitor stubs link out too.
+   */
+  state_link?: string
+  /** Bill type label, when the provider's list carries one (LIMS: "Emergency Bill", "Permanent Bill", ...). */
+  bill_type?: string
 }
 
 /** One measure's change hash, as `listChangeHashes` returns it. */
@@ -188,6 +591,16 @@ interface MeasureText {
   url: string
   state_link: string
   text_size: number
+  /**
+   * Never empty for a text a bill can be read from. An instance runs AI only
+   * for a bill whose texts arrive with a hash, and uses it to skip a text the
+   * model already read, so a provider that sends none gets no AI on any of its
+   * bills. A feed that publishes a checksum sends it. One that doesn't sends any
+   * stable token naming the document, such as a hash of its `doc_id`, which
+   * changes only when a different text becomes the newest. A provider that
+   * implements `fetchDocument` sends the MD5 of the document's bytes, which core
+   * checks the provider's copy against.
+   */
   text_hash: string
   alt_bill_text: number
   alt_mime: string
@@ -241,6 +654,12 @@ interface MeasureHistoryEntry {
   chamber: string
   chamber_id: number
   importance: number  // 1=major, 2=minor
+  /**
+   * A recording of the meeting the action happened at, when the provider
+   * publishes one (LIMS: hearing, mark-up, and floor-reading videos). Core
+   * keeps only an http(s) URL.
+   */
+  video_url?: string
 }
 
 interface MeasureSast {
@@ -264,8 +683,21 @@ interface MeasureVote {
   chamber_id: number
   url: string
   state_link: string
+  /**
+   * Per-member votes. getBill never returns these (LegiScan needs a getRollCall
+   * per vote); providers that include them inline, such as DC LIMS, set this and
+   * the ingestor writes roll_call_votes. vote_id follows LegiScan: 1 Yea, 2 Nay,
+   * 3 NV, 4 Absent.
+   */
+  member_votes?: { people_id: number | null; vote_id: number; vote_text: string }[]
 }
 
+/**
+ * One calendar entry on a measure: a hearing, mark-up, meeting, or deadline.
+ * Its kind comes from the vocabulary's event type for `type_id`. Core keeps
+ * each entry under a stable identity (lib/billCalendar.ts), so list every
+ * entry the provider publishes, past ones too, never numbered by position.
+ */
 export interface MeasureCalendarEntry {
   type_id: number
   type: string
@@ -274,6 +706,61 @@ export interface MeasureCalendarEntry {
   location: string
   description: string
   event_hash: string
+  /**
+   * The entry's identity, when it has one that never changes: the feed's own
+   * id for the event, or a key that names one event of the measure for good
+   * (LIMS's deadlines use their kind of deadline). Never a position, a
+   * counter, or anything that changes when the event moves or is retitled.
+   * Without it, the identity is the kind, date, and description.
+   */
+  event_id?: string
+  /**
+   * Positive evidence that the event was cancelled: a notice tied to it, or a
+   * removed flag in the feed. Core cancels the entry with the same identity at
+   * once. An entry that is just missing is cancelled only after two pulls.
+   */
+  cancelled?: boolean
+}
+
+/**
+ * One event on a legislature's own calendar (`Provider.listBodyEvents`): a
+ * hearing, roundtable, mark-up, or meeting, with or without bills on its
+ * agenda. Core links the agenda's bills, and a bill's calendar entry on the
+ * same day is then shown once, as this event.
+ */
+export interface BodyEvent {
+  /** The provider's own id for the event, which it publishes and keeps. The event's identity. */
+  event_id: string
+  /** What the event is. Every one of the provider's events of one type should share a kind. */
+  kind: CalendarKind
+  /** The provider's own name for the event's type ("Performance Oversight Hearing"). */
+  type: string
+  /** YYYY-MM-DD, in `timezone`. */
+  date: string
+  /** HH:MM, in `timezone`, or null when the feed gives no time. */
+  time: string | null
+  /** The IANA zone the date and time are in. */
+  timezone: string
+  /**
+   * The committee holding it, or null for a meeting of the whole body. Its id,
+   * name, and chamber are the ones the provider gives the committee in its
+   * referrals (for a minted id, `ctx.ids('committee', ...)` under the same
+   * key), so both point at one committees row.
+   */
+  committee: { committee_id: number; name: string; chamber: string } | null
+  /** The committees it is held jointly with, as the feed words it. */
+  joint_with: string | null
+  location: string | null
+  /** A short name for the event, such as "Health roundtable". Keep it stable. */
+  title: string
+  /** The agenda, in order. `bill_number` is the measure number as the provider's bills carry it. */
+  agenda: { topic: string; bill_number: string | null }[]
+  /** The event's own page, http(s). */
+  url: string | null
+  /** Changes whenever anything shown changes, which is what instances bump an event's ICS sequence on. */
+  event_hash: string
+  /** Positive evidence that the event was cancelled: a cancelled status on the event itself. */
+  cancelled?: boolean
 }
 
 interface MeasureAmendment {
@@ -340,7 +827,21 @@ export interface CentralMeasure {
   subjects: MeasureSubject[]
   votes: MeasureVote[]
   texts: MeasureText[]
-  calendar: MeasureCalendarEntry[]
+  /**
+   * Every calendar entry the provider lists for the measure. An empty list is
+   * a calendar with nothing on it, which counts toward cancelling entries that
+   * are missing. Leave it out only when the provider has no calendar to say
+   * anything about (a bad answer, say), which core reads as no evidence.
+   */
+  calendar?: MeasureCalendarEntry[]
   amendments: MeasureAmendment[]
   supplements: MeasureSupplement[]
+  /**
+   * Values of the provider's extras (`ProviderVocabulary.extras`), by key.
+   * Core replaces the bill's stored extras with these on every ingest, so a
+   * key left out (or null or empty) clears that extra. A `date` is
+   * YYYY-MM-DD and a `link` an http(s) URL. Core drops a value that isn't, or
+   * whose key the vocabulary doesn't declare.
+   */
+  extras?: Readonly<Record<string, string | null>>
 }

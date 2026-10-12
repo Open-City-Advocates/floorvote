@@ -69,6 +69,12 @@ import migrationSql69 from '../migrations/0069_terms_acceptances.sql?raw'
 import migrationSql70 from '../migrations/0070_draft_numbers_and_years.sql?raw'
 import migrationSql73 from '../migrations/0073_email_health.sql?raw'
 import migrationSql75 from '../migrations/0075_auth_events_email_changed.sql?raw'
+import migrationSql76 from '../migrations/0076_bill_status_stage.sql?raw'
+import migrationSql77 from '../migrations/0077_bill_session_slug.sql?raw'
+import migrationSql78 from '../migrations/0078_expired_status_enacted.sql?raw'
+import migrationSql79 from '../migrations/0079_calendar_event_kind.sql?raw'
+import migrationSql82 from '../migrations/0082_calendar_event_covered_by.sql?raw'
+import migrationSql83 from '../migrations/0083_calendar_event_rules.sql?raw'
 
 export function parseMigration(sql: string, name: string) {
   const queries = sql
@@ -85,12 +91,69 @@ export function parseMigration(sql: string, name: string) {
   return { name, queries }
 }
 
+// Split a migration into statements on `;`, dropping `--` and `/* */`
+// comments first and ignoring semicolons inside quotes, so a `;` in a comment
+// can't break it the way it breaks parseMigration. The same splitter central's
+// tests use (central/test/helpers/migrations.ts). Not handled: a CREATE
+// TRIGGER body, whose own semicolons would be split apart.
+export function splitStatements(sql: string): string[] {
+  const statements: string[] = []
+  let current = ''
+  let quote: string | null = null
+  const flush = () => {
+    const s = current.trim()
+    if (s.length > 0) statements.push(s + ';')
+    current = ''
+  }
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i]
+    if (quote) {
+      current += c
+      if (c === quote) quote = null
+    } else if (c === "'" || c === '"' || c === '`') {
+      quote = c
+      current += c
+    } else if (c === '-' && sql[i + 1] === '-') {
+      const eol = sql.indexOf('\n', i)
+      i = eol === -1 ? sql.length : eol - 1
+    } else if (c === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2)
+      i = end === -1 ? sql.length : end + 1
+    } else if (c === ';') {
+      flush()
+    } else {
+      current += c
+    }
+  }
+  flush()
+  return statements
+}
+
+/**
+ * Migration files keyed by path, valued by raw SQL (what
+ * import.meta.glob(..., { query: '?raw', import: 'default', eager: true })
+ * returns), as migrations in filename order, each named by its basename
+ * without the extension, like applyMigrations' names. For building a database
+ * from a whole folder, such as a fork's (test/migrations/forkUpgrade.test.ts).
+ */
+export function migrationsFromFiles(files: Record<string, string>): { name: string; queries: string[] }[] {
+  return Object.entries(files)
+    .map(([path, sql]) => ({ name: path.split('/').pop()!.replace(/\.sql$/, ''), sql }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .map(({ name, sql }) => ({ name, queries: splitStatements(sql) }))
+}
+
 export async function resetDb(): Promise<void> {
   await reset()
 }
 
-export async function applyMigrations(): Promise<void> {
-  await applyD1Migrations(env.DB, [
+/**
+ * Apply every migration. With `before`, apply only those whose names sort
+ * before it, so a test can seed rows as an older database holds them and then
+ * call applyMigrations() again to run the rest over them.
+ */
+export async function applyMigrations(opts: { before?: string } = {}): Promise<void> {
+  const migrations = [
     parseMigration(migrationSql1, '0001_initial'),
     parseMigration(migrationSql2, '0002_bill_ingestion'),
     parseMigration(migrationSql3, '0003_member_ui'),
@@ -184,7 +247,15 @@ export async function applyMigrations(): Promise<void> {
     parseMigration(migrationSql70, '0070_draft_numbers_and_years'),
     parseMigration(migrationSql73, '0073_email_health'),
     parseMigration(migrationSql75, '0075_auth_events_email_changed'),
-  ])
+    parseMigration(migrationSql76, '0076_bill_status_stage'),
+    parseMigration(migrationSql77, '0077_bill_session_slug'),
+    parseMigration(migrationSql78, '0078_expired_status_enacted'),
+    parseMigration(migrationSql79, '0079_calendar_event_kind'),
+    parseMigration(migrationSql82, '0082_calendar_event_covered_by'),
+    parseMigration(migrationSql83, '0083_calendar_event_rules'),
+  ]
+  const before = opts.before
+  await applyD1Migrations(env.DB, before ? migrations.filter(m => m.name < before) : migrations)
 }
 
 export async function seedUser(overrides?: {
@@ -258,8 +329,12 @@ export async function seedBill(overrides?: {
   title?: string
   state?: string
   status?: string
+  statusStage?: string | null
+  statusRank?: number
   session?: string
   sessionId?: string
+  /** The slug central assigned the bill's session. Omit for a bill stored before central sent one. */
+  sessionSlug?: string | null
   abstract?: string
   url?: string
   stateUrl?: string
@@ -299,8 +374,11 @@ export async function seedBill(overrides?: {
     title: overrides?.title ?? 'Test Bill',
     state: overrides?.state ?? 'RI',
     status: overrides?.status ?? '',
+    statusStage: overrides?.statusStage ?? null,
+    statusRank: overrides?.statusRank ?? 0,
     session: overrides?.session ?? '2026 Regular Session',
     sessionId: overrides?.sessionId ?? 'ri:2026',
+    sessionSlug: overrides?.sessionSlug ?? null,
     abstract: overrides?.abstract ?? null,
     url: overrides?.url ?? null,
     stateUrl: overrides?.stateUrl ?? null,
@@ -409,7 +487,7 @@ export async function seedCommentMention(
 export async function seedCalendarEvent(
   billId: string,
   overrides?: Partial<{
-    uid: string; source: string; sequence: number; date: string; time: string;
+    uid: string; source: string; kind: string | null; sequence: number; date: string; time: string;
     location: string; description: string; status: 'confirmed' | 'cancelled'; eventHash: string;
   }>,
 ): Promise<string> {
@@ -420,6 +498,7 @@ export async function seedCalendarEvent(
     uid: overrides?.uid ?? `hearing-${billId}-${id}@test`,
     billId,
     source: overrides?.source ?? 'hearing',
+    kind: overrides?.kind ?? null,
     sequence: overrides?.sequence ?? 0,
     date: overrides?.date ?? '2026-06-04',
     time: overrides?.time ?? '14:00:00',

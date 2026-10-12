@@ -1,5 +1,6 @@
 import { getBill, getBillText, getDatasetList, getDatasetRaw, getMasterListBySession, getMasterListRaw, getSessionList } from './client'
-import type { Provider } from '../sdk'
+import { vocabulary } from './vocabulary'
+import { LEGISCAN_ATTRIBUTION, type Provider } from '../sdk'
 
 /**
  * LegiScan, the default provider: one API for every state, paid for out of a
@@ -8,6 +9,10 @@ import type { Provider } from '../sdk'
  */
 export const legiscan: Provider<'LEGISCAN_API_KEY'> = {
   id: 'legiscan',
+  displayName: 'LegiScan',
+  // Shared with the tenant API, which shows it until central has answered.
+  attribution: LEGISCAN_ATTRIBUTION,
+  coverage: { maintainers: ['wtadler'], status: 'stable', memberVotes: true, billText: true },
   envKeys: ['LEGISCAN_API_KEY'],
 
   listSessions: (state, ctx) =>
@@ -35,15 +40,11 @@ export const legiscan: Provider<'LEGISCAN_API_KEY'> = {
     return { bytes: base64ToBytes(text.doc).buffer as ArrayBuffer, mime: text.mime, size: text.text_size }
   },
 
-  statusLabels: {
-    0: 'Pre-filed', 1: 'Introduced', 2: 'Engrossed',
-    3: 'Enrolled', 4: 'Passed', 5: 'Vetoed', 6: 'Failed',
-  },
-  // The change log has always said "Failed/Dead" where the bill API says "Failed".
-  statusChangeLabels: {
-    0: 'Pre-filed', 1: 'Introduced', 2: 'Engrossed',
-    3: 'Enrolled', 4: 'Passed', 5: 'Vetoed', 6: 'Failed/Dead',
-  },
+  vocabulary,
+
+  // getBill's calendar entries carry no event id, and every subscriber's
+  // calendar UIDs are built from the identity they've always had.
+  legacyCalendarIdentity: true,
 
   personUrl: ({ state, name, peopleId }) =>
     `https://legiscan.com/${state}/people/${name.replace(/ /g, '-')}/id/${peopleId}`,

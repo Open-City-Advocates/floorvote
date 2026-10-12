@@ -73,3 +73,20 @@ describe('GET /admin/dash/overview', () => {
     expect(body.data.tenants).toEqual({ total: 0, list: [] })
   })
 })
+
+describe('GET /admin/dash/overview: other providers\' calls', () => {
+  it('counts only LegiScan calls against the LegiScan budget, not any provider\'s <id>:* calls', async () => {
+    const db = drizzle(env.DB, { schema })
+    const now = new Date().toISOString()
+    await db.insert(schema.apiCallLog).values([
+      { callType: 'getBill', params: '{}', loggedAt: now } as any,
+      { callType: 'lims:BulkData', params: '{}', loggedAt: now } as any,
+      { callType: 'lims:LegislationDetails', params: '{}', loggedAt: now } as any,
+      { callType: 'template:Session', params: '{}', loggedAt: now } as any,
+    ])
+
+    const res = await app.fetch(new Request('http://central/admin/dash/overview', { headers: AUTH }), TEST_ENV)
+    const body = await res.json() as any
+    expect(body.data.apiBudget.used).toBe(1)
+  })
+})

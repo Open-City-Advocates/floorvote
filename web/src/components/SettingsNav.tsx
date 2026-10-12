@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
+import { useHasBodyEvents } from '../lib/capabilities'
 import { useEffect, useRef, useState } from 'react'
 import { color, radius, fontSize, fontWeight } from '../styles/tokens'
 import { usePrefersReducedMotion } from '../lib/usePrefersReducedMotion'
@@ -14,6 +15,11 @@ const ADMIN_TABS = [
   { to: '/admin/notifications', label: 'Notifications' },
   { to: '/admin/drafts', label: 'Draft bills' },
 ]
+
+// Only while a covered state's provider publishes the legislature's own
+// calendar: rules that can't fire aren't offered (gated on capability, never
+// on a state's name).
+const CALENDAR_EVENTS_TAB = { to: '/admin/calendar-events', label: 'Calendar events' }
 
 function Tab({ to, label, variant }: { to: string; label: string; variant: 'member' | 'admin' }) {
   const [hovered, setHovered] = useState(false)
@@ -55,6 +61,8 @@ function Tab({ to, label, variant }: { to: string; label: string; variant: 'memb
 export function SettingsNav() {
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin' || user?.role === 'owner'
+  const hasBodyEvents = useHasBodyEvents()
+  const adminTabs = hasBodyEvents ? [...ADMIN_TABS, CALENDAR_EVENTS_TAB] : ADMIN_TABS
   const navRef = useRef<HTMLElement | null>(null)
   const [canScrollLeft, setCanScrollLeft] = useState(false)
   const [canScrollRight, setCanScrollRight] = useState(false)
@@ -81,7 +89,7 @@ export function SettingsNav() {
       nav.removeEventListener('scroll', update)
       window.removeEventListener('resize', update)
     }
-  }, [isAdmin])
+  }, [isAdmin, hasBodyEvents])
 
   return (
     <div style={{ position: 'relative', marginBottom: 24 }}>
@@ -126,7 +134,7 @@ export function SettingsNav() {
             }}>
               Admin
             </span>
-            {ADMIN_TABS.map(({ to, label }) => (
+            {adminTabs.map(({ to, label }) => (
               <Tab key={to} to={to} label={label} variant="admin" />
             ))}
           </>

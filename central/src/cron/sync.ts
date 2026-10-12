@@ -8,6 +8,9 @@ import { providerContext } from '../lib/providerContext'
 import { toHandle } from '../lib/billHandle'
 import type { Env, Db, IngestorMessage, NotificationMessage } from '../types'
 import { deliverBatchToTenant } from '../lib/tenantDelivery'
+import { assignSessionSlugs } from '../lib/sessionSlugs'
+import { insertLinkWhileOwner, loadStateOwners, ownerOf, ownerOfState } from '../lib/stateProviders'
+import { queueCalendarRechecks } from '../lib/billCalendar'
 
 const BATCH = 80
 const FLUSH_BATCH = 500
@@ -42,10 +45,15 @@ export async function runSync(env: Env, db: Db): Promise<void> {
   if (activeTenants.length === 0) return
 
   const trackedStates = await loadTrackedStates(db, activeTenants)
-  if (trackedStates.size === 0) return
 
-  // States don't record their provider yet, so every state syncs from the default.
+  // This sync runs LegiScan, for the states it owns: every state with no
+  // ownership row, and any whose row names it. A state another provider owns
+  // is synced by that provider (cron/sync-snapshots.ts).
   const provider = getProvider(DEFAULT_PROVIDER_ID)
+  const owners = await loadStateOwners(env, db, { reportRefusals: true })
+  for (const state of trackedStates) if (ownerOf(owners, state) !== provider.id) trackedStates.delete(state)
+
+  if (trackedStates.size === 0) return
 
   const etHour = getCurrentEtHour()
   console.log(`[sync-ls] tick at ET hour ${etHour}`)
@@ -63,9 +71,13 @@ export async function runSync(env: Env, db: Db): Promise<void> {
     }
   }
 
+  // The provider's own sessions, by each row's `provider` column. Other
+  // providers' sessions share this table: they are synced by their own
+  // provider, and this one has never heard of their ids.
   const sessionRows = await db.select({
     sessionId: sessions.sessionId,
     state: sessions.state,
+    provider: sessions.provider,
     sessionName: sessions.sessionName,
     sessionTag: sessions.sessionTag,
     yearStart: sessions.yearStart,
@@ -76,7 +88,7 @@ export async function runSync(env: Env, db: Db): Promise<void> {
     rawSyncHoursEt: sessions.rawSyncHoursEt,
   })
     .from(sessions)
-    .where(inArray(sessions.state, [...trackedStates]))
+    .where(and(inArray(sessions.state, [...trackedStates]), eq(sessions.provider, provider.id)))
     .all()
 
   const tenantsByState = new Map<string, { tenantId: string; stateCoverage: string; queueId: string | null }[]>()
@@ -142,6 +154,7 @@ async function refreshSessions(state: string, provider: Provider, env: Env, db: 
       sessionTag:   s.session_tag ?? '',
       sessionTitle: s.session_name,
       sessionName:  s.session_name,
+      provider:     provider.id,
     }).onConflictDoUpdate({
       target: sessions.sessionId,
       set: {
@@ -152,16 +165,18 @@ async function refreshSessions(state: string, provider: Provider, env: Env, db: 
       },
     })
   }
+  await assignSessionSlugs(db)
 }
 
 async function runFullPass(
-  session: SessionRef & { sessionName: string },
+  session: SessionRef & { sessionName: string; provider: string },
   coveringTenants: { tenantId: string; stateCoverage: string; queueId: string | null }[],
   provider: Provider,
   env: Env,
   db: Db,
 ): Promise<void> {
-  const list = await provider.listMeasures(session, providerContext(provider, env, db))
+  // runSync runs the default provider, which lists measures rather than snapshots.
+  const list = await provider.listMeasures!(session, providerContext(provider, env, db))
   await applyMasterList(session, list, coveringTenants, env, db)
 }
 
@@ -171,14 +186,36 @@ async function runFullPass(
  * to the ingestor, and send monitor stubs for the rest. Provider-neutral: any
  * provider that can list a session's measures as `SyncEntry` rows, with a
  * `change_hash` that moves when the measure does, can drive the full pass.
+ * Returns the bill ids it queued for the ingestor.
  */
-async function applyMasterList(
-  session: { sessionId: number; state: string; sessionName: string },
+export async function applyMasterList(
+  /** `provider`, the session row's provider, is written to new bill rows. */
+  session: { sessionId: number; state: string; sessionName: string; provider: string },
   list: SyncEntry[],
   coveringTenants: { tenantId: string; stateCoverage: string; queueId: string | null }[],
   env: Env,
   db: Db,
-): Promise<void> {
+  ingestorQueue: Queue = env.INGESTOR_QUEUE,
+  opts: {
+    /**
+     * Leave the bills row of a changed bill that is being queued for the
+     * ingestor to update, instead of writing the masterlist's status and title
+     * first. The ingestor diffs against the stored row, so a status written
+     * here is a status_change it can no longer see. The snapshot sync sets this,
+     * because every one of its passes is a full pass.
+     */
+    deferQueuedUpdates?: boolean
+    /**
+     * Queue every bill a cutover moved here for its first ingest, tracked or
+     * not, so none is left with its documents and votes cleared
+     * (lib/cutover.ts). The snapshot sync sets this, since its providers'
+     * ingests spend no metered budget. LegiScan's sync doesn't: a getBill per
+     * untracked bill would spend its monthly budget, so there only tracked
+     * moved bills are ingested.
+     */
+    ingestMovedBills?: boolean
+  } = {},
+): Promise<number[]> {
   if (list.length === 0) {
     await db.insert(sessionSyncLog).values({
       syncedAt: nowDb(),
@@ -189,7 +226,7 @@ async function applyMasterList(
       billsChanged: 0,
       billsQueued: 0,
     })
-    return
+    return []
   }
 
   // Per-tenant keyword sets
@@ -207,13 +244,13 @@ async function applyMasterList(
 
   // Load existing bills + bill_tenants links in chunks
   const billIds = list.map(b => b.bill_id)
-  const existing = new Map<number, { changeHash: string }>()
+  const existing = new Map<number, { changeHash: string; carriedFrom: string | null }>()
   const existingLinks = new Map<string, string | null>()
   for (let i = 0; i < billIds.length; i += BATCH) {
     const chunk = billIds.slice(i, i + BATCH)
-    const rows = await db.select({ billId: bills.billId, changeHash: bills.changeHash })
+    const rows = await db.select({ billId: bills.billId, changeHash: bills.changeHash, carriedFrom: bills.carriedFrom })
       .from(bills).where(inArray(bills.billId, chunk)).all()
-    for (const r of rows) existing.set(r.billId, { changeHash: r.changeHash })
+    for (const r of rows) existing.set(r.billId, { changeHash: r.changeHash, carriedFrom: r.carriedFrom })
 
     const links = await db.select({
       billId: billTenants.billId,
@@ -227,8 +264,14 @@ async function applyMasterList(
   const billStmts: any[] = []
   const billTenantStmts: any[] = []
   const toQueue = new Set<number>()
+  /** Bills a cutover moved here that are still waiting for their first ingest. */
+  const carried = new Set<number>()
+  /** Of those, the untracked ones, queued only for that ingest. */
+  const untrackedFirst = new Set<number>()
   const stubMessagesByTenant = new Map<string, NotificationMessage[]>()
   const queueIdByTenant = new Map(coveringTenants.map(t => [t.tenantId, t.queueId]))
+  /** Bills listed with the change hash central holds, by that hash, for calendar rechecks. */
+  const unchanged = new Map<number, string>()
   let changedCount = 0
 
   for (const entry of list) {
@@ -236,6 +279,7 @@ async function applyMasterList(
     const isNew = !stored
     const billChanged = !stored || stored.changeHash !== entry.change_hash
     if (isNew || billChanged) changedCount++
+    else unchanged.set(entry.bill_id, entry.change_hash)
 
     if (isNew) {
       billStmts.push(
@@ -244,6 +288,7 @@ async function applyMasterList(
           changeHash: entry.change_hash,
           sessionId: session.sessionId,
           state: session.state,
+          provider: session.provider,
           stateId: 0,
           billNumber: entry.number,
           title: entry.title ?? entry.number,
@@ -253,13 +298,15 @@ async function applyMasterList(
           lastAction: entry.last_action ?? null,
           lastActionDate: entry.last_action_date ?? null,
           url: entry.url ?? null,
+          stateLink: entry.state_link ?? null,
+          ...(entry.bill_type ? { billType: entry.bill_type } : {}),
           createdAt: now,
           updatedAt: now,
         }).onConflictDoNothing()
       )
-    } else if (billChanged) {
-      billStmts.push(
-        db.update(bills).set({
+    }
+    const changedUpdate = !isNew && billChanged
+      ? db.update(bills).set({
           changeHash: entry.change_hash,
           title: entry.title ?? entry.number,
           description: entry.description ?? null,
@@ -268,10 +315,11 @@ async function applyMasterList(
           lastAction: entry.last_action ?? null,
           lastActionDate: entry.last_action_date ?? null,
           url: entry.url ?? null,
+          ...(entry.state_link !== undefined ? { stateLink: entry.state_link } : {}),
+          ...(entry.bill_type ? { billType: entry.bill_type } : {}),
           updatedAt: now,
         }).where(eq(bills.billId, entry.bill_id))
-      )
-    }
+      : null
 
     // If the masterlist has no title for this bill, queue it for a getBill() call so we
     // can populate real metadata (title, description, sponsor, history, etc.) on first ingest.
@@ -292,13 +340,8 @@ async function applyMasterList(
         prevMatchType === 'manual' ? 'manual' : (matched ? 'keyword' : null)
 
       if (!linkExists) {
-        billTenantStmts.push(
-          db.insert(billTenants).values({
-            billId: entry.bill_id,
-            tenantId: t.tenantId,
-            matchType: newMatchType,
-          }).onConflictDoNothing()
-        )
+        billTenantStmts.push(insertLinkWhileOwner(db,
+          { billId: entry.bill_id, tenantId: t.tenantId, matchType: newMatchType }, session.state, session.provider))
       } else if ((prevMatchType ?? null) !== newMatchType) {
         billTenantStmts.push(
           db.update(billTenants).set({ matchType: newMatchType })
@@ -308,7 +351,14 @@ async function applyMasterList(
 
       const justMatched = newMatchType !== null && (prevMatchType ?? null) !== newMatchType
       const alreadyMatchedAndChanged = newMatchType !== null && billChanged
-      if (justMatched || alreadyMatchedAndChanged) {
+      // A tracked bill a cutover (or an undo) moved here gets its first ingest
+      // from this provider whatever its change hash says, which replaces the
+      // documents the move cleared (lib/cutover.ts). That covers a bill whose
+      // keyword match the new title loses, and a bill an undo moved back
+      // before the other provider ingested it, whose change hash is still this
+      // provider's. It's queued each pass until that ingest clears carried_from.
+      const carriedAndTracked = ((prevMatchType ?? null) !== null || newMatchType !== null) && !!stored?.carriedFrom
+      if (justMatched || alreadyMatchedAndChanged || carriedAndTracked) {
         toQueue.add(entry.bill_id)
       }
 
@@ -327,6 +377,33 @@ async function applyMasterList(
         stubMessagesByTenant.set(t.tenantId, msgs)
       }
     }
+
+    // With `ingestMovedBills`, an untracked bill a cutover moved here gets its
+    // first ingest too, queued each pass until that ingest clears
+    // carried_from. That ingest is quiet and sends instances no changes, so
+    // the bill's row takes the list's status and change hash now rather than
+    // waiting for it: the stubs this pass sends show the new provider's
+    // status, and the previous provider's full pass after an undo sees the
+    // bill changed.
+    if (stored?.carriedFrom) {
+      carried.add(entry.bill_id)
+      if (opts.ingestMovedBills && !toQueue.has(entry.bill_id)) {
+        toQueue.add(entry.bill_id)
+        untrackedFirst.add(entry.bill_id)
+      }
+    }
+
+    if (changedUpdate && opts.deferQueuedUpdates && toQueue.has(entry.bill_id) && !untrackedFirst.has(entry.bill_id)) {
+      // Still record the latest action: the ingestor's getBill-shaped record has
+      // none, and detectChanges does not diff it. change_hash stays behind so a
+      // failed ingest is re-queued on the next pass.
+      billStmts.push(db.update(bills).set({
+        lastAction: entry.last_action ?? null,
+        lastActionDate: entry.last_action_date ?? null,
+      }).where(eq(bills.billId, entry.bill_id)))
+    } else if (changedUpdate) {
+      billStmts.push(changedUpdate)
+    }
   }
 
   for (let i = 0; i < billStmts.length; i += FLUSH_BATCH) {
@@ -338,13 +415,32 @@ async function applyMasterList(
     if (chunk.length > 0) await db.batch(chunk)
   }
 
-  const queueIds = Array.from(toQueue)
+  // A claim that landed during this pass kept the new links above from being
+  // written (insertLinkWhileOwner). Queue and notify nothing for a state this
+  // provider no longer owns, or instances would get its bills without links.
+  if (await ownerOfState(db, session.state) !== session.provider) {
+    console.warn(`[sync] ${session.state} changed provider during the ${session.provider} pass of ` +
+      `${session.sessionName}; nothing queued or sent`)
+    return []
+  }
+
+  // Untracked first ingests go last, so the bills instances track don't wait
+  // behind them. A moved bill's message names this provider, so one left over
+  // after an undo is skipped without a provider call (queue/processor.ts), and
+  // the provider the bill has then queues its own. An untracked one's is also
+  // skipped once the bill has had its first ingest, so a copy queued while an
+  // earlier one waits costs nothing.
+  const queueIds = [...toQueue].sort((a, b) => Number(untrackedFirst.has(a)) - Number(untrackedFirst.has(b)))
   for (let i = 0; i < queueIds.length; i += 100) {
-    await env.INGESTOR_QUEUE.sendBatch(
-      queueIds.slice(i, i + 100).map<IngestorMessage>(billId => ({ billId }))
+    await ingestorQueue.sendBatch(
+      queueIds.slice(i, i + 100)
+        .map<IngestorMessage>(billId => (untrackedFirst.has(billId) ? { billId, firstIngestFor: session.provider }
+          : carried.has(billId) ? { billId, queuedBy: session.provider } : { billId }))
         .map(body => ({ body }))
     )
   }
+  // An unchanged bill is a second pull of its calendar (lib/billCalendar.ts).
+  await queueCalendarRechecks(db, ingestorQueue, unchanged)
 
   // Flush stub messages to each tenant's queue. Binding-first, HTTP fallback by queueId —
   // so tenants WITHOUT a static TENANT_QUEUE_<ID> binding (dynamically onboarded) still
@@ -370,10 +466,11 @@ async function applyMasterList(
   console.log(
     `[sync-ls] FULL ${session.state}/${session.sessionId}: ${list.length} bills, ${queueIds.length} queued`
   )
+  return queueIds
 }
 
 async function runRawPass(
-  session: SessionRef & { sessionName: string },
+  session: SessionRef & { sessionName: string; provider: string },
   coveringTenants: { tenantId: string; stateCoverage: string }[],
   provider: Provider,
   env: Env,
@@ -414,6 +511,7 @@ async function runRawPass(
   const now = nowDb()
   const billStmts: any[] = []
   const toQueue = new Set<number>()
+  const unchanged = new Map<number, string>()
   let changedCount = 0
 
   for (const entry of rawList) {
@@ -421,6 +519,7 @@ async function runRawPass(
     const isNew = storedHash === undefined
     const changed = storedHash !== entry.change_hash
     if (isNew || changed) changedCount++
+    else unchanged.set(entry.bill_id, entry.change_hash)
 
     if (isNew) {
       billStmts.push(
@@ -429,6 +528,7 @@ async function runRawPass(
           changeHash: '',  // sentinel: forces full update when ingestor/full-pass next sees this bill
           sessionId: session.sessionId,
           state: session.state,
+          provider: session.provider,
           stateId: 0,
           billNumber: entry.number,
           title: entry.number,
@@ -467,6 +567,7 @@ async function runRawPass(
         .map(body => ({ body }))
     )
   }
+  await queueCalendarRechecks(db, env.INGESTOR_QUEUE, unchanged)
 
   await db.insert(sessionSyncLog).values({
     syncedAt: nowDb(),

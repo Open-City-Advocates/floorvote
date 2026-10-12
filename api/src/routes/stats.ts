@@ -5,7 +5,8 @@ import { getDb } from '../db/client'
 import { users, bills, memberVotes, associationConfig, calendarEvents } from '../db/schema'
 import { count, eq, isNotNull, isNull, and, inArray, sql, gte, lte, or } from 'drizzle-orm'
 import type { AppEnv } from '../types'
-import { sessionToSlug } from '../lib/sessionSlug'
+import { visibleCalendarEvent } from '../lib/calendarVisibility'
+import { filedSlug } from '../lib/sessionSlug'
 import { centralFetch } from '../lib/centralFetch'
 import { parseHandle, toHandle } from '../../../shared/billHandle'
 import { loadUpcomingDemoHearings } from '../lib/demoCalendar'
@@ -41,10 +42,7 @@ statsRouter.get('/', async (c) => {
         isNotNull(calendarEvents.date),
         gte(calendarEvents.date, today),
         lte(calendarEvents.date, in30),
-        or(
-          and(eq(calendarEvents.source, 'hearing'), isNotNull(bills.priority)),
-          eq(calendarEvents.source, 'custom'),
-        ),
+        visibleCalendarEvent,
       ))
       .get(),
   ])
@@ -91,6 +89,7 @@ statsRouter.get('/sidebar', async (c) => {
         id: bills.id,
         billNumber: bills.billNumber,
         session: bills.session,
+        sessionSlug: bills.sessionSlug,
         state: bills.state,
         title: bills.title,
         summary: bills.tenantSummary,
@@ -115,7 +114,7 @@ statsRouter.get('/sidebar', async (c) => {
     unvotedPriorityCount,
     upcomingHearings,
     upcomingHearingsDays,
-    priorityBills: priorityBillList.map(b => ({ ...b, sessionSlug: sessionToSlug(b.session) })),
+    priorityBills: priorityBillList.map(({ sessionSlug, ...b }) => ({ ...b, sessionSlug: filedSlug({ session: b.session, sessionSlug }) ?? '' })),
   })
 })
 
@@ -193,6 +192,8 @@ async function fetchUpcomingHearings(
   let centralResults: Array<{
     eventHash: string
     type: string | null
+    /** The entry's kind, from central (shared/calendarKinds.ts). Missing from an older central. */
+    kind?: string
     date: string
     time: string | null
     location: string | null
@@ -258,6 +259,7 @@ async function fetchUpcomingHearings(
       priority: bills.priority,
       state: bills.state,
       session: bills.session,
+      sessionSlug: bills.sessionSlug,
       isDraft: bills.isDraft,
     })
     .from(bills)
@@ -285,7 +287,7 @@ async function fetchUpcomingHearings(
       summary: row.summary,
       priority: row.priority as HearingBill['priority'],
       state: row.state,
-      sessionSlug: row.session ? sessionToSlug(row.session) : null,
+      sessionSlug: filedSlug(row),
       myVote: myVoteByBillId.get(row.id) ?? null,
       isDraft: row.isDraft,
     })
@@ -294,6 +296,8 @@ async function fetchUpcomingHearings(
   // Group by composite hearing key
   const groups = new Map<string, HearingGroup>()
   for (const h of centralResults) {
+    // A deadline isn't a hearing. The calendar shows it, and this widget doesn't.
+    if (h.kind === 'deadline') continue
     const bill = billByExternal.get(toHandle(h.billId))
     if (!bill) continue
     // Composite key: same date+time+description+location = same hearing

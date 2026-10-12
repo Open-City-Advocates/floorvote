@@ -2437,3 +2437,74 @@ describe('GET /bills/:id legislator votes', () => {
     ])
   })
 })
+
+describe('GET /bills/:id provider extras', () => {
+  beforeEach(async () => {
+    await resetDb()
+    await applyMigrations()
+  })
+
+  it("passes central's extras through as central labeled them, and null when central sends none", async () => {
+    const token = await seedSession(await seedUser({ role: 'member' }))
+    const withExtras = await seedBill({ billNumber: 'B26-0001', externalId: 'legiscan:201' })
+    const without = await seedBill({ billNumber: 'B26-0002', externalId: 'legiscan:202' })
+    const extras = {
+      providerName: 'DC Council LIMS',
+      fields: [{ key: 'lawNumber', label: 'D.C. Law number', explainer: null, display: 'identifier', value: 'L26-0042' }],
+    }
+    const central = {
+      fetch: vi.fn(async (req: Request) => {
+        const path = new URL(req.url).pathname
+        // A central from before extras sends no extras field at all.
+        return path === '/api/bills/legiscan:201' ? Response.json({ extras })
+          : path === '/api/bills/legiscan:202' ? Response.json({})
+          : Response.json({}, { status: 404 })
+      }),
+    }
+    const detail = async (id: string) => {
+      const res = await app.request(`/api/bills/${id}`, { headers: { Cookie: `session=${token}` } }, { ...env, CENTRAL: central })
+      expect(res.status).toBe(200)
+      return (await res.json() as { extras: unknown }).extras
+    }
+
+    expect(await detail(withExtras)).toEqual(extras)
+    expect(await detail(without)).toBeNull()
+  })
+})
+
+describe('GET /bills/:id committees', () => {
+  beforeEach(async () => {
+    await resetDb()
+    await applyMigrations()
+  })
+
+  it("names the bill's committee and referrals as central does, and keeps the stored committee when central has none", async () => {
+    const token = await seedSession(await seedUser({ role: 'member' }))
+    const referred = await seedBill({ billNumber: 'AB 1', externalId: 'legiscan:301' })
+    const older = await seedBill({ billNumber: 'AB 2', externalId: 'legiscan:302' })
+    // Only demo seeds fill bills.committee today.
+    await env.DB.prepare('UPDATE bills SET committee = ?').bind('Stored committee').run()
+    const referrals = [
+      { date: '2026-01-16', committeeId: '7001', name: 'Campaigns and Elections', chamber: 'A' },
+      { date: '2026-03-02', committeeId: null, name: 'Rules', chamber: 'A' },
+    ]
+    const central = {
+      fetch: vi.fn(async (req: Request) => {
+        const path = new URL(req.url).pathname
+        // A central from before committees sends neither field.
+        return path === '/api/bills/legiscan:301'
+          ? Response.json({ committee: { committeeId: '7001', name: 'Campaigns and Elections', chamber: 'A' }, referrals })
+          : path === '/api/bills/legiscan:302' ? Response.json({})
+          : Response.json({}, { status: 404 })
+      }),
+    }
+    const detail = async (id: string) => {
+      const res = await app.request(`/api/bills/${id}`, { headers: { Cookie: `session=${token}` } }, { ...env, CENTRAL: central })
+      expect(res.status).toBe(200)
+      return await res.json() as { committee: string | null; referrals: unknown[] }
+    }
+
+    expect(await detail(referred)).toMatchObject({ committee: 'Campaigns and Elections', referrals })
+    expect(await detail(older)).toMatchObject({ committee: 'Stored committee', referrals: [] })
+  })
+})

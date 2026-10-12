@@ -148,6 +148,13 @@ describe('GET /config', () => {
     })
   })
 
+  it('credits LegiScan, with its CC BY license, until central has said which providers the states come from', async () => {
+    const res = await app.request('/api/config', { headers: { Cookie: cookie } }, env)
+    const body = await res.json() as { attribution: { providers: { id: string; name: string; license?: { name: string } }[] }; dataSources?: unknown }
+    expect(body.attribution.providers).toEqual([expect.objectContaining({ id: 'legiscan', name: 'LegiScan', license: expect.objectContaining({ name: 'CC BY 4.0' }) })])
+    expect(body.dataSources).toBeUndefined()
+  })
+
   it('reports demoLocked even for a superadmin request', async () => {
     // The behavior under change: the superadmin exemption is removed, so a
     // superadmin no longer bypasses demo locks. This is the red case.

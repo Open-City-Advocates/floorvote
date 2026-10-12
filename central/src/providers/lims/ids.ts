@@ -1,0 +1,67 @@
+/**
+ * Id ranges for records read from the DC Council LIMS API.
+ *
+ * LIMS rows live in the same central tables as LegiScan rows, so instances
+ * address every bill by the same kind of handle (`toHandle` in core) and
+ * nothing downstream changes. To keep the two providers from colliding, LIMS
+ * ids are offset into a range LegiScan never reaches (its bill, doc and
+ * session ids are in the low millions at most).
+ *
+ * The ranges only mint ids. Which provider a row came from is recorded in its
+ * `provider` column, and core routes by that, never by range.
+ *
+ *   bill_id      = LIMS_BILL_ID_BASE + typeCode*1e7 + councilPeriod*1e5 + seq
+ *                  (computed from the measure number, e.g. B26-0400 -> 1_012_600_400,
+ *                  because BulkData rows carry the number but no internal id)
+ *   session_id   = LIMS_SESSION_ID_BASE + councilPeriodId
+ *   people_id    = LIMS_PEOPLE_ID_BASE  + LIMS member id
+ *   doc_id, supplement_id, amendment_id
+ *                = LIMS_DOC_ID_BASE     + the `?Id=` in the document's download URL
+ *                  (one global sequence across document types)
+ *   roll_call_id = LIMS_ROLL_CALL_ID_BASE + (bill_id - LIMS_BILL_ID_BASE)*100 + vote index
+ */
+export const LIMS_BILL_ID_BASE = 1_000_000_000
+export const LIMS_SESSION_ID_BASE = 1_000_000_000
+export const LIMS_DOC_ID_BASE = 2_000_000_000
+export const LIMS_PEOPLE_ID_BASE = 1_000_000_000
+export const LIMS_ROLL_CALL_ID_BASE = 1_000_000_000_000
+
+/**
+ * Measure-number prefixes, in a fixed order: the index is part of the bill id,
+ * so entries may be appended but never reordered or removed.
+ */
+const PREFIXES = [
+  'B', 'PR', 'CER', 'CA', 'GBM', 'REPROG', 'HFA', 'HN', 'HR',
+  'RC', 'ANC', 'AU', 'CFO', 'IG', 'AG',
+] as const
+
+const NUMBER_RE = /^([A-Z]+)(\d{1,2})-(\d{1,5})$/
+
+/**
+ * Bill id for a LIMS measure number such as "B26-0400" or "REPROG26-0153".
+ * Returns null for a number whose shape or prefix this code does not know, so
+ * callers can skip it instead of minting an id that might later collide.
+ */
+export function limsBillId(legislationNumber: string): number | null {
+  const m = NUMBER_RE.exec(legislationNumber.trim())
+  if (!m) return null
+  const code = PREFIXES.indexOf(m[1] as typeof PREFIXES[number]) + 1
+  if (code === 0) return null
+  return LIMS_BILL_ID_BASE + code * 10_000_000 + Number(m[2]) * 100_000 + Number(m[3])
+}
+
+export function limsPeopleId(memberId: number): number {
+  return LIMS_PEOPLE_ID_BASE + memberId
+}
+
+export function limsRollCallId(billId: number, voteIndex: number): number {
+  return LIMS_ROLL_CALL_ID_BASE + (billId - LIMS_BILL_ID_BASE) * 100 + voteIndex
+}
+
+export function limsSessionId(councilPeriodId: number): number {
+  return LIMS_SESSION_ID_BASE + councilPeriodId
+}
+
+export function limsDocId(downloadId: number): number {
+  return LIMS_DOC_ID_BASE + downloadId
+}

@@ -2,6 +2,7 @@ import type { DrizzleD1Database } from 'drizzle-orm/d1'
 import type * as schema from './db/schema'
 import type { AuthVariables } from './middleware/auth'
 import type { RateLimiter } from '../../shared/rateLimit'
+import type { CalendarKind } from '../../shared/calendarKinds'
 
 export type AppEnv = {
   Bindings: Env
@@ -86,18 +87,25 @@ export type TenantQueueMessage = {
     detail: string | null
     detectedAt: string
   }[]
+  // Central's CalendarBlock (central/src/types.ts). `kind` is missing from an
+  // older central's messages.
   calendar?: {
     events: {
       identityKey: string
+      kind?: CalendarKind
       date: string | null
       time: string | null
       location: string | null
       description: string | null
       eventHash: string | null
+      // The UID of the body event that covers the entry, or null. Sent only
+      // for a provider with a calendar of its own (lib/bodyEvents.ts).
+      coveredBy?: string | null
     }[]
     changes: {
       changeType: 'hearing_added' | 'hearing_changed' | 'hearing_cancelled'
       identityKey: string
+      kind?: CalendarKind
       date: string | null
       time: string | null
       location: string | null

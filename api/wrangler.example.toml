@@ -109,7 +109,6 @@ SUPERADMIN_JWT_PUBLIC_KEY = "{...ES256 public JWK JSON...}"
 # published. Left unset, the footer offers the upstream repository, which is
 # accurate only while you run it unmodified. "" withdraws the offer.
 # OPERATOR_SOURCE_URL = "https://github.com/yourorg/floorvote"
-#
 # Arms the terms-acceptance gate: every user must tick a checkbox agreeing to the
 # Legal Terms before the app is usable, and again whenever this date moves. Unset
 # or empty leaves the gate off, which is the right state unless you host under

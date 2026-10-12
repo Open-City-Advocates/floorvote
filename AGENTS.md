@@ -2,7 +2,7 @@
 
 ## What this is
 
-Legislative bill tracking for teams. Each organization gets an isolated deployment (Cloudflare Worker + D1 + R2 + Queue). A shared central Worker ingests bills from LegiScan and fans them out to tenant Workers. Each tenant serves both the Hono API and the React SPA.
+Legislative bill tracking for teams. Each organization gets an isolated deployment (Cloudflare Worker + D1 + R2 + Queue). A shared central Worker ingests bills from a data provider (LegiScan by default, or a legislature's own feed for the states that have one) and fans them out to tenant Workers. Each tenant serves both the Hono API and the React SPA.
 
 ## Architecture
 
@@ -12,11 +12,11 @@ Legislative bill tracking for teams. Each organization gets an isolated deployme
 
 **Binding-authenticated RPC:** Tenant→central uses the `TenantApi` WorkerEntrypoint via service bindings. Central→tenant uses the `CentralApi` entrypoint. Neither direction transmits a shared secret.
 
-**Providers:** central reads legislative data through providers in `central/src/providers/`, with LegiScan the default. A provider calls its API and maps responses into the shapes in `providers/types.ts`, and core writes the results. ESLint lets provider code import only `providers/sdk.ts` and core import providers only through the registry, `providers/index.ts` (`central/eslint-provider-boundary.mjs`). A provider's `ctx.env` holds only the env keys it declares in `envKeys`.
+**Providers:** central reads legislative data through providers in `central/src/providers/`, with LegiScan the default. A provider calls its API and maps responses into the shapes in `providers/types.ts`, and core writes the results. ESLint lets provider code import only `providers/sdk.ts` and core import providers only through the registry, `providers/index.ts` (`central/eslint-provider-boundary.mjs`). A provider's `ctx.env` holds only the env keys it declares in `envKeys`, and its `vocabulary.ts` gives every status it writes a label, common stage, rank, terminal flag, and explainer. Fields only one provider publishes are declared there as extras and shown in one generic panel on the bill page, never sorted, filtered, notified on, or sent to AI, and every provider keeps a field inventory its mapping test checks fixtures against (see "Provider extras" in `docs/internal/sync-pipeline.md`). A provider that publishes the legislature's own calendar implements `listBodyEvents` (body events: hearings, roundtables, and meetings, with or without bills, shown on instances' calendars as each instance's event rules choose, as "Body events" in `docs/internal/sync-pipeline.md` describes), and instances gate features on each state's capabilities, never its name. Central's `state_providers` table records which provider each state syncs from, and a state with no row is LegiScan's. A cutover (`central/src/lib/cutover.ts`) moves a state instances already track to another provider, keeping every bill's handle and never writing to an instance's database. DC (LIMS), Maryland (MGA), and Virginia (LIS) are opt-in providers, off until an admin claim gives them a state, and synced as snapshots by `cron/sync-snapshots.ts` (see `docs/internal/sync-pipeline.md`, whose "DC Council (LIMS)" section covers DC's mapping, its fail-closed rules, and the re-ingest a LIMS mapping change needs, and whose "Maryland (MGA)" and "Virginia (LIS)" sections cover those states).
 
 **Bill pipeline:**
 1. Central hourly cron → per-state keyword union filter → queue matching bills to ingestor
-2. Ingestor → fetch bill + text from LegiScan → store in R2 → notify tenants
+2. Ingestor → fetch bill + text from the state's provider (LegiScan by default) → store in R2 → notify tenants
 3. Tenant queue consumer → fetch from central → run AI → upsert to tenant D1
 
 For the full sync pipeline (cron passes, ingestor fast/full path, deduplication, tenant message flags), see [`docs/internal/sync-pipeline.md`](docs/internal/sync-pipeline.md). The interactive companions are served from the docs site at [floorvote.org/docs/internal/sync-flow.html](https://floorvote.org/docs/internal/sync-flow.html) and [architecture.html](https://floorvote.org/docs/internal/architecture.html); their source lives in `docs/content/public/internal/`.
@@ -48,7 +48,7 @@ This is the canonical project layout — the README intentionally does not dupli
 | Frontend | React 19 + React Router 7 + Vite 8 (Workers Assets) |
 | Email | Cloudflare Email Service (magic link auth); Resend available as a fallback via `EMAIL_PROVIDER` |
 | AI | Google Gemini 2.5 Flash via Cloudflare AI Gateway. `api/src/lib/llm.ts` holds the default; override per env with the `GEMINI_MODEL` and `GEMINI_THINKING_BUDGET` vars |
-| Legislative data | LegiScan |
+| Legislative data | LegiScan by default, plus opt-in providers for DC (LIMS), Maryland (MGA), and Virginia (LIS) |
 | Testing | Vitest + @cloudflare/vitest-pool-workers; Vitest + jsdom |
 
 ---
@@ -130,6 +130,12 @@ Tenant migrations: `api/migrations/`. Central migrations: `central/migrations-le
 
 **Always add new migration files — never edit existing ones.**
 
+**Numbers and names a downstream fork owns.** Open-City-Advocates' fork applied its own migrations in production, and moving it onto upstream depends on these staying free (`docs/internal/fork-upgrade.md`):
+
+- Central 0022, 0023, and 0024 and tenant 0071, 0072, and 0074 are reserved forever. Skip them.
+- Numbers 0900 and up, in both folders, are left for fork-only migrations (`0900_oca_*`). Upstream never uses them.
+- Upstream never creates, alters, or drops the fork's tables and columns, and never assumes they exist or don't. Central: `council_events`, `council_committees`, `council_directory`, `council_committee_history`, `council_changes`, and `people.term_start`, `people.term_end`, and `people.seated`. Tenant: `deep_analyses`, `team_links`, `crm_people`, `crm_contacts`, and `crm_followups`. Pick other names, and never `INSERT … SELECT` from a table that may not exist.
+
 ```bash
 # Tenant
 cd api && npm run migrate:local    # local D1
@@ -174,6 +180,10 @@ It warns rather than adding the trailer, and that is deliberate. The sign-off is
 Inline `style={{}}` backed by design tokens from `web/src/styles/tokens.ts` (`color`, `radius`, `fontSize`, `fontWeight`, `shadow`). ESLint blocks raw hex colors and raw `borderRadius`/`fontSize`/`fontWeight` values. Spacing (padding, margin, gap) is intentionally NOT tokenized — use raw numbers.
 
 Material Symbols icons use an explicit allowlist in `web/index.html` — add new icons to the `icon_names=` query param before using them. Unregistered icons silently render as their literal name text.
+
+### Explanations
+
+`InfoTooltip` (ⓘ) is for explaining how FloorVote works: what a field does, who can change it, where data comes from. Explanations of legislative or data terms (a status, an event type, a provider's field label) go in a plain hover on the term, opening below, with no ⓘ. Use `HoverTooltip` (`web/src/components/HoverTooltip.tsx`) with its `describe` option for those: it makes the term focusable, adds a screen-reader copy of the text, and opens below.
 
 ### Navigation
 

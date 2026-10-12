@@ -12,8 +12,8 @@
  *
  * Two "kinds" exist because not every filter dimension is a pick-one-of-N
  * options list:
- *   - 'options': a set of selectable values (State, Status, Session year,
- *     Position, Priority, Tags, Subject). Desktop renders these as a
+ *   - 'options': a set of selectable values (State, Status, Stage, Session
+ *     year, Position, Priority, Tags, Subject). Desktop renders these as a
  *     `FilterDropdown`; mobile renders them as a drill-down chip list.
  *   - 'toggle': a single on/off control (My bills, New matches). Desktop
  *     renders these as a standalone button with a count badge; mobile keeps
@@ -85,6 +85,12 @@ export interface FilterDimensionContext {
    *  active, even if that filter combined with others now matches zero
    *  drafts — otherwise a user has no way to turn it back off except Reset. */
   draftsActive: boolean
+  /** Whether some covered state's provider fills in the in-committee statuses
+   *  (`useStageFilterUseful`). Absent counts as true. */
+  stageUseful?: boolean
+  /** Whether a Stage filter is applied (from a saved view or URL). Keeps the
+   *  dimension visible so the filter can still be seen and turned off. */
+  stageActive?: boolean
 }
 
 export interface FilterDimensionDef {
@@ -117,6 +123,10 @@ export const FILTER_DIMENSIONS: readonly FilterDimensionDef[] = [
   // back off) visible while the Drafts filter is on, regardless of hasDrafts.
   { key: 'drafts',     label: 'Drafts',        kind: 'toggle',  scope: 'workflow', isVisible: ctx => ctx.hasDrafts || ctx.draftsActive },
   { key: 'status',     label: 'Status',        kind: 'options', scope: 'bill',   isVisible: () => true },
+  // A status's common stage (Introduced, In committee, ..., Enacted), which
+  // compares bills across states whose status names differ. Hidden when every
+  // covered state is on LegiScan, which almost never reports in-committee.
+  { key: 'stage',      label: 'Stage',         kind: 'options', scope: 'bill',   isVisible: ctx => ctx.stageUseful !== false || !!ctx.stageActive },
   { key: 'session',    label: 'Session year',  kind: 'options', scope: 'bill',   isVisible: () => true },
   { key: 'position',   label: 'Position',      kind: 'options', scope: 'bill',   isVisible: () => true },
   { key: 'priority',   label: 'Priority',      kind: 'options', scope: 'bill',   isVisible: () => true },

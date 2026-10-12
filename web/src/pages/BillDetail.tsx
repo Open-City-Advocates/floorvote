@@ -13,6 +13,7 @@ import { NewMatchTriageControl } from '../components/NewMatchTriageControl'
 import { CompactPositionSelect } from '../components/CompactPositionSelect'
 import { StatusChip } from '../components/StatusChip'
 import { decodeStatus } from '../lib/legislativeStatus'
+import { billTypeExplainer, eventTypeExplainer, statusExplainer as explainStatus, useStateLabels } from '../lib/statusExplainers'
 import { getNoAnalysisMessage } from '../lib/billDetailCopy'
 import { REGENERATE_PRESERVES_DESCRIPTION } from '../lib/billDetailCopy'
 import { OverflowMenu, type OverflowMenuRow } from '../components/ui/OverflowMenu'
@@ -51,6 +52,7 @@ import { COMMENT_STYLE } from '../../../shared/commentStyle'
 import { billDisplayTitle } from '../../../shared/billTitle'
 import { getScrollContainer } from '../lib/scrollUtils'
 import { billUrl } from '../lib/sessionSlug'
+import { OtherSessionNotice, billChoicesFrom, type BillChoice } from '../components/BillChoices'
 import { todayIso } from '../lib/calendarGrid'
 import { safeDate, safeTime } from '../lib/dates'
 import { ExternalLinkIcon } from '../components/ExternalLinkIcon'
@@ -58,6 +60,8 @@ import { isEditableTarget } from '../lib/isEditableTarget'
 import { BillPicker, type BillOption } from '../components/BillPicker'
 import { editableFieldBox } from '../lib/editableFieldStyle'
 import { CollapsibleSection } from '../components/CollapsibleSection'
+import { ProviderExtrasList } from '../components/ProviderExtras'
+import type { BillExtras } from '../../../shared/providerExtras'
 import { useMultiState } from '../context/ConfigContext'
 import { AnalysisBox, AnalysisProgressChip, DIMMED_WHILE_RUNNING } from '../components/AnalysisBox'
 import { pollForAnalysis, analysisOutcomeMessage } from '../lib/analysisPoll'
@@ -395,6 +399,8 @@ type BillDetailData = {
   externalId: string | null
   billNumber: string
   sessionSlug?: string | null
+  /** Other bills older links to this URL may have meant (resolve routes only). */
+  otherSessionMatches?: BillChoice[]
   title: string
   state: string
   status: string
@@ -413,7 +419,7 @@ type BillDetailData = {
   url?: string | null
   legiscanUrl?: string | null
   committee: string | null
-  referrals?: { date: string; committee_id: number; chamber: string; name: string }[]
+  referrals?: { date: string | null; committeeId: string | null; chamber: string | null; name: string }[]
   tenantSummary: string | null
   tags: string[]
   relevanceScore: number | null
@@ -425,7 +431,7 @@ type BillDetailData = {
   coSponsors: CoSponsor[]
   lastAction: string | null
   lastActionDate: string | null
-  history: { date: string; action: string; chamber: string; importance?: number }[]
+  history: { date: string; action: string; chamber: string; importance?: number; videoUrl?: string }[]
   voteSummary?: VoteSummaryEntry[]
   subjects: string[]
   relatedBillIds: RelatedBill[]
@@ -442,6 +448,8 @@ type BillDetailData = {
     eventHash: string
     typeId: number
     type: string
+    /** The entry's kind, from central: 'hearing', 'markup', 'meeting', or 'deadline'. */
+    kind?: string | null
     date: string
     time: string | null
     location: string | null
@@ -473,6 +481,8 @@ type BillDetailData = {
     url: string | null
     stateLink: string | null
   }[]
+  /** Fields only the bill's provider publishes, labeled by central, for one generic panel. Null when there are none. */
+  extras?: BillExtras | null
   customFieldValues: Record<string, { value: string; setBy: string | null; updatedAt: string }>
   matchType: 'keyword' | 'manual' | null
   newMatchAt?: string | null
@@ -524,8 +534,10 @@ export async function billDetailLoader({ params, request }: LoaderFunctionArgs) 
     // Anything already shaped as a Response is a router instruction — pass it
     // through rather than reclassifying it as a 500.
     if (err instanceof Response) throw err
+    // More than one bill answers to this URL: hand BillDetailError the
+    // candidates, as JSON so the router parses them into the error's data.
     if (err instanceof ApiError && err.status === 409) {
-      throw new Response('This bill number exists in multiple states. Please use a state-prefixed URL (e.g. /RI/2026/HB0209).', { status: 409 })
+      throw new Response(JSON.stringify({ candidates: billChoicesFrom(err.body?.candidates) }), { status: 409, headers: { 'Content-Type': 'application/json' } })
     }
     if (err instanceof ApiError && err.status === 401) {
       throw redirect('/login')
@@ -627,6 +639,11 @@ export function BillDetail() {
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null)
   const [config, setConfig] = useState<{ positionVocabulary: string[]; instanceDomains: Record<string, string>; orgNoun: string } | null>(null)
   const multiState = useMultiState()
+  // What the bill's status means, from its state's provider vocabulary, shown
+  // on hover over the status chip.
+  // The state's explainers (GET /bills/labels): the status, bill type, and calendar entries' event types.
+  const stateLabels = useStateLabels(bill && !bill.isDraft ? bill.state : null)
+  const statusExplainer = explainStatus(stateLabels, bill ? decodeStatus(bill.status) : null)
   const [promoting, setPromoting] = useState(false)
   const [promoteError, setPromoteError] = useState<string | null>(null)
   const [pendingPromote, setPendingPromote] = useState(false)
@@ -635,6 +652,7 @@ export function BillDetail() {
   const [regenerateError, setRegenerateError] = useState<string | null>(null)
   const [showAmendments, setShowAmendments] = useState(false)
   const [showDocuments, setShowDocuments] = useState(false)
+  const [showExtras, setShowExtras] = useState(false)
   const [showActions, setShowActions] = useState(false)
 
   const [hoveredTag, setHoveredTag] = useState<string | null>(null)
@@ -790,6 +808,7 @@ export function BillDetail() {
     if (sectionId === 'section-amendments') setShowAmendments(true)
     if (sectionId === 'section-documents') setShowDocuments(true)
     if (sectionId === 'section-hearings') setShowHearings(true)
+    if (sectionId === 'section-extras') setShowExtras(true)
 
     // setTimeout gives React one extra tick to flush collapsible expansion before measuring
     const timerId = setTimeout(() => {
@@ -1237,6 +1256,7 @@ export function BillDetail() {
   const hasAmendments = (bill.amendments ?? []).filter(a => a.url || a.stateLink).length > 0
   const hasActions = !!bill.lastAction
   const hasHearings = (bill.calendar ?? []).length > 0
+  const hasDocuments = (bill.supplements ?? []).filter(s => s.stateLink || s.url).length > 0
   return (
     <div className="bill-detail-outer" style={{ padding: '24px 32px', maxWidth: 1100, margin: '0 auto' }}>
       <style>{`
@@ -1265,7 +1285,11 @@ export function BillDetail() {
               return `https://${instanceDomain}${window.location.pathname}`
             })()}
           />
-          {bill.isDraft ? <DraftChip /> : <StatusChip status={decodeStatus(bill.status)} onClick={() => navigate(`/bills?status=${encodeURIComponent(bill.status)}`)} />}
+          {bill.isDraft ? <DraftChip /> : (() => {
+            const chip = <StatusChip status={decodeStatus(bill.status)} describedBy={statusExplainer ? 'bill-status-explainer' : undefined} onClick={() => navigate(`/bills?status=${encodeURIComponent(bill.status)}`)} />
+            // The chip is already a focusable button, so HoverTooltip adds no tab stop; the chip points at its hidden copy.
+            return <HoverTooltip text={statusExplainer} describe={{ id: 'bill-status-explainer', interactive: true }}>{chip}</HoverTooltip>
+          })()}
           {bill.session && (
             <SessionChip
               session={bill.session}
@@ -1455,6 +1479,8 @@ export function BillDetail() {
           </div>
         )}
 
+        <OtherSessionNotice choices={bill.otherSessionMatches ?? []} />
+
         {bill.isDraft && isAdmin && editingDraftField === 'title' ? (
           <div style={{ marginBottom: 4 }}>
             <form
@@ -1560,12 +1586,31 @@ export function BillDetail() {
             if (!grouped.has(key)) grouped.set(key, [])
             grouped.get(key)!.push(r)
           }
-          const hasAny = bodyLabel || typeLabel || bill.relatedBillIds.length > 0 || bill.companionBillIds.length > 0 || bill.stateUrl || bill.stateLink || bill.legiscanUrl || (bill.subjects ?? []).length > 0
+          const hasAny = bodyLabel || typeLabel || (bill.calendar ?? []).some(e => e.kind === 'deadline') || bill.relatedBillIds.length > 0 || bill.companionBillIds.length > 0 || bill.stateUrl || bill.stateLink || bill.legiscanUrl || (bill.subjects ?? []).length > 0
           if (!hasAny) return null
 
           // Collect all display items, then render with · separators only between items
           const metaItems: React.ReactNode[] = []
-          if (bodyLabel) metaItems.push(<span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>)
+          const typeExplainer = billTypeExplainer(stateLabels, bill.billType)
+          if (bodyLabel) metaItems.push(typeExplainer
+            ? <span key="body" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
+                <HoverTooltip text={typeExplainer} describe={{ id: 'bill-type-explainer' }}>{bodyLabel}</HoverTooltip>
+              </span>
+            : <span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>)
+          // The bill's next deadline (an executive's time to act, a review
+          // period ending, an act expiring), where it's hard to miss.
+          const nextDeadline = (bill.calendar ?? []).filter(e => e.kind === 'deadline' && e.date >= todayIso())
+            .sort((a, b) => a.date.localeCompare(b.date))[0]
+          if (nextDeadline) {
+            const explainer = eventTypeExplainer(stateLabels, nextDeadline.typeId)
+            const what = nextDeadline.description || nextDeadline.type
+            metaItems.push(
+              <span key="deadline" data-testid="next-deadline" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4, color: color.textAmberDark, fontWeight: fontWeight.medium }}>
+                <span className="material-symbols-outlined" aria-hidden="true" style={{ fontSize: fontSize.base }}>schedule</span>
+                <HoverTooltip text={explainer} describe>{what}</HoverTooltip>: {safeDate(nextDeadline.date) ?? nextDeadline.date}
+              </span>
+            )
+          }
           if (typeLabel) metaItems.push(<span key="type" style={{ whiteSpace: 'nowrap' }}>{typeLabel}</span>)
           grouped.forEach((related, type) => {
             const label = type.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
@@ -1657,10 +1702,10 @@ export function BillDetail() {
               <>
                 <span style={{ color: color.textMuted, marginRight: 4 }}>Referrals:</span>
                 {(bill.referrals ?? []).map((r, i) => (
-                  <span key={r.committee_id}>
+                  <span key={i}>
                     {i > 0 && <span style={{ color: color.borderStrong, margin: '0 6px' }}>·</span>}
                     {r.name}
-                    <span style={{ color: color.textMuted, marginLeft: 4 }}>{r.date.slice(0, 7)}</span>
+                    {r.date && <span style={{ color: color.textMuted, marginLeft: 4 }}>{r.date.slice(0, 7)}</span>}
                   </span>
                 ))}
               </>
@@ -2576,10 +2621,11 @@ export function BillDetail() {
         {/* Hearings collapsible */}
         {(bill.calendar ?? []).length > 0 && (() => {
           const today = todayIso()
+          const hasDeadlines = bill.calendar.some(e => e.kind === 'deadline')
           return (
             <CollapsibleSection
               id="section-hearings"
-              label="Hearings"
+              label={hasDeadlines ? 'Hearings and deadlines' : 'Hearings'}
               count={bill.calendar.length}
               open={showHearings}
               onToggle={() => setShowHearings(v => !v)}
@@ -2592,8 +2638,13 @@ export function BillDetail() {
                 // All hearings share the navy identity — the same navy as the
                 // bill-number badge and the calendar/feed gavel — so a hearing
                 // reads the same everywhere. Chamber (Senate / House) is carried
-                // by the label text, not colour.
-                const chipColor = { color: color.billBadgeNavy, background: color.bgInfo }
+                // by the label text, not colour. A deadline takes the calendar's
+                // amber deadline identity instead.
+                const isDeadline = entry.kind === 'deadline'
+                const chipColor = isDeadline
+                  ? { color: color.textAmberDark, background: color.bgAmberPriority }
+                  : { color: color.billBadgeNavy, background: color.bgInfo }
+                const explainer = eventTypeExplainer(stateLabels, entry.typeId)
                 return (
                   <TabularRow
                     key={entry.eventHash || `hearing-${i}`}
@@ -2612,7 +2663,9 @@ export function BillDetail() {
                     }
                     content={
                       <div style={{ color: color.textSlate }}>
-                        <div style={{ fontWeight: fontWeight.medium }}>{entry.description || entry.type}</div>
+                        <div style={{ fontWeight: fontWeight.medium, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <HoverTooltip text={explainer} describe>{entry.description || entry.type}</HoverTooltip>
+                        </div>
                         {entry.location && <div style={{ color: color.textSecondary, fontSize: fontSize.xs, marginTop: 1 }}>{entry.location}</div>}
                       </div>
                     }
@@ -2624,7 +2677,7 @@ export function BillDetail() {
         })()}
 
         {/* Documents collapsible (supplements only) */}
-        {(bill.supplements ?? []).filter(s => s.stateLink || s.url).length > 0 && (() => {
+        {hasDocuments && (() => {
           const suppChipStyle = (typeId: number): React.CSSProperties => {
             switch (typeId) {
               case 1: case 3: return { color: color.textSuccessDark, background: color.bgSuccessChip }  // Fiscal Note
@@ -2669,6 +2722,21 @@ export function BillDetail() {
             </CollapsibleSection>
           )
         })()}
+
+        {/* Additional information: fields only the bill's provider publishes */}
+        {bill.extras && bill.extras.fields.length > 0 && (
+          <CollapsibleSection
+            id="section-extras"
+            label={`Additional information from ${bill.extras.providerName}`}
+            count={bill.extras.fields.length}
+            open={showExtras}
+            onToggle={() => setShowExtras(v => !v)}
+            hasPrev={hasBillText || hasAmendments || hasActions || hasHearings || hasDocuments}
+            flashed={flashedSectionId === 'section-extras'}
+          >
+            <ProviderExtrasList fields={bill.extras.fields} />
+          </CollapsibleSection>
+        )}
       </div>
 
       {/* Two-column layout */}

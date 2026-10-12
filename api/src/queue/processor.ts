@@ -1,7 +1,8 @@
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, lt, sql } from 'drizzle-orm'
 import { processBill } from '../lib/llm'
 import { DEFAULT_TAXONOMY, parseTaxonomyItems, filterTagsToTaxonomy } from '../lib/taxonomy'
 import { centralFetch } from '../lib/centralFetch'
+import { hearingUid } from '../lib/hearingUid'
 import { billHtmlToText } from '../lib/billText'
 import { matchesKeywords } from '../lib/keywords'
 import { bills, associationConfig, feedEvents, billTexts, calendarEvents } from '../db/schema'
@@ -14,6 +15,8 @@ import {
   buildDefaultRelevanceQuestion,
   isAiConfigDefault,
 } from '../../../shared/aiDefaults'
+import { LEGACY_STATUS_ORDER, LEGISCAN_CODE_WORDS } from '../../../shared/legacyStatusOrder'
+import { httpUrl } from '../../../shared/httpUrl'
 import type { AppDb, Env, TenantQueueMessage } from '../types'
 
 class AiShedError extends Error {
@@ -202,6 +205,8 @@ type CentralBill = {
   billId: string
   sessionId: string | null
   sessionName: string | null
+  /** Unique within the state. Null from a central older than the slug, or for a session it hasn't slugged yet. */
+  sessionSlug?: string | null
   yearStart: number | null
   yearEnd: number | null
   state: string
@@ -209,6 +214,9 @@ type CentralBill = {
   title: string
   abstract: string | null
   status: string | null
+  /** The status's common stage and rank, from the provider's vocabulary. */
+  statusStage?: string | null
+  statusRank?: number
   statusDate: string | null
   lastAction?: string | null
   lastActionDate?: string | null
@@ -218,11 +226,45 @@ type CentralBill = {
   textR2Key: string | null
   textStatus?: 'not_checked' | 'no_texts' | 'available' | 'in_r2'
   texts: Array<{ docId: string; note: string; date: string; links: Array<{ url: string; mediaType: string }> }>
-  actions: Array<{ description: string; date: string; chamber: string | null; classification: string[]; order: number }>
+  /** `videoUrl`: a recording of the meeting, when the provider publishes one. Absent from an older central. */
+  actions: Array<{ description: string; date: string; chamber: string | null; classification: string[]; order: number; videoUrl?: string | null }>
   sponsors: Array<{ name: string; party: string | null; role: string | null; primary: boolean; personId: string | null; url: string | null }>
   votes: Array<unknown>
   relatedBills: Array<{ identifier: string; session: string; relationType: string }>
   subjects?: string[]
+}
+
+/**
+ * The status as the bill stores it: central's label, or for a bare LegiScan
+ * progress code (which a central from before provider vocabularies still
+ * sends), the word central sends now. Migration 0076 rewrote stored codes the
+ * same way, so the status filter never lists a code and its word separately.
+ */
+function storedStatus(b: CentralBill): string {
+  const status = b.status ?? ''
+  return LEGISCAN_CODE_WORDS[status] ?? status
+}
+
+/**
+ * The bill's status stage and rank. A central from before provider
+ * vocabularies sends neither, so they come from the status string, from the
+ * table migration 0076 backfilled with.
+ */
+function statusOrder(b: CentralBill): { statusStage: string | null; statusRank: number } {
+  if (typeof b.statusRank === 'number') return { statusStage: b.statusStage ?? null, statusRank: b.statusRank }
+  const legacy = LEGACY_STATUS_ORDER[b.status ?? '']
+  return { statusStage: legacy?.stage ?? null, statusRank: legacy?.rank ?? 0 }
+}
+
+/**
+ * The bill's history as `bills.history` stores it. An entry keeps its meeting
+ * video only as an http(s) link, since the bill page puts it in an href.
+ */
+function historyFrom(actions: CentralBill['actions']): { date: string; action: string; chamber: string | null; videoUrl?: string }[] {
+  return actions.map(a => {
+    const videoUrl = httpUrl(a.videoUrl)
+    return { date: a.date, action: a.description, chamber: a.chamber, ...(videoUrl ? { videoUrl } : {}) }
+  })
 }
 
 export async function processCentralNotification(
@@ -232,6 +274,8 @@ export async function processCentralNotification(
 ): Promise<void> {
   if (msg.tenantId !== env.TENANT_ID) return
 
+  // When this copy of the bill was read: texts stored later come from a newer one.
+  const fetchedAt = nowDb()
   const res = await centralFetch(env, `/bills/${msg.billId}`)
   if (!res.ok) throw new Error(`Central API returned ${res.status} for bill ${msg.billId}`)
 
@@ -265,10 +309,17 @@ export async function processCentralNotification(
       // Without this, a bill with ai_processed_at set and match_type NULL
       // (analyzed in the past, no longer keyword-matched) never gets subjects
       // on any path: the operator's stub-refresh route selects exactly these
-      // bills and only ever sends them stubOnly messages.
+      // bills and only ever sends them stubOnly messages. The status, stage,
+      // and rank are refreshed here for the same reason: a one-time resend
+      // after a vocabulary change reaches these bills only through
+      // refresh-stubs.
       if (existing) {
         await db.update(bills)
-          .set({ subjects: centralBill.subjects?.length ? JSON.stringify(centralBill.subjects) : null })
+          .set({
+            subjects: centralBill.subjects?.length ? JSON.stringify(centralBill.subjects) : null,
+            status: storedStatus(centralBill),
+            ...statusOrder(centralBill),
+          })
           .where(eq(bills.id, existing.id))
         await syncBillSubjects(db, existing.id, centralBill.state, centralBill.subjects ?? [])
       }
@@ -278,11 +329,7 @@ export async function processCentralNotification(
     const coSponsorListStub = centralBill.sponsors
       .filter(s => s !== primarySponsorStub)
       .map(s => ({ name: s.name, url: s.url ?? null, party: s.party ?? null }))
-    const historyStub = centralBill.actions.map(a => ({
-      date: a.date,
-      action: a.description,
-      chamber: a.chamber,
-    }))
+    const historyStub = historyFrom(centralBill.actions)
     const lastActionStub = centralBill.lastAction
       ?? (historyStub.length > 0 ? historyStub[historyStub.length - 1].action : null)
     const lastActionDateStub = centralBill.lastActionDate
@@ -296,8 +343,10 @@ export async function processCentralNotification(
       billNumber: centralBill.number,
       title: centralBill.title,
       state: centralBill.state,
-      status: centralBill.status ?? '',
+      status: storedStatus(centralBill),
+      ...statusOrder(centralBill),
       session:   centralBill.sessionName ?? resolveSessionLabel(centralBill.sessionId),
+      sessionSlug: centralBill.sessionSlug ?? null,
       sessionId: centralBill.sessionId ?? null,
       yearStart: centralBill.yearStart ?? null,
       yearEnd:   centralBill.yearEnd   ?? null,
@@ -333,11 +382,7 @@ export async function processCentralNotification(
     const coSponsorListMd = centralBill.sponsors
       .filter(s => s !== primarySponsorMd)
       .map(s => ({ name: s.name, url: s.url ?? null, party: s.party ?? null }))
-    const historyMd = centralBill.actions.map(a => ({
-      date: a.date,
-      action: a.description,
-      chamber: a.chamber,
-    }))
+    const historyMd = historyFrom(centralBill.actions)
     const lastActionMd = centralBill.lastAction
       ?? (historyMd.length > 0 ? historyMd[historyMd.length - 1].action : null)
     const lastActionDateMd = centralBill.lastActionDate
@@ -351,8 +396,10 @@ export async function processCentralNotification(
       billNumber: centralBill.number,
       title: centralBill.title,
       state: centralBill.state,
-      status: centralBill.status ?? '',
+      status: storedStatus(centralBill),
+      ...statusOrder(centralBill),
       session:   centralBill.sessionName ?? resolveSessionLabel(centralBill.sessionId),
+      sessionSlug: centralBill.sessionSlug ?? null,
       sessionId: centralBill.sessionId ?? null,
       yearStart: centralBill.yearStart ?? null,
       yearEnd:   centralBill.yearEnd   ?? null,
@@ -408,12 +455,7 @@ export async function processCentralNotification(
     .filter(s => s !== primarySponsor)
     .map(s => ({ name: s.name, url: s.url ?? null, party: s.party ?? null }))
 
-  // Map actions to history format
-  const history = centralBill.actions.map(a => ({
-    date: a.date,
-    action: a.description,
-    chamber: a.chamber,
-  }))
+  const history = historyFrom(centralBill.actions)
   const lastAction = centralBill.lastAction
     ?? (history.length > 0 ? history[history.length - 1].action : null)
   const lastActionDate = centralBill.lastActionDate
@@ -435,8 +477,10 @@ export async function processCentralNotification(
     billNumber: centralBill.number,
     title: centralBill.title,
     state: centralBill.state,
-    status: centralBill.status ?? '',
+    status: storedStatus(centralBill),
+    ...statusOrder(centralBill),
     session:   centralBill.sessionName ?? resolveSessionLabel(centralBill.sessionId),
+    sessionSlug: centralBill.sessionSlug ?? null,
     sessionId: centralBill.sessionId ?? null,
     yearStart: centralBill.yearStart ?? null,
     yearEnd:   centralBill.yearEnd   ?? null,
@@ -479,7 +523,11 @@ export async function processCentralNotification(
   // never re-run AI on text changes, freezing its summary at promote-time.
   let shouldRunAi = msg.forceAI || derivedMatchType !== null
   if (shouldRunAi && !hasFullText) {
-    console.warn(`[processor] skipping AI for ${msg.billId}: no full text available in central; leaving as stub`)
+    const textCount = centralBill.texts?.length ?? 0
+    const why = textCount === 0
+      ? 'central lists no texts'
+      : 'central lists texts but sent no text hash (the provider may be emitting an empty text_hash)'
+    console.warn(`[processor] skipping AI for ${msg.billId}: ${why} (texts=${textCount}, textHash=${centralBill.textHash ? 'present' : 'missing'}); leaving as stub`)
     shouldRunAi = false
   }
   // Demo tenants never call the model. This is the chokepoint: every route that
@@ -709,6 +757,15 @@ export async function processCentralNotification(
       set: { type: t.note, date: t.date, mime: link?.mediaType ?? 'text/html', stateLink: link?.url ?? null, altStateLink: altLink?.url ?? null, updatedAt: now },
     })
   }
+  // Central never drops a text except when a cutover moves the bill to another
+  // provider, which clears the old provider's. A text it no longer lists would
+  // only fail to open, so it goes here too. A text another run stored from a
+  // newer copy than this one is left alone.
+  await db.delete(billTexts).where(and(
+    eq(billTexts.billId, billInternalId),
+    sql`${billTexts.docId} NOT IN (SELECT value FROM json_each(${JSON.stringify(centralBill.texts.map(t => t.docId))}))`,
+    lt(billTexts.updatedAt, fetchedAt),
+  ))
 
   // Feed events: only for tracked bills (keyword or manual) with AI data and detected changes from central.
   // F5+B5: switched gate from `!existing.isStub` to `existing.matchType !== null` (canonical field).
@@ -758,12 +815,6 @@ export async function processCentralNotification(
   }
 }
 
-function hearingUid(billId: string, identityKey: string, tenantId: string): string {
-  const slug = identityKey.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-  const billPart = billId.replace(/[^a-z0-9]+/gi, '-')
-  return `hearing-${billPart}-${slug}@${tenantId}`
-}
-
 async function reconcileCalendar(
   db: AppDb,
   billInternalId: string,
@@ -777,31 +828,38 @@ async function reconcileCalendar(
   const incomingUids = new Set<string>()
   const changedUids = new Set<string>()
 
-  // Upsert current events; bump sequence when event_hash changed.
+  // Upsert current events. The ICS SEQUENCE only ever rises: it bumps when an
+  // event's content changes (its event_hash) and when a cancelled event comes
+  // back, so calendar clients take the newer copy.
   for (const e of block.events) {
     const uid = hearingUid(msg.billId, e.identityKey, msg.tenantId)
     incomingUids.add(uid)
-    const existing = await db.select({ id: calendarEvents.id, sequence: calendarEvents.sequence, eventHash: calendarEvents.eventHash })
+    const existing = await db.select({ id: calendarEvents.id, sequence: calendarEvents.sequence, eventHash: calendarEvents.eventHash, status: calendarEvents.status })
       .from(calendarEvents).where(eq(calendarEvents.uid, uid)).get()
 
+    // The body event shown in the entry's place (lib/bodyEvents.ts). A central
+    // that sends no cover leaves the stored one alone.
+    const cover = 'coveredBy' in e ? { coveredBy: e.coveredBy ?? null } : {}
     if (!existing) {
       await db.insert(calendarEvents).values({
-        id: crypto.randomUUID(), uid, billId: billInternalId, source: 'hearing', sequence: 0,
+        id: crypto.randomUUID(), uid, billId: billInternalId, source: 'hearing', kind: e.kind ?? null, sequence: 0,
         date: e.date, time: e.time, location: e.location, description: e.description,
-        status: 'confirmed', eventHash: e.eventHash, createdAt: now, updatedAt: now,
+        status: 'confirmed', eventHash: e.eventHash, createdAt: now, updatedAt: now, ...cover,
       })
       changedUids.add(uid)
     } else {
-      const bump = (existing.eventHash ?? '') !== (e.eventHash ?? '')
+      const hashChanged = (existing.eventHash ?? '') !== (e.eventHash ?? '')
+      const reconfirmed = existing.status === 'cancelled'
+      const bump = hashChanged || reconfirmed
       await db.update(calendarEvents).set({
-        billId: billInternalId, status: 'confirmed',
+        billId: billInternalId, status: 'confirmed', ...(e.kind ? { kind: e.kind } : {}), ...cover,
         date: e.date, time: e.time, location: e.location, description: e.description,
         eventHash: e.eventHash, sequence: bump ? existing.sequence + 1 : existing.sequence, updatedAt: now,
       }).where(eq(calendarEvents.uid, uid))
       if (bump) {
         changedUids.add(uid)
-        console.log('[calendar-reconcile] hash bump', JSON.stringify({
-          billId: msg.billId, tenantId: msg.tenantId, uid,
+        console.log('[calendar-reconcile] sequence bump', JSON.stringify({
+          billId: msg.billId, tenantId: msg.tenantId, uid, reconfirmed,
           oldHash: existing.eventHash, newHash: e.eventHash ?? null,
         }))
       }
@@ -825,6 +883,8 @@ async function reconcileCalendar(
   // on queue re-delivery: a re-delivered identical message leaves changedUids empty).
   if (!isNew) {
     for (const ch of block.changes) {
+      // A deadline isn't a hearing: the calendar shows it, and the feed doesn't announce it as one.
+      if (ch.kind === 'deadline') continue
       const uid = hearingUid(msg.billId, ch.identityKey, msg.tenantId)
       if (!changedUids.has(uid)) continue
       console.log('[calendar-reconcile] feed event', JSON.stringify({
@@ -867,6 +927,9 @@ async function upsertBill(
       set: {
         ...updateFields,
         matchType: sql`CASE WHEN ${bills.matchType} = 'manual' THEN 'manual' WHEN excluded.match_type IS NOT NULL THEN excluded.match_type ELSE ${bills.matchType} END`,
+        // Central never changes a session slug once assigned, so a null (an
+        // older central, or a session it hasn't slugged yet) keeps the stored one.
+        sessionSlug: sql`COALESCE(excluded.session_slug, ${bills.sessionSlug})`,
         updatedAt: (updateFields as any).updatedAt ?? sql`updated_at`,
       },
     })

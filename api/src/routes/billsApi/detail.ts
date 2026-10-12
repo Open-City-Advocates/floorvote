@@ -7,7 +7,8 @@ import {
 import type { Env } from '../../types'
 import { centralFetch } from '../../lib/centralFetch'
 import { isHandle, toHandle } from '../../../../shared/billHandle'
-import { sessionToSlug } from '../../lib/sessionSlug'
+import type { BillExtras } from '../../../../shared/providerExtras'
+import { billSlug, filedSlug } from '../../lib/sessionSlug'
 import { loadDemoBillCalendar } from '../../lib/demoCalendar'
 import { activeUser } from '../../lib/accountDeletion'
 import { loadTaxonomyTagNameSet, filterTagsToTaxonomy } from '../../lib/taxonomy'
@@ -22,7 +23,7 @@ type CentralBillRich = {
   sponsors?: Array<{ name: string; party: string | null; role: string | null; primary: boolean; personId: string | null; url: string | null }>
   votes?: Array<{ id: string; motionText: string; date: string; result: string; chamber: string; counts: Array<{ option: string; value: number }>; legislatorVotes?: Array<{ personId: string; name: string; vote: string }> }>
   relatedBills?: Array<{ identifier: string; sastBillId?: number; session: string; relationType: string }>
-  calendar?: Array<{ eventHash: string; typeId: number; type: string; date: string; time: string | null; location: string | null; description: string | null }>
+  calendar?: Array<{ eventHash: string; typeId: number; type: string; kind?: string | null; date: string; time: string | null; location: string | null; description: string | null }>
   supplements?: Array<{ supplementId: number; typeId: number; type: string; date: string | null; dateResolved: string | null; dateInferred: boolean; title: string | null; description: string | null; mime: string | null; url: string | null; stateLink: string | null }>
   amendments?: Array<{
     amendmentId: number
@@ -37,6 +38,11 @@ type CentralBillRich = {
     url: string | null
     stateLink: string | null
   }>
+  /** Fields only the bill's provider publishes, labeled by central. Display only. */
+  extras?: BillExtras | null
+  /** The committee the bill is pending in, and its referrals, each named by central's committee row. */
+  committee?: { committeeId: string; name: string; chamber: string | null } | null
+  referrals?: Array<{ date: string | null; committeeId: string | null; name: string; chamber: string | null }>
 }
 
 export async function buildBillDetail(
@@ -164,12 +170,12 @@ export async function buildBillDetail(
     const externalIds = centralRich.relatedBills
       .flatMap(r => r.sastBillId != null ? [toHandle(r.sastBillId)] : [])
     const internalRows = externalIds.length > 0
-      ? await db.select({ id: bills.id, externalId: bills.externalId, billNumber: bills.billNumber, session: bills.session, state: bills.state })
+      ? await db.select({ id: bills.id, externalId: bills.externalId, billNumber: bills.billNumber, session: bills.session, sessionSlug: bills.sessionSlug, state: bills.state })
           .from(bills)
           .where(inArray(bills.externalId, externalIds))
           .all()
       : []
-    const routeByExternal = new Map(internalRows.map(r => [r.externalId, { id: r.id, billNumber: r.billNumber, sessionSlug: sessionToSlug(r.session), state: r.state }]))
+    const routeByExternal = new Map(internalRows.map(r => [r.externalId, { id: r.id, billNumber: r.billNumber, sessionSlug: filedSlug(r) ?? '', state: r.state }]))
     resolvedRelated = centralRich.relatedBills.map(r => ({
       billId: r.sastBillId ?? 0,
       billNumber: r.identifier,
@@ -197,7 +203,7 @@ export async function buildBillDetail(
     state: bill.state,
     status: bill.status,
     session: bill.session,
-    sessionSlug: bill.isDraft ? String(bill.yearStart ?? '') : sessionToSlug(bill.session),
+    sessionSlug: billSlug(bill),
     sessionId: bill.sessionId,
     yearStart: bill.yearStart ?? null,
     yearEnd: bill.yearEnd ?? null,
@@ -208,7 +214,9 @@ export async function buildBillDetail(
     legiscanUrl: centralRich?.legiscanUrl ?? null,
     billType: centralRich?.billType ?? null,
     body: centralRich?.body ?? null,
-    committee: bill.committee,
+    // Central's committee name when it has one. Only demo seeds fill bills.committee.
+    committee: centralRich?.committee?.name ?? bill.committee,
+    referrals: centralRich?.referrals ?? [],
     tenantSummary: bill.tenantSummary,
     tags: filterTagsToTaxonomy(JSON.parse(bill.tags) as string[], tagSet),
     relevanceScore: bill.relevanceScore,
@@ -278,6 +286,9 @@ export async function buildBillDetail(
       : (centralRich?.calendar ?? []),
     amendments: centralRich?.amendments ?? [],
     supplements: centralRich?.supplements ?? [],
+    // Passed through for the bill page's provider panel, never stored: nothing
+    // in an instance sorts, filters, notifies, or runs AI on extras.
+    extras: centralRich?.extras ?? null,
     customFieldValues: {} as Record<string, { value: string; setBy: string | null; updatedAt: string }>,
   }
 

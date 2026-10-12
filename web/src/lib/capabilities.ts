@@ -1,0 +1,25 @@
+import { useConfig } from '../context/ConfigContext'
+
+/**
+ * Whether any covered state's provider publishes the legislature's own
+ * calendar (`capabilities` in GET /config). Features gate on capabilities,
+ * never on a state's name.
+ */
+/**
+ * Whether the Stage filter is worth offering: some covered state's provider
+ * is not LegiScan. LegiScan's status field almost never carries the
+ * in-committee codes, so "In committee" would always be empty there. An
+ * instance that has not heard from central yet shows it (no flash of a
+ * missing filter on a provider that does fill it in).
+ */
+export function useStageFilterUseful(): boolean {
+  const { config } = useConfig()
+  if (!config) return true
+  // /config names no provider per state, but `attribution.providers` lists exactly the providers that own a covered state.
+  return (config.attribution?.providers ?? []).some(p => p.id !== 'legiscan')
+}
+
+export function useHasBodyEvents(): boolean {
+  const { config } = useConfig()
+  return Object.values(config?.capabilities ?? {}).some(c => c.bodyEvents)
+}

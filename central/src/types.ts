@@ -1,6 +1,7 @@
 import type { DrizzleD1Database } from 'drizzle-orm/d1'
 import type * as schema from './db/schema'
 import type { RateLimiter } from '../../shared/rateLimit'
+import type { CalendarKind } from '../../shared/calendarKinds'
 
 export type Env = {
   DB: D1Database
@@ -13,6 +14,28 @@ export type Env = {
    */
   DEAD_LETTER_QUEUE?: string
   LEGISCAN_API_KEY: string
+  /**
+   * DC Council LIMS developer key (src/providers/lims). Needed for DC to sync
+   * from LIMS, which also takes DC's row in the state ownership table.
+   */
+  LIMS_API_KEY?: string
+  /**
+   * "DC" to seed DC's ownership row for LIMS on the first sync, when DC has no
+   * row (lib/stateProviders.ts). Kept for one release.
+   */
+  LIMS_STATES?: string
+  /**
+   * Comma-separated LIMS category ids to sync (GET LegislationCategories).
+   * Default "1,6,13,14,18": bills, resolutions, grant budget modifications,
+   * reprogrammings, and oversight hearing/roundtable notices.
+   */
+  LIMS_CATEGORIES?: string
+  /**
+   * Ingestor queue for LIMS bills. LIMS answers 429 above about two concurrent
+   * requests, so this queue's consumer should run with max_concurrency = 1.
+   * Falls back to INGESTOR_QUEUE when unset.
+   */
+  LIMS_INGESTOR_QUEUE?: Queue
   ADMIN_SECRET: string
   OPERATOR_NAME: string
   RESEND_API_KEY?: string
@@ -81,20 +104,57 @@ export type BillMessage = {
    * re-fetch a no-op. Used by /admin/refetch-fragment-texts.
    */
   forceTextRefetch?: boolean
+  /**
+   * Recheck the bill's calendar instead of ingesting it: a sync pass listed
+   * the bill with this change hash, the hash of the pull its missing calendar
+   * entries were missing from (lib/billCalendar.ts). Calls no provider.
+   */
+  calendarRecheck?: string
+  /**
+   * The provider whose sync queued this, for a bill waiting for its first
+   * ingest since a cutover moved it there (cron/sync.ts). The ingest is
+   * skipped, with no provider call, once the bill has moved on to another
+   * provider: after an undo, the previous provider's own sync queues it on
+   * its own queue, rather than this message spending its calls from this one.
+   */
+  queuedBy?: string
+  /**
+   * As `queuedBy`, for an untracked bill queued only for that first ingest.
+   * It is also skipped once the bill has had that ingest, so a pass that
+   * queues the bill again while an earlier message waits costs nothing. A
+   * tracked bill's message never is: it may also be for a new keyword match,
+   * which instances must hear of.
+   */
+  firstIngestFor?: string
 }
 
+/**
+ * A bill's calendar, as instances receive it with a notification. `events` is
+ * every entry that isn't cancelled, and an instance cancels any entry of the
+ * bill's that isn't in it. `changes` names what changed since the last pull.
+ * Each entry's `identityKey` never changes (lib/billCalendar.ts), and
+ * instances build its calendar UID from it.
+ */
 export type CalendarBlock = {
   events: {
     identityKey: string
+    kind: CalendarKind
     date: string | null
     time: string | null
     location: string | null
     description: string | null
     eventHash: string | null
+    /**
+     * The UID of the body event covering the entry (lib/bodyEvents.ts), which
+     * instances show in its place, or null. Only from a provider that
+     * publishes the legislature's own calendar.
+     */
+    coveredBy?: string | null
   }[]
   changes: {
     changeType: 'hearing_added' | 'hearing_changed' | 'hearing_cancelled'
     identityKey: string
+    kind: CalendarKind
     date: string | null
     time: string | null
     location: string | null

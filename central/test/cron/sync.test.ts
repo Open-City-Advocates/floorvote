@@ -27,6 +27,7 @@ import { runSync } from '../../src/cron/sync'
 import * as legiscan from '../../src/providers/legiscan/client'
 import * as queuesRest from '../../src/lib/queuesRest'
 import { setupLsDb } from '../helpers/setupLsDb'
+import { limsSessionId } from '../../src/providers/lims/ids'
 
 function getCurrentEtHour(): number {
   return parseInt(
@@ -634,5 +635,25 @@ describe('runSync → wildcard stateCoverage', () => {
     // No sync log entries — nothing to sync
     const logRows = await db.select().from(schema.sessionSyncLog).all()
     expect(logRows).toHaveLength(0)
+  })
+})
+
+describe('runSync: LIMS sessions', () => {
+  it('never asks LegiScan for the masterlist of a LIMS session', async () => {
+    const db = drizzle(env.DB, { schema })
+    const etHour = getCurrentEtHour()
+    const both = { state: 'DC', stateId: 51, yearStart: 2025, yearEnd: 2026, sessionTitle: 'T', sessionName: 'T',
+      fullSyncHoursEt: JSON.stringify([etHour]), rawSyncHoursEt: JSON.stringify([]) }
+    await db.insert(sessions).values([
+      { sessionId: 9300, ...both },
+      { sessionId: limsSessionId(26), ...both, provider: 'lims' },
+    ])
+    await db.insert(tenants).values({ tenantId: 'test-lims', name: 'T', stateCoverage: JSON.stringify(['DC']), active: true })
+    vi.mocked(legiscan.getMasterListBySession).mockResolvedValue([])
+
+    await runSync({ ...(env as any), INGESTOR_QUEUE: { sendBatch: vi.fn(), send: vi.fn() } }, db)
+
+    const asked = vi.mocked(legiscan.getMasterListBySession).mock.calls.map(c => c[0])
+    expect(asked).toEqual([9300])
   })
 })

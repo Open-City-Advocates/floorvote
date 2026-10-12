@@ -8,7 +8,8 @@ The two interactive HTML companions are the exception: GitHub renders `.html` as
 
 | File | What it covers |
 |---|---|
-| `sync-pipeline.md` | Code-grounded LegiScan → tenant sync pipeline (cron, ingestor, dedup, queues). |
+| `sync-pipeline.md` | Code-grounded provider → tenant sync pipeline (LegiScan, plus the DC, Maryland, and Virginia providers; cron, ingestor, dedup, queues). |
+| `direct-sources.md` | Proposal, superseded by #283 where they differ: reading official feeds directly (DC, Maryland, Virginia), source provenance, and the shared committee, membership, event and label model. |
 | `legiscan-api.md` | LegiScan API reference (machine-derived from the LegiScan manual PDF). |
 | `emails.md` | The email-shell contract — follow it when adding an email type. |
 | `calendar.md` | ICS calendar feed capability-URL security model. |
@@ -19,7 +20,10 @@ The two interactive HTML companions are the exception: GitHub renders `.html` as
 | `legiscan-member-votes.md` | Weekly per-member votes from LegiScan's bulk datasets, and backfilling older sessions. |
 | `legiscan-notes.md` | LegiScan operational + licensing notes (quota, `skipFetch`, attribution). |
 | `rebranding.md` | Renaming resources via `RESOURCE_PREFIX` for forks. |
+| `fork-upgrade.md` | Moving a fork that runs DC on LIMS onto upstream: the rehearsal script, deploy order, and what to cherry-pick. |
 | `openstates.md` | The removed OpenStates central: where to find it (`openstates-final` tag), what it knew, and why it was removed. |
+
+The contributor-facing guide to adding a provider is published on the docs site (`docs/content/contributing/providers.md`). It links here for the internals.
 
 ## Previewing the docs site locally
 

@@ -106,6 +106,23 @@ describe('processCentralNotification — calendar mirror', () => {
     expect(rows.map(r => r.uid)).toEqual(['hearing-legiscan-999-1-house-cmte-on-elections@ri'])
   })
 
+  it('keeps the body event central says covers an entry, and leaves it when a central sends no cover', async () => {
+    const send = (coveredBy?: string | null) => {
+      const block = calendarBlock('hearing_added')
+      if (coveredBy !== undefined) Object.assign(block.events[0], { coveredBy })
+      return processCentralNotification({ tenantId: 'ri', billId: 'legiscan:999', calendar: block } as any, testEnv as any, getDb(env.DB))
+    }
+    const cover = async () => (await getDb(env.DB).select().from(calendarEvents).where(eq(calendarEvents.billId, billId)).get())?.coveredBy
+    await send('council-2405@lims.dccouncil.gov')
+    expect(await cover()).toBe('council-2405@lims.dccouncil.gov')
+    await send()
+    expect(await cover()).toBe('council-2405@lims.dccouncil.gov')
+    await send(null)
+    expect(await cover()).toBeNull()
+    // The cover never touches the SEQUENCE: the entry didn't change.
+    expect((await getDb(env.DB).select().from(calendarEvents).where(eq(calendarEvents.billId, billId)).get())?.sequence).toBe(0)
+  })
+
   it('writes a hearing_added feed event for a tracked, non-new bill', async () => {
     await processCentralNotification(
       { tenantId: 'ri', billId: 'legiscan:999', calendar: calendarBlock('hearing_added') } as any,
@@ -222,5 +239,73 @@ describe('processCentralNotification — calendar mirror', () => {
     const fe = await db.select().from(feedEvents).where(eq(feedEvents.billId, billId)).all()
     const hearingAddedEvents = fe.filter(e => e.type === 'hearing_added')
     expect(hearingAddedEvents).toHaveLength(1)
+  })
+
+  // The ICS SEQUENCE a calendar client last saw must never come round again,
+  // or the client keeps its stale copy (#295).
+  describe('ICS sequence', () => {
+    const deliver = (calendar: object) => processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', calendar } as any, testEnv as any, getDb(env.DB),
+    )
+    const row = async () => (await getDb(env.DB).select().from(calendarEvents).where(eq(calendarEvents.billId, billId)).all())[0]
+
+    it('rises with each change, cancellation, and return, and never falls back', async () => {
+      const seen: number[] = []
+      await deliver(calendarBlock('hearing_added'))
+      seen.push((await row()).sequence)
+      await deliver(calendarBlock('hearing_cancelled'))
+      seen.push((await row()).sequence)
+      // The same hearing comes back unchanged: a client that saw it cancelled needs a higher SEQUENCE to see it confirmed.
+      await deliver(calendarBlock('hearing_added'))
+      seen.push((await row()).sequence)
+      const changed = calendarBlock('hearing_changed')
+      changed.events[0].eventHash = 'h2'
+      changed.changes[0].eventHash = 'h2'
+      await deliver(changed)
+      seen.push((await row()).sequence)
+      expect(seen).toEqual([0, 1, 2, 3])
+      expect((await row()).status).toBe('confirmed')
+    })
+
+    it('stays put when the same message is delivered again', async () => {
+      await deliver(calendarBlock('hearing_added'))
+      await deliver(calendarBlock('hearing_cancelled'))
+      await deliver(calendarBlock('hearing_added'))
+      await deliver(calendarBlock('hearing_added'))
+      expect((await row()).sequence).toBe(2)
+    })
+  })
+
+  describe('kinds', () => {
+    it('stores the kind central sent, and keeps it when an older central sends none', async () => {
+      const block = calendarBlock('hearing_added')
+      await processCentralNotification(
+        { tenantId: 'ri', billId: 'legiscan:999', calendar: { events: [{ ...block.events[0], kind: 'markup' }], changes: [] } } as any,
+        testEnv as any, getDb(env.DB),
+      )
+      await processCentralNotification(
+        { tenantId: 'ri', billId: 'legiscan:999', calendar: { events: block.events, changes: [] } } as any,
+        testEnv as any, getDb(env.DB),
+      )
+      const rows = await getDb(env.DB).select().from(calendarEvents).where(eq(calendarEvents.billId, billId)).all()
+      expect(rows.map(r => [r.kind, r.uid])).toEqual([['markup', 'hearing-legiscan-999-1-house-cmte-on-elections@ri']])
+    })
+
+    it('puts a deadline on the calendar, and keeps it out of the feed\'s hearing news', async () => {
+      const deadline = {
+        identityKey: 'deadline|2026-06-20|mayor\'s response due', kind: 'deadline', date: '2026-06-20', time: null,
+        location: null, description: 'Mayor\'s response due', eventHash: 'd1',
+      }
+      await processCentralNotification(
+        { tenantId: 'ri', billId: 'legiscan:999', calendar: { events: [deadline], changes: [{ changeType: 'hearing_added', ...deadline }] } } as any,
+        testEnv as any, getDb(env.DB),
+      )
+      const rows = await getDb(env.DB).select().from(calendarEvents).where(eq(calendarEvents.billId, billId)).all()
+      expect(rows.map(r => [r.kind, r.description, r.status, r.uid])).toEqual([
+        ['deadline', 'Mayor\'s response due', 'confirmed', 'hearing-legiscan-999-deadline-2026-06-20-mayor-s-response-due@ri'],
+      ])
+      const fe = await getDb(env.DB).select().from(feedEvents).where(eq(feedEvents.billId, billId)).all()
+      expect(fe.filter(e => e.type.startsWith('hearing_'))).toEqual([])
+    })
   })
 })

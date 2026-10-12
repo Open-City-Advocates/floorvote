@@ -1,12 +1,19 @@
 import { Hono } from 'hono'
 import { drizzle } from 'drizzle-orm/d1'
-import { eq, and, desc, inArray } from 'drizzle-orm'
+import { eq, and, desc, inArray, isNull } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { secretsMatch } from '../lib/auth'
 import { textCacheKey, getCachedText, putCachedText } from '../lib/billTextCache'
 import { resolveItemDate } from '../lib/itemDate'
 import { parseHandle, toHandle } from '../lib/billHandle'
-import { DEFAULT_PROVIDER_ID, getProvider } from '../providers'
+import { DEFAULT_PROVIDER_ID, findProvider, getProvider } from '../providers'
+import { ownerOfState } from '../lib/stateProviders'
+import { statusFields, vocabularyLabels } from '../lib/vocabulary'
+import { billExtrasDetail } from '../lib/billExtras'
+import { calendarKind } from '../lib/billCalendar'
+import { calendarCoverage } from '../lib/bodyEvents'
+import { providerCapabilities } from '../lib/capabilities'
+import { billReferralDetails, pendingCommittee } from '../lib/committees'
 import type { Env } from '../types'
 
 export const billsRoutes = new Hono<{ Bindings: Env }>()
@@ -26,6 +33,9 @@ billsRoutes.get('/sessions', async (c) => {
     .select({
       sessionId:   schema.sessions.sessionId,
       sessionName: schema.sessions.sessionName,
+      // Unique within the state (an index guarantees it), or null for a
+      // session written since the last cron tick.
+      slug:        schema.sessions.slug,
       state:       schema.sessions.state,
       yearStart:   schema.sessions.yearStart,
       yearEnd:     schema.sessions.yearEnd,
@@ -34,6 +44,26 @@ billsRoutes.get('/sessions', async (c) => {
     .where(eq(schema.sessions.state, state))
     .all()
   return c.json({ sessions })
+})
+
+// Explainers for a state's statuses, bill types, and event types, and its
+// display details, from the vocabulary of the provider that owns the state
+// (state_providers). Instances show the explainers as tooltips. Registered
+// before GET /:id.
+billsRoutes.get('/labels', async (c) => {
+  const state = c.req.query('state')?.toUpperCase()
+  if (!state || !/^[A-Z]{2}$/.test(state)) return c.json({ error: 'state is required' }, 400)
+  const db = drizzle(c.env.DB, { schema })
+  const provider = findProvider(await ownerOfState(db, state)) ?? getProvider(DEFAULT_PROVIDER_ID)
+  const capabilities = providerCapabilities(provider)
+  return c.json({
+    state,
+    ...vocabularyLabels(provider),
+    // Whether the state's provider publishes the legislature's own calendar
+    // (body events: hearings without bills), and the state's other capabilities.
+    hasEvents: capabilities.bodyEvents,
+    capabilities,
+  })
 })
 
 // Bulk rich-data lookup for the tenant data export. Returns amendments,
@@ -127,19 +157,20 @@ billsRoutes.get('/:id', async (c) => {
 
   const bill = await db.select().from(schema.bills).where(eq(schema.bills.billId, numeric)).get()
   if (!bill) return c.json({ error: 'not found' }, 404)
-  // Bills don't record their provider yet, so every bill is the default provider's.
-  const provider = getProvider(DEFAULT_PROVIDER_ID)
+  // The provider that wrote the bill, for its vocabulary.
+  const provider = findProvider(bill.provider) ?? getProvider(DEFAULT_PROVIDER_ID)
 
   const session = bill.sessionId
     ? await db.select({
         sessionName: schema.sessions.sessionName,
+        slug:        schema.sessions.slug,
         yearStart:   schema.sessions.yearStart,
         yearEnd:     schema.sessions.yearEnd,
       })
         .from(schema.sessions).where(eq(schema.sessions.sessionId, bill.sessionId)).get()
     : null
 
-  const [history, sponsorRows, texts, sasts, rollCalls, calendarEntries, supplementRows, subjectRows, amendmentRows, memberVoteRows] = await Promise.all([
+  const [history, sponsorRows, texts, sasts, rollCalls, calendarEntries, supplementRows, subjectRows, amendmentRows, memberVoteRows, extras, committee, referrals] = await Promise.all([
     db.select().from(schema.billHistory).where(eq(schema.billHistory.billId, numeric)).all(),
     db.select({
       id: schema.billSponsors.id,
@@ -150,6 +181,7 @@ billsRoutes.get('/:id', async (c) => {
       party: schema.people.party,
       role: schema.people.role,
       bioJson: schema.people.bioJson,
+      personProvider: schema.people.provider,
     })
       .from(schema.billSponsors)
       .leftJoin(schema.people, eq(schema.billSponsors.peopleId, schema.people.peopleId))
@@ -158,7 +190,9 @@ billsRoutes.get('/:id', async (c) => {
     db.select().from(schema.billTexts).where(eq(schema.billTexts.billId, numeric)).all(),
     db.select().from(schema.billSasts).where(eq(schema.billSasts.billId, numeric)).all(),
     db.select().from(schema.rollCalls).where(eq(schema.rollCalls.billId, numeric)).all(),
-    db.select().from(schema.billCalendar).where(eq(schema.billCalendar.billId, numeric)).all(),
+    // Cancelled entries keep their rows, but aren't on the bill's calendar.
+    db.select().from(schema.billCalendar)
+      .where(and(eq(schema.billCalendar.billId, numeric), isNull(schema.billCalendar.cancelledAt))).all(),
     db.select().from(schema.billSupplements).where(eq(schema.billSupplements.billId, numeric)).all(),
     db.select().from(schema.billSubjects).where(eq(schema.billSubjects.billId, numeric)).all(),
     db.select().from(schema.billAmendments).where(eq(schema.billAmendments.billId, numeric)).orderBy(schema.billAmendments.date).all(),
@@ -175,7 +209,12 @@ billsRoutes.get('/:id', async (c) => {
       .leftJoin(schema.people, eq(schema.people.peopleId, schema.rollCallVotes.peopleId))
       .where(eq(schema.rollCalls.billId, numeric))
       .all(),
+    // Fields only the bill's provider publishes, labeled from its vocabulary.
+    billExtrasDetail(db, numeric, provider),
+    pendingCommittee(db, bill.pendingCommitteeId),
+    billReferralDetails(db, numeric),
   ])
+  const coverage = await calendarCoverage(db, provider, numeric, calendarEntries)
   const legislatorVotesByRc = new Map<number, { personId: string; name: string; vote: string }[]>()
   for (const r of memberVoteRows) {
     if (r.peopleId == null || !r.vote) continue
@@ -211,6 +250,8 @@ billsRoutes.get('/:id', async (c) => {
       chamber: h.chamber,
       classification: [] as string[],
       order: h.seq,
+      // A recording of the meeting, when the provider publishes one.
+      videoUrl: h.videoUrl ?? null,
     }))
 
   const sponsors = sponsorRows
@@ -224,7 +265,8 @@ billsRoutes.get('/:id', async (c) => {
           url = bio.social?.biography ?? null
         } catch { /* ignore */ }
       }
-      if (!url && s.peopleId) url = provider.personUrl?.({ state: bill.state, name, peopleId: s.peopleId }) ?? null
+      // A profile link from the provider that wrote the person, when it has one.
+      if (!url && s.peopleId) url = findProvider(s.personProvider ?? DEFAULT_PROVIDER_ID)?.personUrl?.({ state: bill.state, name, peopleId: s.peopleId }) ?? null
       return {
         name,
         party: s.party ?? null,
@@ -249,13 +291,17 @@ billsRoutes.get('/:id', async (c) => {
     billId: toHandle(bill.billId),
     sessionId:   String(bill.sessionId),
     sessionName: session?.sessionName ?? null,
+    // The SESSION in the bill's /STATE/SESSION/BILL URL. Tenants store it and
+    // resolve the URL by it, so it must never change once sent.
+    sessionSlug: session?.slug        ?? null,
     yearStart:   session?.yearStart   ?? null,
     yearEnd:     session?.yearEnd     ?? null,
     state: bill.state,
     number: bill.billNumber,
     title: bill.title,
     abstract: bill.description ?? null,
-    status: provider.statusLabels[bill.status] ?? String(bill.status),
+    // The status label, stage, and rank, from the provider's vocabulary.
+    ...statusFields(provider, bill.status),
     statusDate: bill.statusDate ?? null,
     lastAction: bill.lastAction ?? null,
     lastActionDate: bill.lastActionDate ?? null,
@@ -295,10 +341,13 @@ billsRoutes.get('/:id', async (c) => {
       eventHash: e.eventHash ?? '',
       typeId: e.typeId ?? 0,
       type: e.type ?? '',
+      kind: calendarKind(provider, e.typeId),
       date: e.date ?? '',
       time: e.time ?? null,
       location: e.location ?? null,
       description: e.description ?? null,
+      // The body event the entry is shown as (lib/bodyEvents.ts), by its UID, from a provider with a calendar of its own.
+      ...(provider.listBodyEvents ? { coveredBy: coverage.get(e.id) ?? null } : {}),
     })),
     supplements: supplementRows.map(s => {
       const { dateResolved, dateInferred } = resolveItemDate(s.date, s.description ?? s.title, { yearStart: session?.yearStart, yearEnd: session?.yearEnd })
@@ -333,6 +382,12 @@ billsRoutes.get('/:id', async (c) => {
       }
     }),
     subjects: subjectRows.map(s => s.subjectName),
+    // The committee the bill is pending in, and the committees it was referred
+    // to, each named by its committees row so a name reads the same on every bill.
+    committee,
+    referrals,
+    // Display only, for the bill page's panel: null when the bill has none.
+    extras,
   })
 })
 

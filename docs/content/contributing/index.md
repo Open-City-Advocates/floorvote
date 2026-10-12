@@ -54,6 +54,10 @@ The full rules live in the [`Developing` section of `AGENTS.md`](https://github.
 - Run `npm run build` from `web/` to catch type errors (vitest does not run `tsc`).
 - Describe what changed and why in the PR body.
 
+## Data providers
+
+Bill data comes from LegiScan by default, and some legislatures also have a direct provider. To bring in a legislature's own feed for your state, follow [Adding a data provider](./providers). It explains the provider model and the rules every provider follows, and points to a template directory and the test helper maintainers use. [State coverage](/contributing/state-coverage) lists the providers that exist for each state, what each supplies, and who maintains it. The page is generated from the providers' own declarations. After changing a provider's `coverage` or `states`, run `npm run gen:state-coverage` and commit the result.
+
 ## Licensing and sign-off
 
 FloorVote is licensed under [AGPL-3.0](https://github.com/floorvote/floorvote/blob/main/LICENSE). By submitting a pull request, you agree to license your contribution under the same license, and you retain copyright in your own work.

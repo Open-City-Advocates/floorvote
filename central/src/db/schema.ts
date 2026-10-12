@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, primaryKey, index } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, primaryKey, index, uniqueIndex } from 'drizzle-orm/sqlite-core'
 import { sql } from 'drizzle-orm'
 
 export const sessions = sqliteTable('sessions', {
@@ -18,9 +18,15 @@ export const sessions = sqliteTable('sessions', {
   syncEnabled:     integer('sync_enabled', { mode: 'boolean' }).notNull().default(true),
   fullSyncHoursEt: text('full_sync_hours_et'),
   rawSyncHoursEt:  text('raw_sync_hours_et'),
+  /** The id of the provider that wrote the row (src/providers): 'legiscan' unless another provider did. */
+  provider:        text('provider').notNull().default('legiscan'),
+  /** The SESSION in /STATE/SESSION/BILL, unique within the state. Null until lib/sessionSlugs.ts assigns it. */
+  slug:            text('slug'),
   // Weekly per-member vote load from the provider's vote datasets (cron/vote-datasets.ts).
   votesDatasetHash: text('votes_dataset_hash'),
   votesCheckedAt:   text('votes_checked_at'),
+  /** A snapshot provider's ETag for the session's file, as of its last completed pass (cron/sync-snapshots.ts). */
+  snapshotEtag:     text('snapshot_etag'),
 })
 
 export const people = sqliteTable('people', {
@@ -45,6 +51,8 @@ export const people = sqliteTable('people', {
   ballotpedia:   text('ballotpedia'),
   bioguideId:    text('bioguide_id'),
   bioJson:       text('bio_json'),
+  /** The id of the provider that wrote the row (src/providers): 'legiscan' unless another provider did. */
+  provider:      text('provider').notNull().default('legiscan'),
 })
 
 export const bills = sqliteTable('bills', {
@@ -74,6 +82,20 @@ export const bills = sqliteTable('bills', {
   createdAt:       text('created_at').notNull().default(sql`(datetime('now'))`),
   updatedAt:       text('updated_at').notNull().default(sql`(datetime('now'))`),
   textsFetchedAt:  text('texts_fetched_at'),
+  /** The id of the provider that wrote the row (src/providers): 'legiscan' unless another provider did. */
+  provider:        text('provider').notNull().default('legiscan'),
+  /**
+   * The provider whose data a bill a cutover moved still holds, until its new
+   * provider's first ingest, which is quiet and carries its calendar over
+   * (0036, lib/cutover.ts). Null otherwise.
+   */
+  carriedFrom:     text('carried_from'),
+  /**
+   * How many of those ingests came with no calendar, so the carry-over waited
+   * (0036). Null for none. Nullable with no default, so multi-row inserts
+   * don't bind one more parameter per row.
+   */
+  carriedWaits:    integer('carried_waits'),
 }, (t) => [
   index('idx_bills_session').on(t.sessionId),
   index('idx_bills_state').on(t.state),
@@ -86,6 +108,8 @@ export const committees = sqliteTable('committees', {
   chamber:     text('chamber').notNull().default(''),
   chamberId:   integer('chamber_id').notNull().default(0),
   name:        text('name').notNull(),
+  /** The id of the provider that wrote the row (0035). Ids come from the provider: LegiScan's own, or minted from provider_ids. */
+  provider:    text('provider').notNull().default('legiscan'),
 })
 
 export const billReferrals = sqliteTable('bill_referrals', {
@@ -107,6 +131,8 @@ export const billHistory = sqliteTable('bill_history', {
   chamberId: integer('chamber_id'),
   importance: integer('importance').notNull().default(1),
   seq:       integer('seq').notNull(),
+  // A recording of the meeting, when the provider publishes one (0033).
+  videoUrl:  text('video_url'),
 }, (t) => [index('idx_bill_history_bill').on(t.billId)])
 
 export const billSponsors = sqliteTable('bill_sponsors', {
@@ -134,6 +160,17 @@ export const billSubjects = sqliteTable('bill_subjects', {
   subjectId:   integer('subject_id').notNull(),
   subjectName: text('subject_name').notNull(),
 }, (t) => [index('idx_bill_subjects_bill').on(t.billId)])
+
+/**
+ * Values of a bill's provider extras (0032). The provider's vocabulary holds
+ * each key's label and display type. The ingest replaces a bill's rows each time.
+ */
+export const billExtras = sqliteTable('bill_extras', {
+  billId:   integer('bill_id').notNull(),
+  provider: text('provider').notNull(),
+  key:      text('key').notNull(),
+  value:    text('value').notNull(),
+}, (t) => [primaryKey({ columns: [t.billId, t.provider, t.key] })])
 
 export const billTexts = sqliteTable('bill_texts', {
   docId:        integer('doc_id').primaryKey(),
@@ -208,6 +245,8 @@ export const billChangeLog = sqliteTable('bill_change_log', {
   index('idx_bill_change_log_date').on(t.detectedAt),
 ])
 
+// A bill's calendar entries, kept under a stable identity and never deleted
+// (lib/billCalendar.ts, migration 0034).
 export const billCalendar = sqliteTable('bill_calendar', {
   id:          text('id').primaryKey(),
   billId:      integer('bill_id').notNull(),
@@ -218,9 +257,55 @@ export const billCalendar = sqliteTable('bill_calendar', {
   time:        text('time'),
   location:    text('location'),
   description: text('description'),
+  eventId:     text('event_id'),
+  // The identity instances know the entry by. Null on a row written before 0034.
+  identityKey: text('identity_key'),
+  missedPulls: integer('missed_pulls').notNull().default(0),
+  missedHash:  text('missed_hash'),
+  cancelledAt: text('cancelled_at'),
 }, (t) => [
   index('idx_bill_calendar_bill').on(t.billId),
   index('idx_bill_calendar_date').on(t.date),
+])
+
+// A legislature's own calendar: hearings, roundtables, and meetings, with or
+// without bills on the agenda, kept under the provider's event id and never
+// deleted (lib/bodyEvents.ts, migration 0037).
+export const bodyEvents = sqliteTable('body_events', {
+  id:          integer('id').primaryKey({ autoIncrement: true }),
+  provider:    text('provider').notNull(),
+  eventId:     text('event_id').notNull(),
+  state:       text('state').notNull(),
+  kind:        text('kind').notNull(),
+  type:        text('type'),
+  date:        text('date').notNull(),
+  time:        text('time'),
+  timezone:    text('timezone'),
+  committeeId: integer('committee_id'),
+  committee:   text('committee'),
+  jointWith:   text('joint_with'),
+  location:    text('location'),
+  title:       text('title').notNull(),
+  agendaJson:  text('agenda_json').notNull().default('[]'),
+  url:         text('url'),
+  eventHash:   text('event_hash').notNull(),
+  missedPulls: integer('missed_pulls').notNull().default(0),
+  emptyPulls:  integer('empty_pulls').notNull().default(0),
+  cancelledAt: text('cancelled_at'),
+  createdAt:   text('created_at').notNull().default(sql`(datetime('now'))`),
+  updatedAt:   text('updated_at').notNull().default(sql`(datetime('now'))`),
+}, (t) => [
+  uniqueIndex('idx_body_events_provider_event').on(t.provider, t.eventId),
+  index('idx_body_events_state_date').on(t.state, t.date),
+])
+
+// The bills on a body event's agenda.
+export const bodyEventBills = sqliteTable('body_event_bills', {
+  bodyEventId: integer('body_event_id').notNull(),
+  billId:      integer('bill_id').notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.bodyEventId, t.billId] }),
+  index('idx_body_event_bills_bill').on(t.billId),
 ])
 
 export const rollCalls = sqliteTable('roll_calls', {
@@ -360,3 +445,76 @@ export const resendUsageDaily = sqliteTable('resend_usage_daily', {
   dailyUsed:   integer('daily_used').notNull(),
   updatedAt:   text('updated_at').notNull().default(sql`(datetime('now'))`),
 })
+
+/**
+ * The raw record each snapshot provider's bill was last built from, and its hash;
+ * see migrations-legiscan/0025_source_provenance.sql (renamed by 0027).
+ */
+export const providerRecords = sqliteTable('provider_records', {
+  billId:           integer('bill_id').primaryKey(),
+  provider:         text('provider').notNull(),
+  nativeKey:        text('native_key').notNull(),
+  sessionId:        integer('session_id').notNull(),
+  /** The record as the provider listed it. `rawHash` is its hash, which the snapshot sync compares. */
+  rawJson:          text('raw_json').notNull(),
+  rawHash:          text('raw_hash').notNull(),
+  /** The per-bill details response the bill was last built from, when its provider has one (0028). */
+  detailsJson:      text('details_json'),
+  detailsFetchedAt: text('details_fetched_at'),
+  updatedAt:        text('updated_at').notNull().default(sql`(datetime('now'))`),
+})
+
+/**
+ * Which provider central reads each state from; see
+ * migrations-legiscan/0030_state_providers.sql and lib/stateProviders.ts. A
+ * state with no row is LegiScan's.
+ */
+export const stateProviders = sqliteTable('state_providers', {
+  state:            text('state').primaryKey(),
+  provider:         text('provider').notNull(),
+  status:           text('status').notNull().default('active'),
+  /** The provider the state had before the row was last written. */
+  previousProvider: text('previous_provider'),
+  claimedAt:        text('claimed_at').notNull().default(sql`(datetime('now'))`),
+})
+
+/** Central ids that providers mint for their own keys (ProviderContext.ids); see migrations-legiscan/0026_source_ids.sql (renamed by 0027) and lib/providerIds.ts. */
+export const providerIds = sqliteTable('provider_ids', {
+  id:        integer('id').primaryKey({ autoIncrement: true }),
+  provider:  text('provider').notNull(),
+  kind:      text('kind').notNull(),
+  nativeKey: text('native_key').notNull(),
+})
+
+/**
+ * Cutovers: a state moved from one provider to another with every matched bill
+ * keeping its central row id (lib/cutover.ts, migrations-legiscan/0036_cutovers.sql).
+ */
+export const cutovers = sqliteTable('cutovers', {
+  id:           text('id').primaryKey(),
+  state:        text('state').notNull(),
+  fromProvider: text('from_provider').notNull(),
+  toProvider:   text('to_provider').notNull(),
+  /** The losing provider's sessions in the state and their flags before the cutover ended them, for an undo. */
+  sessionsJson: text('sessions_json').notNull().default('[]'),
+  createdAt:    text('created_at').notNull().default(sql`(datetime('now'))`),
+  undoneAt:     text('undone_at'),
+}, (t) => [index('idx_cutovers_state').on(t.state, t.createdAt)])
+
+/** Each bill a cutover moved, under its kept row id, with the new provider's own key for it. */
+export const cutoverBills = sqliteTable('cutover_bills', {
+  cutoverId:     text('cutover_id').notNull(),
+  billId:        integer('bill_id').notNull(),
+  nativeKey:     text('native_key').notNull(),
+  fromSessionId: integer('from_session_id').notNull(),
+  toSessionId:   integer('to_session_id').notNull(),
+}, (t) => [primaryKey({ columns: [t.cutoverId, t.billId] })])
+
+/** Each legislator a cutover matched: the person id they keep, given in place of the new provider's id for them. */
+export const cutoverPeople = sqliteTable('cutover_people', {
+  cutoverId:        text('cutover_id').notNull(),
+  peopleId:         integer('people_id').notNull(),
+  providerPeopleId: integer('provider_people_id').notNull(),
+  matchedOn:        text('matched_on').notNull(),
+  weak:             integer('weak').notNull().default(0),
+}, (t) => [primaryKey({ columns: [t.cutoverId, t.providerPeopleId] })])

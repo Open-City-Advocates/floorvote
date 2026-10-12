@@ -39,6 +39,10 @@ describe('TenantApi deny-by-default forwarder', () => {
       ['POST', '/api/admin/anomaly-watch'],
       ['POST', '/api/admin/trigger-sync'],
       ['POST', '/api/admin/backfill-match-types'],
+      ['GET', '/api/admin/state-providers'],
+      ['POST', '/api/admin/state-providers/dc'],
+      ['POST', '/api/admin/state-providers/dc/cutover'],
+      ['POST', '/api/admin/state-providers/dc/undo-cutover'],
       ['POST', '/api/tenants/ri/demo-reset'],
       ['POST', '/api/tenants/ri/run-digest'],
       ['POST', '/api/tenants/ri/refresh-metadata'],
@@ -108,6 +112,13 @@ describe('TenantApi deny-by-default forwarder', () => {
       // The exact status depends on the register route's validation, but it must
       // NOT be the forwarder's 403 — i.e. the request reached the app.
       expect(res.status).not.toBe(403)
+    })
+
+    it('forwards GET /api/bills/labels, the status explainers instances show', async () => {
+      const res = await callTenantApi('GET', '/api/bills/labels?state=RI')
+      expect(res.status).toBe(200)
+      const body = await res.json() as { statuses: { label: string; explainer: string }[] }
+      expect(body.statuses.find(s => s.label === 'Engrossed')?.explainer).toBe('Passed the chamber where it was introduced.')
     })
 
     it('injects x-admin-secret so the admin route auth passes (would 401 without it)', async () => {
