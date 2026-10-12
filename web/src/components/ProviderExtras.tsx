@@ -2,7 +2,7 @@ import type { BillExtraField } from '../../../shared/providerExtras'
 import { color, fontSize, fontWeight } from '../styles/tokens'
 import { safeDate } from '../lib/dates'
 import { ExternalLinkIcon } from './ExternalLinkIcon'
-import { TermHover } from './TermHover'
+import { HoverTooltip } from './HoverTooltip'
 
 /**
  * The fields of a bill's "Additional information from <provider>" panel: one
@@ -16,7 +16,7 @@ export function ProviderExtrasList({ fields }: { fields: BillExtraField[] }) {
       {fields.map(f => (
         <div key={f.key} style={{ display: 'contents' }}>
           <dt style={{ color: color.textSecondary }}>
-            <TermHover text={f.explainer}>{f.label}</TermHover>
+            <HoverTooltip text={f.explainer} describe>{f.label}</HoverTooltip>
           </dt>
           <dd style={{ margin: 0, color: color.textSlate, minWidth: 0 }}>
             <ExtraValue field={f} />

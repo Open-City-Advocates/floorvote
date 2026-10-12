@@ -183,7 +183,7 @@ Material Symbols icons use an explicit allowlist in `web/index.html` — add new
 
 ### Explanations
 
-`InfoTooltip` (ⓘ) is for explaining how FloorVote works: what a field does, who can change it, where data comes from. Explanations of legislative or data terms (a status, an event type, a provider's field label) go in a plain hover on the term, opening below, with no ⓘ. Use `TermHover` (`web/src/components/TermHover.tsx`) for those.
+`InfoTooltip` (ⓘ) is for explaining how FloorVote works: what a field does, who can change it, where data comes from. Explanations of legislative or data terms (a status, an event type, a provider's field label) go in a plain hover on the term, opening below, with no ⓘ. Use `HoverTooltip` (`web/src/components/HoverTooltip.tsx`) with its `describe` option for those: it makes the term focusable, adds a screen-reader copy of the text, and opens below.
 
 ### Navigation
 

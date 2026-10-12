@@ -39,7 +39,6 @@ import { CARD } from '../lib/cardStyle'
 import { COUNT_BADGE, displayName, ROLE_CHIP, TOOLTIP_STYLE, sortRoles } from '../lib/chipStyles'
 import { SECTION_LABEL, CHROME_TEXT, FONT_SANS, FORM_LABEL } from '../lib/textStyles'
 import { HoverTooltip } from '../components/HoverTooltip'
-import { TermHover } from '../components/TermHover'
 import { SubjectsTrigger, SubjectsPanel } from '../components/SubjectsDisclosure'
 import { ChangeHistoryTooltip, type ChangeRecord } from '../components/ChangeHistoryTooltip'
 import { RichTextEditor } from '../components/RichTextEditor'
@@ -1288,8 +1287,8 @@ export function BillDetail() {
           />
           {bill.isDraft ? <DraftChip /> : (() => {
             const chip = <StatusChip status={decodeStatus(bill.status)} describedBy={statusExplainer ? 'bill-status-explainer' : undefined} onClick={() => navigate(`/bills?status=${encodeURIComponent(bill.status)}`)} />
-            // The chip is already a focusable button, so TermHover adds no tab stop; the chip points at its hidden copy.
-            return <TermHover text={statusExplainer} id="bill-status-explainer" interactive>{chip}</TermHover>
+            // The chip is already a focusable button, so HoverTooltip adds no tab stop; the chip points at its hidden copy.
+            return <HoverTooltip text={statusExplainer} describe={{ id: 'bill-status-explainer', interactive: true }}>{chip}</HoverTooltip>
           })()}
           {bill.session && (
             <SessionChip
@@ -1595,7 +1594,7 @@ export function BillDetail() {
           const typeExplainer = billTypeExplainer(stateLabels, bill.billType)
           if (bodyLabel) metaItems.push(typeExplainer
             ? <span key="body" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
-                <TermHover text={typeExplainer} id="bill-type-explainer">{bodyLabel}</TermHover>
+                <HoverTooltip text={typeExplainer} describe={{ id: 'bill-type-explainer' }}>{bodyLabel}</HoverTooltip>
               </span>
             : <span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>)
           // The bill's next deadline (an executive's time to act, a review
@@ -1608,7 +1607,7 @@ export function BillDetail() {
             metaItems.push(
               <span key="deadline" data-testid="next-deadline" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4, color: color.textAmberDark, fontWeight: fontWeight.medium }}>
                 <span className="material-symbols-outlined" aria-hidden="true" style={{ fontSize: fontSize.base }}>schedule</span>
-                <TermHover text={explainer}>{what}</TermHover>: {safeDate(nextDeadline.date) ?? nextDeadline.date}
+                <HoverTooltip text={explainer} describe>{what}</HoverTooltip>: {safeDate(nextDeadline.date) ?? nextDeadline.date}
               </span>
             )
           }
@@ -2665,7 +2664,7 @@ export function BillDetail() {
                     content={
                       <div style={{ color: color.textSlate }}>
                         <div style={{ fontWeight: fontWeight.medium, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <TermHover text={explainer}>{entry.description || entry.type}</TermHover>
+                          <HoverTooltip text={explainer} describe>{entry.description || entry.type}</HoverTooltip>
                         </div>
                         {entry.location && <div style={{ color: color.textSecondary, fontSize: fontSize.xs, marginTop: 1 }}>{entry.location}</div>}
                       </div>
