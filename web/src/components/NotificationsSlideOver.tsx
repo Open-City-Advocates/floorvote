@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import type { Ref, RefObject } from 'react'
 import DOMPurify from 'dompurify'
 import { apiFetch } from '../lib/api'
-import { useNotifications, type NotificationItem } from '../context/NotificationsContext'
+import { useNotifications, type NotificationItem, type ReactionNotification } from '../context/NotificationsContext'
 import { useDemo } from '../context/DemoContext'
 import { isUnreadForDemo, readNotificationIds, markNotificationsRead } from '../lib/demoReadState'
 import { billUrl } from '../lib/sessionSlug'
@@ -312,7 +312,7 @@ export function NotificationsSlideOver(
 
           {!loading && snapshot.length === 0 && (
             <div style={{ padding: '32px 20px', textAlign: 'center', fontSize: fontSize.sm, color: color.textMuted, lineHeight: 1.6 }}>
-              No notifications yet. You'll see mentions of you here, and replies on bills you've commented on.
+              No notifications yet. You'll see mentions of you here, replies on bills you've commented on, and reactions to your comments.
             </div>
           )}
 
@@ -320,6 +320,17 @@ export function NotificationsSlideOver(
               know yet (a newer server) is skipped rather than drawn wrong. */}
           {!loading && snapshot.map(n => {
             switch (n.kind) {
+              case 'reaction':
+                return (
+                  <ReactionRow
+                    key={n.id}
+                    m={n}
+                    onClose={onClose}
+                    onCommentMouseOver={handleCommentMouseOver}
+                    onCommentMouseOut={handleCommentMouseOut}
+                    onCommentMouseLeave={handleCommentMouseLeave}
+                  />
+                )
               case 'mention':
               case 'reply':
                 return (
@@ -389,7 +400,6 @@ function NotificationRow({
   onCommentMouseOut: (e: React.SyntheticEvent) => void
   onCommentMouseLeave: () => void
 }) {
-  const url = billUrl({ state: m.billState, sessionSlug: m.sessionSlug, billNumber: m.billNumber }) + `#comment-${m.commentId}`
   // Role members for the attribution chip tooltip
   const attributionRole = m.kind === 'mention' && m.sourceType === 'role' && m.sourceLabel
     ? roles.find(r => r.name === m.sourceLabel)
@@ -446,6 +456,44 @@ function NotificationRow({
     : 'mentioned you'
 
   return (
+    <RowFrame
+      m={m}
+      onClose={onClose}
+      headline={
+        <>
+          <span style={{ fontWeight: fontWeight.semibold, color: color.textPrimary }}>{m.authorName}</span>
+          {' '}
+          {action}
+        </>
+      }
+      onCommentMouseOver={onCommentMouseOver}
+      onCommentMouseOut={onCommentMouseOut}
+      onCommentMouseLeave={onCommentMouseLeave}
+    />
+  )
+}
+
+/**
+ * The shell every row shares: the link to the comment, the unread rail, a
+ * one-line headline with the time, the comment, and the bill footer.
+ */
+function RowFrame({
+  m,
+  headline,
+  onClose,
+  onCommentMouseOver,
+  onCommentMouseOut,
+  onCommentMouseLeave,
+}: {
+  m: NotificationItem
+  headline: React.ReactNode
+  onClose: () => void
+  onCommentMouseOver: (e: React.SyntheticEvent) => void
+  onCommentMouseOut: (e: React.SyntheticEvent) => void
+  onCommentMouseLeave: () => void
+}) {
+  const url = billUrl({ state: m.billState, sessionSlug: m.sessionSlug, billNumber: m.billNumber }) + `#comment-${m.commentId}`
+  return (
     <Link
       to={url}
       onClick={() => onClose()}
@@ -467,9 +515,7 @@ function NotificationRow({
           line's worth of attention for a detail the name usually carries. */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
         <div style={{ fontSize: fontSize.sm, color: color.textSecondary, minWidth: 0 }}>
-          <span style={{ fontWeight: fontWeight.semibold, color: color.textPrimary }}>{m.authorName}</span>
-          {' '}
-          {action}
+          {headline}
         </div>
         <span style={{ fontSize: fontSize.sm, color: color.textMuted, flexShrink: 0 }}>{relativeTime(m.createdAt)}</span>
       </div>
@@ -521,3 +567,48 @@ function NotificationRow({
     </Link>
   )
 }
+
+/**
+ * The panel row for a `reaction` notification: one per comment, however many
+ * members reacted. It names the newest reactor and counts the rest, and shows
+ * the member's own comment.
+ */
+function ReactionRow({
+  m,
+  onClose,
+  onCommentMouseOver,
+  onCommentMouseOut,
+  onCommentMouseLeave,
+}: {
+  m: ReactionNotification
+  onClose: () => void
+  onCommentMouseOver: (e: React.SyntheticEvent) => void
+  onCommentMouseOut: (e: React.SyntheticEvent) => void
+  onCommentMouseLeave: () => void
+}) {
+  const first = m.reactors[0]?.name ?? 'Someone'
+  const others = m.reactorCount - 1
+  // Two reactors are both named. From three on, the rest are counted.
+  const who = others === 0
+    ? first
+    : others === 1
+    ? `${first} and ${m.reactors[1]?.name ?? 'someone'}`
+    : `${first} and ${others} others`
+  return (
+    <RowFrame
+      m={m}
+      onClose={onClose}
+      headline={
+        <>
+          <span style={{ fontWeight: fontWeight.semibold, color: color.textPrimary }}>{who}</span>
+          {' '}
+          reacted to your comment
+        </>
+      }
+      onCommentMouseOver={onCommentMouseOver}
+      onCommentMouseOut={onCommentMouseOut}
+      onCommentMouseLeave={onCommentMouseLeave}
+    />
+  )
+}
+
