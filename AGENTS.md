@@ -181,6 +181,10 @@ Inline `style={{}}` backed by design tokens from `web/src/styles/tokens.ts` (`co
 
 Material Symbols icons use an explicit allowlist in `web/index.html` — add new icons to the `icon_names=` query param before using them. Unregistered icons silently render as their literal name text.
 
+### Explanations
+
+`InfoTooltip` (ⓘ) is for explaining how FloorVote works: what a field does, who can change it, where data comes from. Explanations of legislative or data terms (a status, an event type, a provider's field label) go in a plain hover on the term, opening below, with no ⓘ. Use `TermHover` (`web/src/components/TermHover.tsx`) for those.
+
 ### Navigation
 
 In-app page transitions hold the current page with a wait cursor while the destination loads, then swap. Never show a full-page spinner during navigation.

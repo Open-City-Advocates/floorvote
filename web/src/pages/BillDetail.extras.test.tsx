@@ -197,11 +197,15 @@ describe('the provider extras panel on a bill page', () => {
     expect(link).toHaveAttribute('target', '_blank')
   })
 
-  it('explains an extra in a tooltip', async () => {
+  it('explains an extra in a plain hover on its label, with no info button', async () => {
+    const explainer = 'The number the act took when it became law.'
     renderBillDetail({ state: 'DC', billNumber: 'B26-0001', extras: EXTRAS })
     fireEvent.click(await screen.findByRole('button', { name: /Additional information from/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'About D.C. Law number' }))
-    await waitFor(() => expect(screen.getByText('The number the act took when it became law.')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: /^About / })).toBeNull()
+    const label = screen.getByText('D.C. Law number')
+    expect(label).toHaveAccessibleDescription(explainer)
+    fireEvent.pointerEnter(label, { pointerType: 'mouse' })
+    await waitFor(() => expect(screen.getAllByText(explainer).some(el => el.style.position === 'fixed')).toBe(true))
   })
 
   it('never turns a link that isn\'t http(s) into an href', async () => {

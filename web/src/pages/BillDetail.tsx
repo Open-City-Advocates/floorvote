@@ -37,8 +37,9 @@ import { color, radius, fontSize, fontWeight, shadow } from '../styles/tokens'
 import { TAG_CHIP, TAG_CHIP_HOVERED } from '../lib/tagChipStyle'
 import { CARD } from '../lib/cardStyle'
 import { COUNT_BADGE, displayName, ROLE_CHIP, TOOLTIP_STYLE, sortRoles } from '../lib/chipStyles'
-import { SECTION_LABEL, CHROME_TEXT, FONT_SANS, FORM_LABEL, SR_ONLY } from '../lib/textStyles'
+import { SECTION_LABEL, CHROME_TEXT, FONT_SANS, FORM_LABEL } from '../lib/textStyles'
 import { HoverTooltip } from '../components/HoverTooltip'
+import { TermHover } from '../components/TermHover'
 import { SubjectsTrigger, SubjectsPanel } from '../components/SubjectsDisclosure'
 import { ChangeHistoryTooltip, type ChangeRecord } from '../components/ChangeHistoryTooltip'
 import { RichTextEditor } from '../components/RichTextEditor'
@@ -1287,14 +1288,8 @@ export function BillDetail() {
           />
           {bill.isDraft ? <DraftChip /> : (() => {
             const chip = <StatusChip status={decodeStatus(bill.status)} describedBy={statusExplainer ? 'bill-status-explainer' : undefined} onClick={() => navigate(`/bills?status=${encodeURIComponent(bill.status)}`)} />
-            // The hover bubble is for pointers (it opens below, clear of the viewport's top edge).
-            // The same text sits in a visually hidden span that the chip points to for screen readers.
-            return statusExplainer
-              ? <>
-                  <HoverTooltip text={statusExplainer} placement="bottom" maxWidth={320}>{chip}</HoverTooltip>
-                  <span id="bill-status-explainer" style={SR_ONLY}>{statusExplainer}</span>
-                </>
-              : chip
+            // The chip is already a focusable button, so TermHover adds no tab stop; the chip points at its hidden copy.
+            return <TermHover text={statusExplainer} id="bill-status-explainer" interactive>{chip}</TermHover>
           })()}
           {bill.session && (
             <SessionChip
@@ -1600,8 +1595,7 @@ export function BillDetail() {
           const typeExplainer = billTypeExplainer(stateLabels, bill.billType)
           if (bodyLabel) metaItems.push(typeExplainer
             ? <span key="body" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
-                <HoverTooltip text={typeExplainer} placement="bottom" maxWidth={320}><span>{bodyLabel}</span></HoverTooltip>
-                <span id="bill-type-explainer" style={SR_ONLY}>{typeExplainer}</span>
+                <TermHover text={typeExplainer} id="bill-type-explainer">{bodyLabel}</TermHover>
               </span>
             : <span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>)
           // The bill's next deadline (an executive's time to act, a review
@@ -1614,8 +1608,7 @@ export function BillDetail() {
             metaItems.push(
               <span key="deadline" data-testid="next-deadline" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4, color: color.textAmberDark, fontWeight: fontWeight.medium }}>
                 <span className="material-symbols-outlined" aria-hidden="true" style={{ fontSize: fontSize.base }}>schedule</span>
-                {what}: {safeDate(nextDeadline.date) ?? nextDeadline.date}
-                {explainer && <InfoTooltip text={explainer} maxWidth={340} align="center" label={`About "${what}"`} />}
+                <TermHover text={explainer}>{what}</TermHover>: {safeDate(nextDeadline.date) ?? nextDeadline.date}
               </span>
             )
           }
@@ -2672,8 +2665,7 @@ export function BillDetail() {
                     content={
                       <div style={{ color: color.textSlate }}>
                         <div style={{ fontWeight: fontWeight.medium, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          {entry.description || entry.type}
-                          {explainer && <InfoTooltip text={explainer} maxWidth={340} align="left" label={`About "${entry.description || entry.type}"`} />}
+                          <TermHover text={explainer}>{entry.description || entry.type}</TermHover>
                         </div>
                         {entry.location && <div style={{ color: color.textSecondary, fontSize: fontSize.xs, marginTop: 1 }}>{entry.location}</div>}
                       </div>
