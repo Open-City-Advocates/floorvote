@@ -75,6 +75,7 @@ import migrationSql78 from '../migrations/0078_expired_status_enacted.sql?raw'
 import migrationSql79 from '../migrations/0079_calendar_event_kind.sql?raw'
 import migrationSql82 from '../migrations/0082_calendar_event_covered_by.sql?raw'
 import migrationSql83 from '../migrations/0083_calendar_event_rules.sql?raw'
+import migrationSql84 from '../migrations/0084_auth_events_actor_index.sql?raw'
 
 export function parseMigration(sql: string, name: string) {
   const queries = sql
@@ -253,6 +254,7 @@ export async function applyMigrations(opts: { before?: string } = {}): Promise<v
     parseMigration(migrationSql79, '0079_calendar_event_kind'),
     parseMigration(migrationSql82, '0082_calendar_event_covered_by'),
     parseMigration(migrationSql83, '0083_calendar_event_rules'),
+    parseMigration(migrationSql84, '0084_auth_events_actor_index'),
   ]
   const before = opts.before
   await applyD1Migrations(env.DB, before ? migrations.filter(m => m.name < before) : migrations)
@@ -513,7 +515,7 @@ export async function seedCalendarEvent(
 export async function seedAuthEvent(
   userId: string,
   event: string,
-  overrides: { email?: string; reason?: string; linkType?: string; provider?: string; messageId?: string; createdAt?: string } = {},
+  overrides: { email?: string; reason?: string; linkType?: string; provider?: string; messageId?: string; createdAt?: string; actorId?: string } = {},
 ): Promise<void> {
   const db = getDb(env.DB)
   await db.insert(authEvents).values({
@@ -525,6 +527,7 @@ export async function seedAuthEvent(
     linkType: overrides.linkType ?? null,
     provider: overrides.provider ?? null,
     messageId: overrides.messageId ?? null,
+    actorId: overrides.actorId ?? null,
     ...(overrides.createdAt ? { createdAt: overrides.createdAt } : {}),
   })
 }

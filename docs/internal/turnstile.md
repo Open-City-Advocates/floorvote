@@ -20,6 +20,18 @@ open** if the binding is ever absent (local dev, tests) — it never locks users
 out on a limiter blip. To tune, edit the `limit` / `period` (`period` must be
 `10` or `60`) in the `[env.<id>.ratelimits.simple]` block and redeploy.
 
+## 1a. Admin email sends — different mechanism, nothing to configure
+
+The admin routes that email a member (resend invite, resend login link, change a
+pending invite's address) are limited per admin and per member, in D1 rather
+than with the Workers Rate Limiting binding. That binding only counts over 10 or
+60 seconds and fails open when absent, so it cannot express "a few resends an
+hour" for a self-hoster who never declared it. The limits (and the 429 messages)
+are in `api/src/lib/adminSendLimits.ts`: 5 per member and 50 per admin, over a
+sliding 60 minutes. They count `link_requested` rows with an `actor_id`
+(migration 0084 indexes it), shared by all three routes. A new send that needs
+a limit should reuse `countRecentSends` there.
+
 ## 2. Turnstile
 
 Turnstile is fully enabled on both login surfaces. The server gate

@@ -27,6 +27,7 @@ import type { AppDb, AppEnv } from '../types'
 import { checkMemberAddresses, normalizeMemberAddress } from '../lib/memberAddress'
 import { isPendingInvite, pendingInviteWhere } from '../lib/pendingInvite'
 import { isPreviouslyBounced, previouslyBouncedAddresses } from '../lib/bouncedAddresses'
+import { adminSendLimitMessage } from '../lib/adminSendLimits'
 import { centralEmail, type DeliveryStatus, type SuppressionStatus } from '../lib/centralEmail'
 
 export const adminApiRouter = new Hono<AppEnv>()
@@ -232,7 +233,8 @@ adminApiRouter.post('/members/bulk-invite', async (c) => {
 
 // A new seven-day invite link for a pending invite, sent the way every
 // admin-initiated invite is: link_requested first, then the email in the
-// background so the response doesn't wait on the mail provider.
+// background so the response doesn't wait on the mail provider. The event
+// names the admin: that is what the send limits count (lib/adminSendLimits.ts).
 async function sendInvite(c: Context<AppEnv>, db: AppDb, target: { id: string; email: string }): Promise<void> {
   const INVITE_DURATION_MS = 7 * 24 * 60 * 60 * 1000
   const rawToken = await generateToken()
@@ -247,7 +249,7 @@ async function sendInvite(c: Context<AppEnv>, db: AppDb, target: { id: string; e
   })
 
   const url = `${c.env.APP_URL}/auth/verify?token=${encodeURIComponent(rawToken)}`
-  await recordAuthEvent(db, { event: 'link_requested', email: target.email, userId: target.id, linkType: 'invite', ...authReqContext(c) })
+  await recordAuthEvent(db, { event: 'link_requested', email: target.email, userId: target.id, linkType: 'invite', actorId: c.get('user').id, ...authReqContext(c) })
   try {
     c.executionCtx.waitUntil(sendMagicLink(target.email, url, c.env, 'invite', db, target.id).catch(console.error))
   } catch {
@@ -268,6 +270,9 @@ adminApiRouter.post('/members/:id/resend-invite', async (c) => {
 
   if (!target) return c.json({ error: 'User not found' }, 404)
   if (target.deactivatedAt) return c.json({ error: 'Cannot resend invite to a deactivated user' }, 400)
+
+  const limited = await adminSendLimitMessage(db, c.get('user').id, target.id)
+  if (limited) return c.json({ error: limited }, 429)
 
   await sendInvite(c, db, target)
   return c.json({ ok: true })
@@ -323,6 +328,11 @@ adminApiRouter.post('/members/:id/change-email', async (c) => {
   if (await isPreviouslyBounced(c.env, db, email)) {
     return c.json({ error: CHANGE_EMAIL_ERRORS.bounced }, 400)
   }
+
+  // Last, so a request refused above uses none of the allowance, and before
+  // the update so a refused change leaves the address as it was.
+  const limited = await adminSendLimitMessage(db, currentUser.id, target.id)
+  if (limited) return c.json({ error: limited }, 429)
 
   // One batch, so it lands whole or not at all. The update re-checks that the
   // member is still a pending invite: a sign-in or deactivation can land
@@ -380,6 +390,9 @@ adminApiRouter.post('/members/:id/resend-login', async (c) => {
   if (!target) return c.json({ error: 'User not found' }, 404)
   if (target.deactivatedAt) return c.json({ error: 'Cannot resend a login link to a deactivated user' }, 400)
 
+  const limited = await adminSendLimitMessage(db, c.get('user').id, target.id)
+  if (limited) return c.json({ error: limited }, 429)
+
   // Match the public login link's TTL (a wider window for slow mail gateways),
   // not the 7-day invite window — this is a login link, not an invitation.
   const LOGIN_LINK_DURATION_MS = 60 * 60 * 1000
@@ -395,7 +408,7 @@ adminApiRouter.post('/members/:id/resend-login', async (c) => {
   })
 
   const url = `${c.env.APP_URL}/auth/verify?token=${encodeURIComponent(rawToken)}`
-  await recordAuthEvent(db, { event: 'link_requested', email: target.email, userId: target.id, linkType: 'login', ...authReqContext(c) })
+  await recordAuthEvent(db, { event: 'link_requested', email: target.email, userId: target.id, linkType: 'login', actorId: c.get('user').id, ...authReqContext(c) })
   try {
     c.executionCtx.waitUntil(sendMagicLink(target.email, url, c.env, 'login', db, target.id).catch(console.error))
   } catch {
