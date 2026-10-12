@@ -47,8 +47,9 @@ const bills = (n: number) => `${count(n)} ${n === 1 ? 'bill' : 'bills'}`
  *
  * `keywords` is the textarea's text and `savedKeywords` the text as last
  * loaded or saved. The count lags typing by the debounce and keeps showing the
- * previous answer while the next loads. A failed count renders nothing, since
- * the summary is a convenience and the save confirmation still reports what
+ * previous answer while the next loads. A failed count clears it and renders
+ * nothing, rather than leave a number that no longer matches the box. The
+ * summary is a convenience, and the save confirmation still reports what
  * saving will do.
  */
 export function KeywordMatchSummary({ keywords, savedKeywords }: { keywords: string; savedKeywords: string }) {
@@ -67,8 +68,8 @@ export function KeywordMatchSummary({ keywords, savedKeywords }: { keywords: str
         method: 'POST',
         body: JSON.stringify({ keywords: JSON.parse(listKey) }),
       })
-        .then(result => { if (!cancelled && isSummary(result)) setSummary(result) })
-        .catch(() => {})
+        .then(result => { if (!cancelled) setSummary(isSummary(result) ? result : null) })
+        .catch(() => { if (!cancelled) setSummary(null) })
     }, hasCounted.current ? DEBOUNCE_MS : 0)
     return () => { cancelled = true; clearTimeout(timer) }
   }, [listKey])

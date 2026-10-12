@@ -16,9 +16,9 @@ describe('foldForMatch', () => {
     }
   })
 
-  it('replaces every character outside Latin-1 with a space and keeps the length', () => {
+  it('replaces every character outside Latin-1 with a sentinel no keyword can contain, keeping the length', () => {
     const folded = foldForMatch('Voters\u2019 Rights \u2014 \u65E5\u672C \u{1F5F3}')
-    expect(folded).toBe('voters  rights' + ' '.repeat(8))
+    expect(folded).toBe('voters\u0001 rights \u0001 \u0001\u0001 \u0001\u0001')
     expect([...folded].every(ch => ch.charCodeAt(0) <= 255)).toBe(true)
   })
 
@@ -28,14 +28,14 @@ describe('foldForMatch', () => {
 
   it('does not lowercase non-Latin-1 characters into Latin-1 ones', () => {
     // toLowerCase would turn the dotted capital I into "i" plus a combining dot.
-    expect(foldForMatch('\u0130')).toBe(' ')
+    expect(foldForMatch('\u0130')).toBe('\u0001')
     // And the Kelvin sign into an ASCII "k".
-    expect(foldForMatch('\u212A')).toBe(' ')
+    expect(foldForMatch('\u212A')).toBe('\u0001')
   })
 
   it('handles text longer than one chunk', () => {
     const long = 'Ab\u2014'.repeat(10_000)
-    expect(foldForMatch(long)).toBe('ab '.repeat(10_000))
+    expect(foldForMatch(long)).toBe('ab\u0001'.repeat(10_000))
   })
 })
 
@@ -49,6 +49,9 @@ describe('isFoldSafe', () => {
     ['a non-Latin script', '\u65E5\u672C'],
     ['y with diaeresis, whose capital is outside Latin-1', '\u00FF'],
     ['the micro sign, whose capital is Greek', '\u00B5'],
+    ['the sentinel character itself', 'a\u0001b'],
+    ['a newline, which a folded line separator becomes', 'a\nb'],
+    ['a carriage return', 'a\rb'],
   ])('rejects %s', (_name, kw) => {
     expect(isFoldSafe(kw)).toBe(false)
   })
@@ -62,6 +65,15 @@ describe('matching folded text agrees with matching raw text', () => {
     { text: 'Voters\u2019 Rights Act', keywords: ['rights act'] },
     { text: 'Voters \u2014 Rights', keywords: ['voters', 'rights', 'voters rights'] },
     { text: 'Voters\u2014rights', keywords: ['voters', 'rights'] },
+    // A phrase must not match across a character the folded text has replaced.
+    { text: 'Health Care\u2014Access', keywords: ['care access'] },
+    { text: 'Health Care \u2014 Access', keywords: ['care access'] },
+    { text: 'Voters\u2019rights act', keywords: ['voters rights'] },
+    { text: 'Voters\u2019 rights act', keywords: ['voters rights'] },
+    { text: 'board\u2003of\u2003canvassers', keywords: ['board of canvassers'] },
+    { text: 'board of canvassers', keywords: ['board of canvassers'] },
+    { text: 'a\u2028b', keywords: ['a b'] },
+    { text: 'a\u2014b', keywords: ['a b'] },
     { text: 'Elections\u2014Reform', keywords: ['election*', '*reform'] },
     { text: 'R\u00E9forme \u00E9lectorale', keywords: ['\u00E9lectorale', 'r\u00E9forme', 'electorale'] },
     { text: 'R\u00C9FORME \u00C9LECTORALE', keywords: ['\u00E9lectorale', 'r\u00E9forme'] },
@@ -153,6 +165,18 @@ describe('summarizeKeywordMatches memory handling', () => {
       expect(state.billReads).toBe(1)
     })
 
+    it('gives a phrase the same count from the cache as from the first read, across an em-dash or curly quote', async () => {
+      await seedBill({ externalId: 'legiscan:3', title: 'Health Care\u2014Access Act', billNumber: 'HB 3', matchType: null })
+      await seedBill({ externalId: 'legiscan:4', title: 'Voters\u2019rights Act', billNumber: 'HB 4', matchType: null })
+      await seedBill({ externalId: 'legiscan:5', title: 'Health Care Access Act', billNumber: 'HB 5', matchType: null })
+      const { db } = countingDb()
+      const keywords = ['care access', 'voters rights']
+      const first = await summarizeKeywordMatches(db, tenant, keywords, [])
+      const second = await summarizeKeywordMatches(db, tenant, keywords, [])
+      expect(first).toMatchObject({ total: 5, matched: 1 })
+      expect(second).toEqual(first)
+    })
+
     it('answers a keyword outside Latin-1 from the bills, not from the folded cache', async () => {
       const { state, db } = countingDb()
       await summarizeKeywordMatches(db, tenant, ['road'], [])
@@ -167,6 +191,32 @@ describe('summarizeKeywordMatches memory handling', () => {
       const { db } = countingDb()
       await summarizeKeywordMatches(db, tenant, ['road'], [])
       expect(await summarizeKeywordMatches(db, tenant, ['voters\u2018 rights'], [])).toMatchObject({ matched: 0 })
+    })
+  })
+
+  describe('concurrent calls on a cold cache', () => {
+    beforeEach(async () => {
+      await seedBill({ externalId: 'legiscan:1', title: 'Election Reform Act', billNumber: 'HB 1', matchType: null })
+      await seedBill({ externalId: 'legiscan:2', title: 'Road Maintenance', billNumber: 'HB 2', matchType: null })
+    })
+
+    it('share one read of the bills and each get their own counts', async () => {
+      const { state, db } = countingDb()
+      const results = await Promise.all([
+        summarizeKeywordMatches(db, tenant, ['election'], []),
+        summarizeKeywordMatches(db, tenant, ['road'], []),
+        summarizeKeywordMatches(db, tenant, ['election', 'road'], []),
+      ])
+      expect(state.billReads).toBe(1)
+      expect(results.map(r => r.matched)).toEqual([1, 1, 2])
+    })
+
+    it('read again after a failed load, rather than sharing the failure', async () => {
+      const failing = countingDb()
+      const original = failing.db
+      const broken = { ...original, select: () => { throw new Error('d1 down') } } as unknown as typeof original
+      await expect(summarizeKeywordMatches(broken, tenant, ['election'], [])).rejects.toThrow('d1 down')
+      expect(await summarizeKeywordMatches(original, tenant, ['election'], [])).toMatchObject({ matched: 1 })
     })
   })
 
@@ -193,7 +243,9 @@ describe('summarizeKeywordMatches memory handling', () => {
       const second = await summarizeKeywordMatches(db, tenant, ['election'], ['road'])
       expect(first).toEqual({ total: 3, matched: 2, newlyMatched: 2, unmatched: 1 })
       expect(second).toEqual(first)
-      expect(state.billReads).toBe(2)
+      // The first call tried to build the corpus and then counted by streaming; the
+      // second knew the corpus was too big and only streamed.
+      expect(state.billReads).toBe(3)
       expect(warn).toHaveBeenCalledTimes(1)
       expect(warn.mock.calls[0][0]).toContain('not cached')
     })

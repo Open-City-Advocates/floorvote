@@ -244,6 +244,39 @@ describe('KeywordMatchSummary', () => {
       expect(screen.getByText('50 of 100 bills (50%)')).toBeTruthy()
     })
 
+    it('clears the old count when a later count fails', async () => {
+      respondWith({ total: 100, matched: 10, newlyMatched: 0, unmatched: 0 })
+      const { rerender, container } = render(<KeywordMatchSummary keywords="a" savedKeywords="a" />)
+      await settle()
+      expect(screen.getByText('10 of 100 bills (10%)')).toBeTruthy()
+
+      mockFetch.mockRejectedValue(new Error('503'))
+      rerender(<KeywordMatchSummary keywords="ab" savedKeywords="a" />)
+      await settle()
+      expect(container.textContent).toBe('')
+    })
+
+    it('clears the old count when a later response is not a count', async () => {
+      respondWith({ total: 100, matched: 10, newlyMatched: 0, unmatched: 0 })
+      const { rerender, container } = render(<KeywordMatchSummary keywords="a" savedKeywords="a" />)
+      await settle()
+
+      mockFetch.mockResolvedValue({} as Summary)
+      rerender(<KeywordMatchSummary keywords="ab" savedKeywords="a" />)
+      await settle()
+      expect(container.textContent).toBe('')
+    })
+
+    it('counts again after a failure once the keywords change', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('503'))
+      const { rerender } = render(<KeywordMatchSummary keywords="a" savedKeywords="a" />)
+      await settle()
+      respondWith({ total: 100, matched: 10, newlyMatched: 0, unmatched: 0 })
+      rerender(<KeywordMatchSummary keywords="ab" savedKeywords="a" />)
+      await settle()
+      expect(screen.getByText('10 of 100 bills (10%)')).toBeTruthy()
+    })
+
     it('shows nothing when the count fails', async () => {
       mockFetch.mockRejectedValue(new Error('boom'))
       const { container } = render(<KeywordMatchSummary keywords="election" savedKeywords="election" />)
