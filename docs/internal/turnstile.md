@@ -40,6 +40,17 @@ these limits.
 To limit another kind of send, call `claimSend` with its own event type and
 `SendCheck`s (column, value, window, max, message) rather than adding a counter.
 
+## 1b. Email-change requests — same controls, nothing extra to configure
+
+A signed-in member's request to change their email (`POST /api/users/me/email-change`,
+`api/src/lib/emailChange.ts`) uses the same `LOGIN_RATE_LIMITER` binding (key
+`email-change:<ip>`) and the same Turnstile gate as the sign-in form, so the
+Profile form renders the widget when `TURNSTILE_SITE_KEY` is set and sends
+`turnstileToken`. On top of that, `claimSend` caps each member at three requests
+in a rolling day, counted from `email_change_requested` rows. The confirmation
+page's status and confirm calls have their own per-IP keys
+(`email-change-status:<ip>`, `email-change-confirm:<ip>`).
+
 ## 2. Turnstile
 
 Turnstile is fully enabled on both login surfaces. The server gate
