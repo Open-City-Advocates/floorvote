@@ -213,4 +213,73 @@ describe('editing a comment re-notifies only newly mentioned people', () => {
     const metadata = JSON.parse(events[0].metadata) as { mentionedUserIds: string[] }
     expect([...metadata.mentionedUserIds].sort()).toEqual([ids.jane, ids.cara].sort())
   })
+
+  describe('an edit that leaves the mention tokens alone ignores membership changes since the comment was posted', () => {
+    const everyone = '<span data-type="mention" data-id="everyone:all" data-label="everyone">@everyone</span>'
+
+    it('a member who joined the mentioned role afterward is not emailed by a typo fix', async () => {
+      const teamId = await seedRole('Team')
+      await seedUserRole(ids.jane, teamId)
+      const commentId = await create(`<p>Plese review ${role(teamId, 'Team')}</p>`)
+      const before = await mentionRows(commentId)
+      expect(before).toHaveLength(1)
+
+      await seedUserRole(ids.bob, teamId)
+      await edit(commentId, `<p>Please review ${role(teamId, 'Team')}</p>`)
+
+      expect(send).not.toHaveBeenCalled()
+      const after = await mentionRows(commentId)
+      expect(after.map(r => r.id)).toEqual(before.map(r => r.id))
+    })
+
+    it('a member who left the mentioned role keeps their record through a typo fix', async () => {
+      const teamId = await seedRole('Team')
+      await seedUserRole(ids.jane, teamId)
+      await seedUserRole(ids.bob, teamId)
+      const commentId = await create(`<p>Plese review ${role(teamId, 'Team')}</p>`)
+      const before = await mentionRows(commentId)
+      expect(before).toHaveLength(2)
+
+      await env.DB.prepare('DELETE FROM user_roles WHERE user_id = ? AND role_id = ?').bind(ids.bob, teamId).run()
+      await edit(commentId, `<p>Please review ${role(teamId, 'Team')}</p>`)
+
+      expect(send).not.toHaveBeenCalled()
+      const after = await mentionRows(commentId)
+      expect(after.map(r => r.id).sort()).toEqual(before.map(r => r.id).sort())
+    })
+
+    it('a member who lost their session keeps their @everyone record through a typo fix', async () => {
+      const commentId = await create(`<p>Heads up ${everyone}</p>`)
+      const before = await mentionRows(commentId)
+      expect(before.map(r => r.userId).sort()).toEqual([ids.jane, ids.bob, ids.cara].sort())
+
+      await env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(ids.cara).run()
+      await makeMember('Dana')
+      await edit(commentId, `<p>Heads-up ${everyone}</p>`)
+
+      expect(send).not.toHaveBeenCalled()
+      const after = await mentionRows(commentId)
+      expect(after.map(r => r.id).sort()).toEqual(before.map(r => r.id).sort())
+    })
+
+    it('adding a direct mention for someone reached only through a role flips their source to user without an email', async () => {
+      const teamId = await seedRole('Team')
+      await seedUserRole(ids.jane, teamId)
+      const commentId = await create(`<p>${role(teamId, 'Team')}</p>`)
+      const before = (await mentionRows(commentId))[0]
+      expect(before.sourceType).toBe('role')
+      await getDb(env.DB).update(commentMentions)
+        .set({ readAt: '2026-01-01 09:00:00' }).where(eq(commentMentions.id, before.id))
+
+      await edit(commentId, `<p>${role(teamId, 'Team')} ${user(ids.jane, 'Jane')}</p>`)
+
+      expect(send).not.toHaveBeenCalled()
+      const after = await mentionRows(commentId)
+      expect(after).toHaveLength(1)
+      expect(after[0].id).toBe(before.id)
+      expect(after[0].sourceType).toBe('user')
+      expect(after[0].sourceId).toBe(ids.jane)
+      expect(after[0].readAt).toBe('2026-01-01 09:00:00')
+    })
+  })
 })

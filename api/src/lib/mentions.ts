@@ -216,11 +216,10 @@ type Db = ReturnType<typeof getDb>
  */
 async function resolveMentionTargets(
   db: Db,
-  html: string,
+  mentions: Mention[],
   authorUserId: string,
   authorRole: 'admin' | 'member' | 'owner',
 ): Promise<NotificationTarget[]> {
-  const mentions = extractMentions(html)
   if (mentions.length === 0) return []
 
   const targets = new Map<string, NotificationTarget>()
@@ -249,7 +248,12 @@ async function resolveMentionTargets(
 
     for (const rm of roleMembers) {
       if (rm.userId !== authorUserId && !targets.has(rm.userId)) {
-        targets.set(rm.userId, { userId: rm.userId, via: 'role', roleName: roleNameMap.get(rm.roleId), sourceId: rm.roleId })
+        targets.set(rm.userId, {
+          userId: rm.userId,
+          via: 'role',
+          roleName: roleNameMap.get(rm.roleId),
+          sourceId: rm.roleId,
+        })
       }
     }
   }
@@ -311,27 +315,42 @@ export async function extractAndNotifyMentions(
   waitUntil?: (p: Promise<unknown>) => void,
 ): Promise<string[]> {
   const db = getDb(env.DB)
-  const targets = await resolveMentionTargets(db, html, authorUserId, authorRole)
+  const targets = await resolveMentionTargets(db, extractMentions(html), authorUserId, authorRole)
   await recordAndEmail(db, targets, commentId, html, authorUserId, billId, env, waitUntil)
   return targets.map(t => t.userId)
 }
 
+/** A mention token: `user:<id>`, `role:<id>`, or `everyone`. A record's source maps to the same form. */
+function mentionToken(type: Mention['type'], id: string): string {
+  return type === 'everyone' ? 'everyone' : `${type}:${id}`
+}
+
 /**
  * Edit path: reconcile the comment's mention records with its new content instead
- * of starting over. Records are keyed by person (comment + user), so:
+ * of starting over. Records are keyed by person (comment + user); each carries
+ * the source token that reached them (a user, a role, or @everyone).
  *
- *   - still reached: the record stays, read state and all, and nobody is emailed.
- *     Its source (user, role, or everyone) is refreshed if the way they are
- *     reached changed, e.g. the role that reached them was swapped out.
- *   - no longer reached: the record is deleted and nothing is sent.
- *   - newly reached: a record is created and they are emailed once.
+ * The diff is on mention tokens, not on who a role contains today. Re-resolving a
+ * role or @everyone on every edit would email people who joined the role after
+ * the comment was posted and delete the records of people who have since left
+ * it, so a typo fix could not leave things alone. Instead:
  *
- * Diffing on the resolved person, not the mention span, is what keeps someone
- * already mentioned directly from being emailed again when a role that includes
- * them is added. Returns everyone the edited comment now reaches, kept and new.
+ *   - Tokens unchanged: nothing is written and nobody is emailed.
+ *   - A record whose source token is still present is kept as is, read state and
+ *     all, without re-resolving it. The one exception is a person now mentioned
+ *     directly, whose source flips to the user.
+ *   - A record whose source token was removed is re-resolved against the
+ *     remaining tokens: kept with its new source if still reached, otherwise
+ *     deleted.
+ *   - Added tokens are resolved, and only people with no record yet get one and
+ *     an email. Someone already reached, directly or through a role, is not
+ *     emailed again.
+ *
+ * Returns everyone the edited comment now reaches, kept and new.
  */
 export async function syncMentionsOnEdit(
   commentId: string,
+  previousHtml: string,
   html: string,
   authorUserId: string,
   authorRole: 'admin' | 'member' | 'owner',
@@ -340,29 +359,52 @@ export async function syncMentionsOnEdit(
   waitUntil?: (p: Promise<unknown>) => void,
 ): Promise<string[]> {
   const db = getDb(env.DB)
-  const targets = await resolveMentionTargets(db, html, authorUserId, authorRole)
+  const mentions = extractMentions(html)
+  const tokens = new Set(mentions.map(m => mentionToken(m.type, m.id)))
+  const previousTokens = new Set(extractMentions(previousHtml).map(m => mentionToken(m.type, m.id)))
   const existing = await db.select().from(commentMentions).where(eq(commentMentions.commentId, commentId)).all()
 
-  const targetById = new Map(targets.map(t => [t.userId, t]))
-  const existingIds = new Set(existing.map(r => r.userId))
+  const added = mentions.filter(m => !previousTokens.has(mentionToken(m.type, m.id)))
+  const removed = [...previousTokens].some(t => !tokens.has(t))
+  if (added.length === 0 && !removed) return existing.map(r => r.userId)
 
-  const removedIds = existing.filter(r => !targetById.has(r.userId)).map(r => r.id)
-  if (removedIds.length > 0) {
-    await db.delete(commentMentions).where(inArray(commentMentions.id, removedIds))
-  }
+  // Only needed when some record's source token went away.
+  const sourceGone = (r: (typeof existing)[number]) => !tokens.has(mentionToken(r.sourceType, r.sourceId))
+  const remaining = existing.some(sourceGone)
+    ? new Map((await resolveMentionTargets(db, mentions, authorUserId, authorRole)).map(t => [t.userId, t]))
+    : new Map<string, NotificationTarget>()
 
+  const reached = new Set<string>()
+  const writes: unknown[] = []
   for (const row of existing) {
-    const target = targetById.get(row.userId)
-    if (target && (row.sourceType !== target.via || row.sourceId !== target.sourceId)) {
-      await db.update(commentMentions)
-        .set({ sourceType: target.via, sourceId: target.sourceId })
-        .where(eq(commentMentions.id, row.id))
+    if (tokens.has(`user:${row.userId}`) && row.sourceType !== 'user') {
+      reached.add(row.userId)
+      writes.push(db.update(commentMentions)
+        .set({ sourceType: 'user', sourceId: row.userId })
+        .where(eq(commentMentions.id, row.id)))
+    } else if (!sourceGone(row)) {
+      reached.add(row.userId)
+    } else {
+      const target = remaining.get(row.userId)
+      if (!target) {
+        writes.push(db.delete(commentMentions).where(eq(commentMentions.id, row.id)))
+        continue
+      }
+      reached.add(row.userId)
+      if (row.sourceType !== target.via || row.sourceId !== target.sourceId) {
+        writes.push(db.update(commentMentions)
+          .set({ sourceType: target.via, sourceId: target.sourceId })
+          .where(eq(commentMentions.id, row.id)))
+      }
     }
   }
+  if (writes.length > 0) await db.batch(writes as unknown as Parameters<typeof db.batch>[0])
 
-  const added = targets.filter(t => !existingIds.has(t.userId))
-  await recordAndEmail(db, added, commentId, html, authorUserId, billId, env, waitUntil)
-  return targets.map(t => t.userId)
+  const existingIds = new Set(existing.map(r => r.userId))
+  const newcomers = (await resolveMentionTargets(db, added, authorUserId, authorRole))
+    .filter(t => !existingIds.has(t.userId))
+  await recordAndEmail(db, newcomers, commentId, html, authorUserId, billId, env, waitUntil)
+  return [...reached, ...newcomers.map(t => t.userId)]
 }
 
 async function sendMentionEmails(

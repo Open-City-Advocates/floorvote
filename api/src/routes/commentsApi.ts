@@ -52,7 +52,7 @@ commentsApiRouter.patch('/:id', async (c) => {
 
   // Diff against the existing mention records rather than rebuilding them, so a
   // typo fix doesn't re-email everyone or reset their read state.
-  const mentionedUserIds = await syncMentionsOnEdit(id, content, currentUser.id, currentUser.role, comment.billId, c.env, c.executionCtx.waitUntil.bind(c.executionCtx))
+  const mentionedUserIds = await syncMentionsOnEdit(id, comment.content, content, currentUser.id, currentUser.role, comment.billId, c.env, c.executionCtx.waitUntil.bind(c.executionCtx))
 
   // The feed renders a snapshot of the comment taken at creation (metadata.preview),
   // not a join back to `comments` — so without this the edit is invisible on the
