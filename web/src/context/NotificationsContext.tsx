@@ -7,10 +7,9 @@ import { isUnreadForDemo, readNotificationIds } from '../lib/demoReadState'
 // the data. The panel imports it back; the reverse would be a cycle.
 //
 // GET /notifications returns one row per notification, discriminated on `kind`
-// (api/src/lib/notifications.ts). Mentions are the only kind so far. A new kind
-// adds a member to the NotificationItem union and a renderer in the panel.
-export type MentionNotification = {
-  kind: 'mention'
+// (api/src/lib/notifications.ts). Mentions and replies so far. A new kind adds a
+// member to the NotificationItem union and a renderer in the panel.
+type NotificationBase = {
   id: string
   commentId: string
   billId: string
@@ -26,13 +25,22 @@ export type MentionNotification = {
   authorSubtitle: string | null
   commentPreview: string
   commentHtml: string
-  sourceType: 'user' | 'role' | 'everyone'
-  sourceLabel: string | null
   createdAt: string
   isUnread: boolean
 }
 
-export type NotificationItem = MentionNotification
+export type MentionNotification = NotificationBase & {
+  kind: 'mention'
+  sourceType: 'user' | 'role' | 'everyone'
+  sourceLabel: string | null
+}
+
+/** Someone else commented on a bill the member has commented on. */
+export type ReplyNotification = NotificationBase & {
+  kind: 'reply'
+}
+
+export type NotificationItem = MentionNotification | ReplyNotification
 
 type NotificationsContextType = {
   unreadCount: number

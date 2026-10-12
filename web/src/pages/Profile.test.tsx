@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { Profile } from './Profile'
 import * as api from '../lib/api'
@@ -8,11 +9,11 @@ vi.mock('../context/AuthContext', () => ({
   useAuth: () => ({
     user: {
       id: 'u1', email: 'a@b.c', name: 'A', role: 'member', subtitle: null,
-      canVote: true, emailDigestEnabled: true, emailWeekAheadEnabled: true, lastSeenFeed: null,
+      canVote: true, emailDigestEnabled: true, emailWeekAheadEnabled: true, emailRepliesEnabled: true, lastSeenFeed: null,
       isLastOwner: false,
     },
     loading: false, authError: false,
-    setSubtitle: () => {}, setName: () => {}, setEmailDigestEnabled: () => {}, setLastSeenFeed: () => {},
+    setSubtitle: () => {}, setName: () => {}, setEmailDigestEnabled: () => {}, setEmailRepliesEnabled: () => {}, setLastSeenFeed: () => {},
   }),
 }))
 
@@ -84,11 +85,13 @@ describe('Profile "Your Email" section', () => {
     Element.prototype.scrollIntoView = vi.fn()
   })
 
-  it('holds the digest and week-ahead switches and states that mention emails are always sent', async () => {
+  it('holds the replies, digest, and week-ahead switches and states that mention emails are always sent', async () => {
     mockConfig({ 'email-digest': { enabled: true }, 'week-ahead': { enabled: true } })
     render(<MemoryRouter><Profile /></MemoryRouter>)
     const heading = screen.getByRole('heading', { level: 2, name: 'Your Email' })
     const section = heading.parentElement as HTMLElement
+    const replies = within(section).getByRole('switch', { name: /replies on bills you've commented on/i })
+    expect(replies).toBeChecked()
     expect(within(section).getByRole('switch', { name: /recent bill activity/i })).toBeInTheDocument()
     expect(within(section).getByRole('switch', { name: /upcoming hearings and events/i })).toBeInTheDocument()
     expect(within(section).getByText("You'll always get an email when someone mentions you, your role, or @everyone.")).toBeInTheDocument()
@@ -96,6 +99,7 @@ describe('Profile "Your Email" section', () => {
   })
 
   it.each([
+    ['setting-email-replies', /replies on bills you've commented on/i],
     ['setting-email-digest', /recent bill activity/i],
     ['setting-week-ahead', /upcoming hearings and events/i],
   ])('email-footer deep link #%s lands on and highlights its switch', async (id, name) => {
@@ -105,5 +109,20 @@ describe('Profile "Your Email" section', () => {
     expect(row).toContainElement(screen.getByRole('switch', { name }))
     await vi.waitFor(() => expect(row.style.boxShadow).not.toBe(''))
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
+  })
+})
+
+describe('Profile reply-emails switch', () => {
+  beforeEach(() => vi.restoreAllMocks())
+
+  it('saves the member\'s choice', async () => {
+    const fetch = vi.spyOn(api, 'apiFetch').mockImplementation(async () => ({}) as never)
+    render(<MemoryRouter><Profile /></MemoryRouter>)
+    const replies = screen.getByRole('switch', { name: /replies on bills you've commented on/i })
+
+    await userEvent.click(replies)
+
+    expect(fetch).toHaveBeenCalledWith('/users/me', { method: 'PATCH', body: JSON.stringify({ emailRepliesEnabled: false }) })
+    expect(replies).not.toBeChecked()
   })
 })

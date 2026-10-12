@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import type { Ref, RefObject } from 'react'
 import DOMPurify from 'dompurify'
 import { apiFetch } from '../lib/api'
-import { useNotifications, type MentionNotification, type NotificationItem } from '../context/NotificationsContext'
+import { useNotifications, type NotificationItem } from '../context/NotificationsContext'
 import { useDemo } from '../context/DemoContext'
 import { isUnreadForDemo, readNotificationIds, markNotificationsRead } from '../lib/demoReadState'
 import { billUrl } from '../lib/sessionSlug'
@@ -249,7 +249,7 @@ export function NotificationsSlideOver(
         ref={innerRef}
         onClose={onClose}
         triggerRef={triggerRef}
-        ariaLabel="Mentions"
+        ariaLabel="Notifications"
         transformOrigin="top left"
         enterOffsetY={-6}
         positionStyle={positionStyle}
@@ -294,7 +294,7 @@ export function NotificationsSlideOver(
           borderBottom: `1px solid ${color.borderDefault}`,
           flexShrink: 0,
         }}>
-          <span style={{ fontSize: fontSize.base, fontWeight: fontWeight.bold, color: color.textPrimary, letterSpacing: '-0.01em' }}>Mentions</span>
+          <span style={{ fontSize: fontSize.base, fontWeight: fontWeight.bold, color: color.textPrimary, letterSpacing: '-0.01em' }}>Notifications</span>
           <button
             onClick={() => innerRef.current?.close()}
             aria-label="Close"
@@ -312,7 +312,7 @@ export function NotificationsSlideOver(
 
           {!loading && snapshot.length === 0 && (
             <div style={{ padding: '32px 20px', textAlign: 'center', fontSize: fontSize.sm, color: color.textMuted, lineHeight: 1.6 }}>
-              No mentions yet — when someone @-tags you in a comment, it'll appear here.
+              No notifications yet. You'll see mentions of you here, and replies on bills you've commented on.
             </div>
           )}
 
@@ -321,8 +321,9 @@ export function NotificationsSlideOver(
           {!loading && snapshot.map(n => {
             switch (n.kind) {
               case 'mention':
+              case 'reply':
                 return (
-                  <MentionRow
+                  <NotificationRow
                     key={n.id}
                     m={n}
                     roles={roles}
@@ -366,8 +367,12 @@ export function NotificationsSlideOver(
   )
 }
 
-/** The panel row for a `mention` notification. */
-function MentionRow({
+/**
+ * The panel row for a `mention` or `reply` notification. The two differ only in
+ * the sentence that names what the author did. Everything below it (the comment,
+ * the bill footer, the unread rail) is the same.
+ */
+function NotificationRow({
   m,
   roles,
   onClose,
@@ -376,7 +381,7 @@ function MentionRow({
   onCommentMouseOut,
   onCommentMouseLeave,
 }: {
-  m: MentionNotification
+  m: Extract<NotificationItem, { kind: 'mention' | 'reply' }>
   roles: RoleData[]
   onClose: () => void
   setRoleTooltip: (t: RoleTooltip) => void
@@ -386,11 +391,15 @@ function MentionRow({
 }) {
   const url = billUrl({ state: m.billState, sessionSlug: m.sessionSlug, billNumber: m.billNumber }) + `#comment-${m.commentId}`
   // Role members for the attribution chip tooltip
-  const attributionRole = m.sourceType === 'role' && m.sourceLabel
+  const attributionRole = m.kind === 'mention' && m.sourceType === 'role' && m.sourceLabel
     ? roles.find(r => r.name === m.sourceLabel)
     : null
 
-  const mentionedVia = m.sourceType === 'everyone'
+  // Phrased as the matching email phrases it (api/src/lib/mentions.ts and
+  // replies.ts).
+  const action = m.kind === 'reply'
+    ? "commented on a bill you've commented on"
+    : m.sourceType === 'everyone'
     ? 'notified everyone'
     : m.sourceType === 'role' && m.sourceLabel
     ? (
@@ -460,7 +469,7 @@ function MentionRow({
         <div style={{ fontSize: fontSize.sm, color: color.textSecondary, minWidth: 0 }}>
           <span style={{ fontWeight: fontWeight.semibold, color: color.textPrimary }}>{m.authorName}</span>
           {' '}
-          {mentionedVia}
+          {action}
         </div>
         <span style={{ fontSize: fontSize.sm, color: color.textMuted, flexShrink: 0 }}>{relativeTime(m.createdAt)}</span>
       </div>

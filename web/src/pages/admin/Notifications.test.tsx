@@ -23,12 +23,12 @@ describe('Notifications page', () => {
     expect(screen.getByRole('switch', { name: /conversation emails/i })).toBeInTheDocument()
   })
 
-  it('names the switch "Conversation emails", not "@-mention emails", and says it covers the whole instance', async () => {
+  it('names the switch "Conversation emails", not "@-mention emails", and says it covers mentions and replies for the whole instance', async () => {
     mockConfig()
     render(<MemoryRouter><Notifications /></MemoryRouter>)
     expect(await screen.findByText('Send conversation emails to members')).toBeInTheDocument()
     expect(screen.queryByText(/@-mention emails/i)).not.toBeInTheDocument()
-    expect(screen.getByText(/mentions of a member, a role, or @everyone in comments, for the whole instance/i)).toBeInTheDocument()
+    expect(screen.getByText(/mentions of a member, a role, or @everyone in comments, and replies on bills members have commented on, for the whole instance/i)).toBeInTheDocument()
   })
 
   it('frames the page as settings for everyone in the instance', async () => {
