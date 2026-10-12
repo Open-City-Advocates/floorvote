@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { BillDetail } from './BillDetail'
 import * as api from '../lib/api'
@@ -262,13 +262,20 @@ describe('deadlines and explainers on a bill page', () => {
     renderBillDetail({ state: 'MD', billNumber: 'B26-0400', billType: 'Emergency Bill', status: 'Introduced', calendar })
     const chip = await screen.findByTestId('next-deadline')
     expect(chip).toHaveTextContent('Congressional review ends')
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'About "Congressional review ends"' }).length).toBeGreaterThan(0))
+    await waitFor(() => expect(within(chip).getByText('Congressional review ends')).toHaveAccessibleDescription(DEADLINE_EXPLAINER))
+    expect(screen.queryByRole('button', { name: /^About / })).toBeNull()
+    fireEvent.pointerEnter(within(chip).getByText('Congressional review ends'), { pointerType: 'mouse' })
+    expect(bubbleWith(DEADLINE_EXPLAINER)).toBeDefined()
     expect(screen.getByText('Hearings and deadlines')).toBeInTheDocument()
   })
 
   it('explains the bill type and each calendar entry from the state\'s labels', async () => {
     renderBillDetail({ state: 'MD', billNumber: 'B26-0400', body: 'C', billType: 'Emergency Bill', status: 'Introduced', calendar })
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'About "Public Hearing"' }).length).toBeGreaterThan(0))
+    await waitFor(() => expect(screen.getByText('Public Hearing')).toHaveAccessibleDescription(HEARING_EXPLAINER))
+    expect(screen.queryByRole('button', { name: /^About / })).toBeNull()
+    fireEvent.pointerEnter(screen.getByText('Public Hearing'), { pointerType: 'mouse' })
+    expect(bubbleWith(HEARING_EXPLAINER)).toBeDefined()
+    fireEvent.pointerLeave(screen.getByText('Public Hearing'), { pointerType: 'mouse' })
     await waitFor(() => {
       fireEvent.pointerEnter(screen.getByText('Council Emergency Bill'), { pointerType: 'mouse' })
       expect(bubbleWith(TYPE_EXPLAINER)).toBeDefined()

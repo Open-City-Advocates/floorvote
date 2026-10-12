@@ -39,6 +39,7 @@ import { CARD } from '../lib/cardStyle'
 import { COUNT_BADGE, displayName, ROLE_CHIP, TOOLTIP_STYLE, sortRoles } from '../lib/chipStyles'
 import { SECTION_LABEL, CHROME_TEXT, FONT_SANS, FORM_LABEL, SR_ONLY } from '../lib/textStyles'
 import { HoverTooltip } from '../components/HoverTooltip'
+import { TermHover } from '../components/TermHover'
 import { SubjectsTrigger, SubjectsPanel } from '../components/SubjectsDisclosure'
 import { ChangeHistoryTooltip, type ChangeRecord } from '../components/ChangeHistoryTooltip'
 import { RichTextEditor } from '../components/RichTextEditor'
@@ -1614,8 +1615,7 @@ export function BillDetail() {
             metaItems.push(
               <span key="deadline" data-testid="next-deadline" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4, color: color.textAmberDark, fontWeight: fontWeight.medium }}>
                 <span className="material-symbols-outlined" aria-hidden="true" style={{ fontSize: fontSize.base }}>schedule</span>
-                {what}: {safeDate(nextDeadline.date) ?? nextDeadline.date}
-                {explainer && <InfoTooltip text={explainer} maxWidth={340} align="center" label={`About "${what}"`} />}
+                <TermHover text={explainer}>{what}</TermHover>: {safeDate(nextDeadline.date) ?? nextDeadline.date}
               </span>
             )
           }
@@ -2672,8 +2672,7 @@ export function BillDetail() {
                     content={
                       <div style={{ color: color.textSlate }}>
                         <div style={{ fontWeight: fontWeight.medium, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          {entry.description || entry.type}
-                          {explainer && <InfoTooltip text={explainer} maxWidth={340} align="left" label={`About "${entry.description || entry.type}"`} />}
+                          <TermHover text={explainer}>{entry.description || entry.type}</TermHover>
                         </div>
                         {entry.location && <div style={{ color: color.textSecondary, fontSize: fontSize.xs, marginTop: 1 }}>{entry.location}</div>}
                       </div>
