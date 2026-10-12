@@ -103,10 +103,105 @@ describe('ConfirmEmailChange', () => {
 })
 
 describe('EmailChangeNotMe', () => {
-  it('tells the member to contact an admin', () => {
-    render(<MemoryRouter><EmailChangeNotMe /></MemoryRouter>)
+  type NotMeStatus = { status: 'valid' | 'expired' | 'invalid' }
+
+  /** Route apiFetch: the status call answers `status`, and the press answers `press`. */
+  function notMeServer(status: NotMeStatus, press: unknown = { ok: true, alerted: true }) {
+    return vi.spyOn(api, 'apiFetch').mockImplementation(async (path: string) => {
+      if (path === '/auth/email-change/not-me/status') return status as never
+      if (path === '/auth/email-change/not-me') {
+        if (press instanceof Error) throw press
+        return press as never
+      }
+      throw new Error(`unexpected ${path}`)
+    })
+  }
+  const presses = (spy: ReturnType<typeof notMeServer>) => spy.mock.calls.filter(c => c[0] === '/auth/email-change/not-me')
+  const notMeStatusCalls = (spy: ReturnType<typeof notMeServer>) => spy.mock.calls.filter(c => c[0] === '/auth/email-change/not-me/status')
+
+  const renderNotMe = (token = 'tok456') => {
+    window.history.replaceState({}, '', token ? `/auth/not-me?token=${token}` : '/auth/not-me')
+    return render(<MemoryRouter initialEntries={[token ? `/auth/not-me?token=${token}` : '/auth/not-me']}><EmailChangeNotMe /></MemoryRouter>)
+  }
+  const BUTTON = "This wasn't me"
+
+  it('loading the page only reads the status: it offers a button and does nothing', async () => {
+    const spy = notMeServer({ status: 'valid' })
+    renderNotMe()
+    expect(await screen.findByRole('button', { name: BUTTON })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: "Didn't Ask for This Change?" })).toBeInTheDocument()
-    expect(screen.getByText(/contact one of your FloorVote admins right away/)).toBeInTheDocument()
+    expect(notMeStatusCalls(spy)).toEqual([['/auth/email-change/not-me/status', { method: 'POST', body: JSON.stringify({ token: 'tok456' }) }]])
+    expect(presses(spy)).toHaveLength(0)
+  })
+
+  it('takes the token out of the address bar once read, and still presses with it', async () => {
+    const spy = notMeServer({ status: 'valid' })
+    renderNotMe()
+    fireEvent.click(await screen.findByRole('button', { name: BUTTON }))
+    await screen.findByRole('heading', { name: "You're Signed Out Everywhere" })
+    expect(window.location.search).toBe('')
+    expect(window.location.href).not.toContain('tok456')
+    expect(presses(spy)).toEqual([['/auth/email-change/not-me', { method: 'POST', body: JSON.stringify({ token: 'tok456' }) }]])
+  })
+
+  it('says the admins were emailed, and that the change was not undone', async () => {
+    notMeServer({ status: 'valid' })
+    renderNotMe()
+    fireEvent.click(await screen.findByRole('button', { name: BUTTON }))
+    expect(await screen.findByText(/We emailed your FloorVote admins/)).toBeInTheDocument()
+    expect(screen.getByText(/doesn't undo the change/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Sign in/ })).toHaveAttribute('href', '/login')
+  })
+
+  it('is honest when no alert could be sent', async () => {
+    notMeServer({ status: 'valid' }, { ok: true, alerted: false })
+    renderNotMe()
+    fireEvent.click(await screen.findByRole('button', { name: BUTTON }))
+    expect(await screen.findByText(/couldn't email your FloorVote admins/)).toBeInTheDocument()
+    expect(screen.queryByText(/We emailed your FloorVote admins/)).not.toBeInTheDocument()
+  })
+
+  it("shows the server's reason when the press is refused, with no way to press again", async () => {
+    notMeServer({ status: 'valid' }, new ApiError(404, 'This link is no longer valid. It may have been used already.'))
+    renderNotMe()
+    fireEvent.click(await screen.findByRole('button', { name: BUTTON }))
+    expect(await screen.findByText('This link is no longer valid. It may have been used already.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: BUTTON })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    [{ status: 'expired' } as NotMeStatus, 'Link Expired', /has expired/],
+    [{ status: 'invalid' } as NotMeStatus, 'Link No Longer Valid', /no longer valid/],
+  ])('offers no button for a dead link (%o)', async (status, heading, message) => {
+    const spy = notMeServer(status)
+    renderNotMe()
+    expect(await screen.findByRole('heading', { name: heading })).toBeInTheDocument()
+    expect(screen.getByText(message)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: BUTTON })).not.toBeInTheDocument()
+    expect(presses(spy)).toHaveLength(0)
+  })
+
+  it('treats an address with no token as a dead link, without calling the server', async () => {
+    const spy = notMeServer({ status: 'valid' })
+    renderNotMe('')
+    expect(await screen.findByRole('heading', { name: 'Link No Longer Valid' })).toBeInTheDocument()
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('still offers the button when the status cannot be read, and lets the press say what is wrong', async () => {
+    vi.spyOn(api, 'apiFetch').mockRejectedValue(new Error('offline'))
+    renderNotMe()
+    expect(await screen.findByRole('button', { name: BUTTON })).toBeInTheDocument()
+  })
+
+  it('sends no referrer from the page, and is served with Referrer-Policy: no-referrer', async () => {
+    notMeServer({ status: 'valid' })
+    renderNotMe()
+    await screen.findByRole('button', { name: BUTTON })
+    expect(document.head.querySelector('meta[name="referrer"]')?.getAttribute('content')).toBe('no-referrer')
+    const here = dirname(fileURLToPath(import.meta.url))
+    const text = readFileSync(resolve(here, '../../public/_headers'), 'utf8')
+    expect(text).toMatch(/^\/auth\/not-me\n {2}Referrer-Policy: no-referrer$/m)
   })
 })
 
