@@ -27,7 +27,7 @@ import type { AppDb, AppEnv } from '../types'
 import { checkMemberAddresses, normalizeMemberAddress } from '../lib/memberAddress'
 import { isPendingInvite, pendingInviteWhere } from '../lib/pendingInvite'
 import { isPreviouslyBounced, previouslyBouncedAddresses } from '../lib/bouncedAddresses'
-import { adminSendLimitMessage } from '../lib/adminSendLimits'
+import { adminSendChecks, claimSend, releaseSend } from '../lib/adminSendLimits'
 import { centralEmail, type DeliveryStatus, type SuppressionStatus } from '../lib/centralEmail'
 
 export const adminApiRouter = new Hono<AppEnv>()
@@ -231,15 +231,29 @@ adminApiRouter.post('/members/bulk-invite', async (c) => {
   return c.json({ summary, results })
 })
 
-// A new seven-day invite link for a pending invite, sent the way every
-// admin-initiated invite is: link_requested first, then the email in the
-// background so the response doesn't wait on the mail provider. The event
-// names the admin: that is what the send limits count (lib/adminSendLimits.ts).
-async function sendInvite(c: Context<AppEnv>, db: AppDb, target: { id: string; email: string }): Promise<void> {
-  const INVITE_DURATION_MS = 7 * 24 * 60 * 60 * 1000
+// Admin-sent links. An admin's email is allowed by claiming a send first
+// (lib/adminSendLimits.ts): the claim is the send's link_requested event and is
+// written only if the admin, the member, and the address are all under their
+// limits, in one statement so parallel requests can't slip past. Refused, the
+// caller answers 429 and nothing has been created.
+async function claimAdminSend(c: Context<AppEnv>, target: { id: string; email: string }, linkType: 'invite' | 'login') {
+  const adminId = c.get('user').id
+  return claimSend(
+    c.env.DB,
+    { event: 'link_requested', userId: target.id, email: target.email, linkType, actorId: adminId, ...authReqContext(c) },
+    adminSendChecks(adminId, target.id, target.email),
+  )
+}
+
+// A new link for a send already claimed, mailed in the background so the
+// response doesn't wait on the mail provider. An invite lasts seven days. A
+// login link matches the public login link's TTL (a wider window for slow mail
+// gateways), since it is a login link, not an invitation.
+async function deliverLink(c: Context<AppEnv>, db: AppDb, target: { id: string; email: string }, linkType: 'invite' | 'login'): Promise<void> {
+  const DURATION_MS = linkType === 'invite' ? 7 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000
   const rawToken = await generateToken()
   const tokenHash = await hashToken(rawToken)
-  const expiresAt = new Date(Date.now() + INVITE_DURATION_MS).toISOString()
+  const expiresAt = new Date(Date.now() + DURATION_MS).toISOString()
 
   await db.insert(magicLinks).values({
     id: crypto.randomUUID(),
@@ -249,11 +263,10 @@ async function sendInvite(c: Context<AppEnv>, db: AppDb, target: { id: string; e
   })
 
   const url = `${c.env.APP_URL}/auth/verify?token=${encodeURIComponent(rawToken)}`
-  await recordAuthEvent(db, { event: 'link_requested', email: target.email, userId: target.id, linkType: 'invite', actorId: c.get('user').id, ...authReqContext(c) })
   try {
-    c.executionCtx.waitUntil(sendMagicLink(target.email, url, c.env, 'invite', db, target.id).catch(console.error))
+    c.executionCtx.waitUntil(sendMagicLink(target.email, url, c.env, linkType, db, target.id).catch(console.error))
   } catch {
-    sendMagicLink(target.email, url, c.env, 'invite', db, target.id).catch(console.error)
+    sendMagicLink(target.email, url, c.env, linkType, db, target.id).catch(console.error)
   }
 }
 
@@ -271,10 +284,10 @@ adminApiRouter.post('/members/:id/resend-invite', async (c) => {
   if (!target) return c.json({ error: 'User not found' }, 404)
   if (target.deactivatedAt) return c.json({ error: 'Cannot resend invite to a deactivated user' }, 400)
 
-  const limited = await adminSendLimitMessage(db, c.get('user').id, target.id)
-  if (limited) return c.json({ error: limited }, 429)
+  const claim = await claimAdminSend(c, target, 'invite')
+  if (!claim.ok) return c.json({ error: claim.message }, 429)
 
-  await sendInvite(c, db, target)
+  await deliverLink(c, db, target, 'invite')
   return c.json({ ok: true })
 })
 
@@ -330,9 +343,10 @@ adminApiRouter.post('/members/:id/change-email', async (c) => {
   }
 
   // Last, so a request refused above uses none of the allowance, and before
-  // the update so a refused change leaves the address as it was.
-  const limited = await adminSendLimitMessage(db, currentUser.id, target.id)
-  if (limited) return c.json({ error: limited }, 429)
+  // the update so a refused change leaves the address as it was. The send is
+  // to the new address, so that is the address it counts against.
+  const claim = await claimAdminSend(c, { id: target.id, email }, 'invite')
+  if (!claim.ok) return c.json({ error: claim.message }, 429)
 
   // One batch, so it lands whole or not at all. The update re-checks that the
   // member is still a pending invite: a sign-in or deactivation can land
@@ -357,17 +371,22 @@ adminApiRouter.post('/members/:id/change-email', async (c) => {
     ])
     changed = updated.length > 0
   } catch (e) {
+    // No email is going out for a change that did not happen.
+    await releaseSend(c.env.DB, claim.id)
     if (/UNIQUE constraint failed/i.test(`${e} ${(e as { cause?: unknown })?.cause ?? ''}`)) {
       return c.json({ error: CHANGE_EMAIL_ERRORS.inUse }, 409)
     }
     throw e
   }
-  if (!changed) return c.json({ error: CHANGE_EMAIL_ERRORS.pendingOnly }, 409)
+  if (!changed) {
+    await releaseSend(c.env.DB, claim.id)
+    return c.json({ error: CHANGE_EMAIL_ERRORS.pendingOnly }, 409)
+  }
 
   await recordAuthEvent(db, {
     event: 'email_changed', email, reason: target.email, userId: target.id, actorId: currentUser.id, ...authReqContext(c),
   })
-  await sendInvite(c, db, { id: target.id, email })
+  await deliverLink(c, db, { id: target.id, email }, 'invite')
   return c.json({ ok: true, email })
 })
 
@@ -390,30 +409,10 @@ adminApiRouter.post('/members/:id/resend-login', async (c) => {
   if (!target) return c.json({ error: 'User not found' }, 404)
   if (target.deactivatedAt) return c.json({ error: 'Cannot resend a login link to a deactivated user' }, 400)
 
-  const limited = await adminSendLimitMessage(db, c.get('user').id, target.id)
-  if (limited) return c.json({ error: limited }, 429)
+  const claim = await claimAdminSend(c, target, 'login')
+  if (!claim.ok) return c.json({ error: claim.message }, 429)
 
-  // Match the public login link's TTL (a wider window for slow mail gateways),
-  // not the 7-day invite window — this is a login link, not an invitation.
-  const LOGIN_LINK_DURATION_MS = 60 * 60 * 1000
-  const rawToken = await generateToken()
-  const tokenHash = await hashToken(rawToken)
-  const expiresAt = new Date(Date.now() + LOGIN_LINK_DURATION_MS).toISOString()
-
-  await db.insert(magicLinks).values({
-    id: crypto.randomUUID(),
-    userId: target.id,
-    tokenHash,
-    expiresAt,
-  })
-
-  const url = `${c.env.APP_URL}/auth/verify?token=${encodeURIComponent(rawToken)}`
-  await recordAuthEvent(db, { event: 'link_requested', email: target.email, userId: target.id, linkType: 'login', actorId: c.get('user').id, ...authReqContext(c) })
-  try {
-    c.executionCtx.waitUntil(sendMagicLink(target.email, url, c.env, 'login', db, target.id).catch(console.error))
-  } catch {
-    sendMagicLink(target.email, url, c.env, 'login', db, target.id).catch(console.error)
-  }
+  await deliverLink(c, db, target, 'login')
 
   return c.json({ ok: true })
 })

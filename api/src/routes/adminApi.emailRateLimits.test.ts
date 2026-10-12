@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm'
 import { app } from '../index'
 import { resetDb, applyMigrations, seedUser, seedSession, seedAuthEvent } from '../../test/helpers'
 import { getDb } from '../db/client'
-import { users } from '../db/schema'
+import { users, authEvents } from '../db/schema'
 import { sendMagicLink } from '../lib/email'
 import { ADMIN_SEND_LIMITS, ADMIN_SEND_LIMIT_MESSAGES } from '../lib/adminSendLimits'
 
@@ -150,6 +150,79 @@ describe('admin email routes: rate limits', () => {
       for (const route of ROUTES) {
         expect((await route.send(target, adminCookie)).status).toBe(429)
       }
+    })
+  })
+
+  describe.each(ROUTES)('$name, requests fired at once', ({ send }) => {
+    it('lets exactly the per-member limit through', async () => {
+      const target = await seedPending()
+      const replies = await Promise.all(Array.from({ length: 20 }, () => send(target, adminCookie)))
+
+      expect(replies.filter(r => r.status === 200)).toHaveLength(PER_MEMBER)
+      expect(replies.filter(r => r.status === 429)).toHaveLength(20 - PER_MEMBER)
+      expect(sendMagicLink).toHaveBeenCalledTimes(PER_MEMBER)
+    })
+
+    it('lets exactly the per-admin limit through', async () => {
+      const room = 3
+      const earlier = await seedPending()
+      await seedSends({ actorId: adminId, userId: earlier, count: PER_ADMIN - room })
+      const targets = await Promise.all(Array.from({ length: 10 }, () => seedPending()))
+
+      const replies = await Promise.all(targets.map(t => send(t, adminCookie)))
+
+      expect(replies.filter(r => r.status === 200)).toHaveLength(room)
+      expect(replies.filter(r => r.status === 429)).toHaveLength(10 - room)
+      expect(sendMagicLink).toHaveBeenCalledTimes(room)
+    })
+  })
+
+  describe('per address', () => {
+    it('stops a flood to one inbox even when the address is rotated through different members', async () => {
+      const victim = 'victim@example.com'
+      const limit = ADMIN_SEND_LIMITS.perAddress.max
+      // Each member takes the victim's address, then moves off it for the next.
+      for (let i = 0; i < limit; i++) {
+        const member = await seedPending(`typo-${i}@exmaple.com`)
+        expect((await post(`/api/admin/members/${member}/change-email`, adminCookie, { email: victim })).status).toBe(200)
+        expect((await post(`/api/admin/members/${member}/change-email`, adminCookie, { email: `elsewhere-${i}@example.com` })).status).toBe(200)
+      }
+
+      const last = await seedPending('typo-last@exmaple.com')
+      const blocked = await post(`/api/admin/members/${last}/change-email`, adminCookie, { email: victim })
+      expect(blocked.status).toBe(429)
+      expect(blocked.body.error).toBe(ADMIN_SEND_LIMIT_MESSAGES.perAddress)
+      const row = await getDb(env.DB).select({ email: users.email }).from(users).where(eq(users.id, last)).get()
+      expect(row?.email).toBe('typo-last@exmaple.com')
+    })
+
+    it('counts the address case-insensitively', async () => {
+      const target = await seedPending('Mixed.Case@Example.com')
+      for (let n = 0; n < ADMIN_SEND_LIMITS.perAddress.max; n++) {
+        await seedAuthEvent(await seedPending(), 'link_requested', { email: 'mixed.case@example.com', linkType: 'invite', actorId: adminId })
+      }
+      const r = await ROUTES[0].send(target, adminCookie)
+      expect(r.status).toBe(429)
+      expect(r.body.error).toBe(ADMIN_SEND_LIMIT_MESSAGES.perAddress)
+    })
+  })
+
+  describe('a send that does not happen', () => {
+    it('is not counted when it is refused', async () => {
+      const target = await seedPending()
+      await seedSends({ actorId: adminId, userId: target, count: PER_MEMBER })
+      for (let i = 0; i < 3; i++) expect((await ROUTES[0].send(target, adminCookie)).status).toBe(429)
+
+      const rows = await getDb(env.DB).select().from(authEvents).where(eq(authEvents.userId, target)).all()
+      expect(rows).toHaveLength(PER_MEMBER)
+    })
+
+    it('records exactly one link_requested event per send, with the admin as actor', async () => {
+      const target = await seedPending()
+      expect((await ROUTES[1].send(target, adminCookie)).status).toBe(200)
+      const rows = await getDb(env.DB).select().from(authEvents).where(eq(authEvents.userId, target)).all()
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ event: 'link_requested', linkType: 'login', actorId: adminId })
     })
   })
 

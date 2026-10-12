@@ -23,14 +23,22 @@ out on a limiter blip. To tune, edit the `limit` / `period` (`period` must be
 ## 1a. Admin email sends — different mechanism, nothing to configure
 
 The admin routes that email a member (resend invite, resend login link, change a
-pending invite's address) are limited per admin and per member, in D1 rather
-than with the Workers Rate Limiting binding. That binding only counts over 10 or
-60 seconds and fails open when absent, so it cannot express "a few resends an
-hour" for a self-hoster who never declared it. The limits (and the 429 messages)
-are in `api/src/lib/adminSendLimits.ts`: 5 per member and 50 per admin, over a
-sliding 60 minutes. They count `link_requested` rows with an `actor_id`
-(migration 0084 indexes it), shared by all three routes. A new send that needs
-a limit should reuse `countRecentSends` there.
+pending invite's address) are limited in D1 rather than with the Workers Rate
+Limiting binding. That binding only counts over 10 or 60 seconds and fails open
+when absent, so it cannot express "a few resends an hour" for a self-hoster who
+never declared it. The limits and their 429 messages are in
+`api/src/lib/adminSendLimits.ts`: over a sliding 60 minutes, 5 per member, 5
+per recipient address, and 50 per admin, shared by all three routes.
+
+The count and the record are one atomic `INSERT ... SELECT ... WHERE` (`claimSend`).
+The row it writes is the send's own `link_requested` event, with the admin as
+`actor_id`, so parallel requests cannot all read the same count. A send that
+then fails keeps its row (fail closed). Migration 0084 indexes `actor_id` for the
+per-admin count. Bulk invites go through the queue with no actor and are outside
+these limits.
+
+To limit another kind of send, call `claimSend` with its own event type and
+`SendCheck`s (column, value, window, max, message) rather than adding a counter.
 
 ## 2. Turnstile
 
