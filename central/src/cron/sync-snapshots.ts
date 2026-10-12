@@ -1,5 +1,5 @@
 import { eq, and, or, inArray, notInArray, lt, gt, isNull, isNotNull, asc, sql } from 'drizzle-orm'
-import { sessions, bills, billTenants, tenants, people, providerRecords } from '../db/schema'
+import { sessions, bills, billTenants, billTexts, tenants, people, providerRecords } from '../db/schema'
 import { decideMode, getCurrentEtHour } from '../lib/sync-schedule'
 import { nowDb } from '../lib/dbTime'
 import { terminalStatuses } from '../lib/vocabulary'
@@ -29,8 +29,10 @@ const BATCH = 80
 const FLUSH_BATCH = 200
 /** Stored records read per query when a feed answers 304. */
 const STORED_PAGE = 500
+/** Most bills a pass re-ingests to give their texts a hash (requeueUnhashedTexts). */
+const UNHASHED_REINGESTS_PER_PASS = 100
 
-export interface SnapshotPassReport { sessionId: number; sessionName: string; records: number; queued: number; refreshed: number }
+export interface SnapshotPassReport { sessionId: number; sessionName: string; records: number; queued: number; refreshed: number; unhashed: number }
 
 type Covering = { tenantId: string; stateCoverage: string; queueId: string | null }
 type SessionRow = typeof sessions.$inferSelect
@@ -237,7 +239,7 @@ async function runSnapshotPass(
   db: Db,
   ctx: ProviderContext,
   force: boolean,
-): Promise<{ records: number; queued: number; refreshed: number }> {
+): Promise<{ records: number; queued: number; refreshed: number; unhashed: number }> {
   const etag = force ? null : session.snapshotEtag ?? null
   const snapshot = await provider.snapshot({ ...storedSession(session), etag }, ctx)
   if (snapshot.people && snapshot.people.length > 0) await upsertProviderPeople(db, provider.id, snapshot.people)
@@ -248,7 +250,7 @@ async function runSnapshotPass(
     ? await storedRecords(db, provider.id, session.sessionId)
     : withCarriedBillIds(snapshot.records, await carriedBillIds(db, provider.id, session.state))
   // An empty answer is nothing new.
-  if (records.length === 0) return { records: 0, queued: 0, refreshed: 0 }
+  if (records.length === 0) return { records: 0, queued: 0, refreshed: 0, unhashed: 0 }
 
   const entries = await storeRecords(provider, session, records, db, ctx)
   const queue = ingestQueueFor(provider, env)
@@ -264,7 +266,49 @@ async function runSnapshotPass(
     ? await refreshStaleDetails(provider, provider.detailsRefresh, session.sessionId, queued, queue, db)
     : 0
   if (refreshed > 0) console.log(`[sync-${provider.id}] refreshing details for ${refreshed} tracked bills`)
-  return { records: records.length, queued: queued.size, refreshed }
+  const unhashed = await requeueUnhashedTexts(provider, session.sessionId, queued, queue, db)
+  if (unhashed > 0) console.log(`[sync-${provider.id}] re-ingesting ${unhashed} tracked bills whose texts have no hash`)
+  return { records: records.length, queued: queued.size, refreshed, unhashed }
+}
+
+/**
+ * Re-ingest tracked bills of this session holding a text with no `text_hash`,
+ * at most UNHASHED_REINGESTS_PER_PASS a pass.
+ *
+ * An instance runs AI only when central sends a text hash (it is the key for
+ * skipping text the model already read), so a bill ingested while its
+ * provider emitted none sits unanalyzed on every instance. Fixing the mapping
+ * doesn't reach it: the change hash is the record's, which a mapping fix
+ * leaves where it was, so no pass sees the bill as changed. This does, with
+ * no hash change and so no bills-row rewrite and no stubs for untracked bills.
+ *
+ * The ingest builds the bill from its stored record and writes the hash. It
+ * finds no change to report, so instances get the bill with no `changes`, and
+ * no feed event. It costs no provider call for a snapshot provider, whose
+ * ingest reads no feed. Once the texts have hashes the bill no longer
+ * matches, and nothing queues.
+ */
+async function requeueUnhashedTexts(
+  provider: Provider, sessionId: number, queued: Set<number>, queue: Queue, db: Db,
+): Promise<number> {
+  const rows = await db.selectDistinct({ billId: billTexts.billId })
+    .from(billTexts)
+    .innerJoin(providerRecords, eq(providerRecords.billId, billTexts.billId))
+    .innerJoin(billTenants, eq(billTenants.billId, billTexts.billId))
+    .where(and(
+      eq(providerRecords.provider, provider.id),
+      eq(providerRecords.sessionId, sessionId),
+      isNotNull(billTenants.matchType),
+      isNull(billTexts.textHash),
+    ))
+    .orderBy(asc(billTexts.billId))
+    .limit(UNHASHED_REINGESTS_PER_PASS + queued.size)
+    .all()
+  const ids = rows.map(r => r.billId).filter(id => !queued.has(id)).slice(0, UNHASHED_REINGESTS_PER_PASS)
+  for (let i = 0; i < ids.length; i += 100) {
+    await queue.sendBatch(ids.slice(i, i + 100).map(billId => ({ body: { billId } })))
+  }
+  return ids.length
 }
 
 /**

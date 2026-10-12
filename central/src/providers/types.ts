@@ -591,6 +591,17 @@ interface MeasureText {
   url: string
   state_link: string
   text_size: number
+  /**
+   * Never empty for a text a bill can be read from. An instance runs AI only
+   * for a bill whose texts arrive with a hash, and uses it to skip a text the
+   * model already read, so a provider that sends none gets no AI on any of its
+   * bills, and core re-ingests a tracked bill holding a text with none on every
+   * pass. A feed that publishes a checksum sends it. One that doesn't sends any
+   * stable token naming the document, such as a hash of its `doc_id`, which
+   * changes only when a different text becomes the newest. A provider that
+   * implements `fetchDocument` sends the MD5 of the document's bytes, which core
+   * checks the provider's copy against.
+   */
   text_hash: string
   alt_bill_text: number
   alt_mime: string

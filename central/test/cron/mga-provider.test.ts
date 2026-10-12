@@ -98,6 +98,9 @@ describe('Maryland from the General Assembly', () => {
       stateLink: 'https://mgaleg.maryland.gov/2026RS/fnotes/bil_0001/hb0001.pdf',
     })])
     expect(bill.texts.map((t: any) => t.note)).toEqual(['First Reader', 'Third Reader'])
+    // Instances run AI only for a bill that arrives with a text hash.
+    expect(bill.textHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(bill.textR2Key).toBeTruthy()
 
     // Subjects, without the printed index's cross-references.
     expect(bill.subjects).toEqual(expect.arrayContaining(['Utility Regulation', 'Contracts', 'Public Service Commission']))
@@ -161,6 +164,42 @@ describe('Maryland from the General Assembly', () => {
       expect(statuses.has(bill.status), `${number}: ${bill.status}`).toBe(true)
     }
     expect(await getJson(`/bills/${toHandle(await billId('HR1'))}`)).toMatchObject({ billType: 'R', status: 'Adopted', supplements: [] })
+  })
+})
+
+describe('texts that were stored without a hash', () => {
+  const textHashes = async (id: number) => (await seam.db().select({ hash: schema.billTexts.textHash }).from(schema.billTexts)
+    .where(eq(schema.billTexts.billId, id)).all()).map(t => t.hash)
+
+  it('re-ingests the tracked bills holding them once, with no change reported and nothing queued for the rest', async () => {
+    await claim('mga')
+    await syncAndIngest()
+    const tracked = [await billId('HB1'), await billId('SB2'), await billId('HB2')].sort()
+
+    // Maryland as ingested before the mapping gave texts a hash: no hash in central, so none sent to instances.
+    await seam.db().update(schema.billTexts).set({ textHash: null })
+    expect((await getJson(`/bills/${toHandle(tracked[0])}`)).textHash).toBeNull()
+
+    // The next pass finds every record unchanged (a 304), yet re-ingests the three tracked bills,
+    // and no bill no instance tracks.
+    const heal = await syncAndIngest()
+    expect(queuedIds(heal.run).sort()).toEqual(tracked)
+    expect(calls.every(c => c.url.startsWith('https://mgaleg.maryland.gov/'))).toBe(true)
+    for (const id of tracked) {
+      const hashes = await textHashes(id)
+      expect(hashes.length).toBeGreaterThan(0)
+      expect(hashes.every(h => !!h)).toBe(true)
+      expect((await getJson(`/bills/${toHandle(id)}`)).textHash).toMatch(/^[0-9a-f]{64}$/)
+    }
+
+    // Instances get the bills again to analyze, but with no changes, so no feed event is written.
+    const sent = sentToTenant(heal.run).filter((m: any) => !m.stubOnly)
+    expect(sent.map((m: any) => m.billId).sort()).toEqual(tracked.map(toHandle).sort())
+    expect(sent.every((m: any) => m.changes === undefined && !m.forceAI)).toBe(true)
+
+    // Healed, the bills match nothing, so the pass after queues nothing.
+    const after = await syncAndIngest()
+    expect(queuedIds(after.run)).toEqual([])
   })
 })
 

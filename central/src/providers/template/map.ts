@@ -92,6 +92,9 @@ export function buildTemplateMeasure(
     sasts: [],
     subjects: [],
     votes: [],
+    // TEMPLATE: the bill's text documents, or [] when the feed links none. Every text needs a non-empty
+    // `text_hash`: a checksum if the feed has one, else a hash of the document id (see MeasureText). An instance
+    // runs no AI for a bill whose texts carry none (Maryland shipped that way, and no bill was analyzed).
     texts: [],
     amendments: [],
     supplements: [],
