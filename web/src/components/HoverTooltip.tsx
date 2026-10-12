@@ -1,5 +1,6 @@
 import { useId, useState, useRef, useEffect, useLayoutEffect, type ReactNode, type RefObject, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
+import { SR_ONLY } from '../lib/textStyles'
 import { TOOLTIP_STYLE, tooltipPosition, tooltipPositionBelow, tooltipPositionRight } from '../lib/chipStyles'
 
 export type Placement = 'top' | 'top-start' | 'top-end' | 'bottom' | 'bottom-start' | 'right'
@@ -69,9 +70,29 @@ interface HoverTooltipProps {
   // with the bubble's aria-describedby, a screen reader announces "<ariaLabel>,
   // button" followed by the tooltip text on reveal.
   ariaLabel?: string
+  // Default mode only: explain a term (a status, an event type, a field label)
+  // rather than a control. Makes the hover reachable and readable without a
+  // pointer:
+  //  - the term gets a tab stop (a focusable span wraps `children`), so
+  //    keyboard users reach the explainer by focusing it;
+  //  - `text` is also rendered in a visually hidden span the term points to
+  //    through aria-describedby, so screen readers get it persistently;
+  //  - placement defaults to 'bottom' and maxWidth to 320 (both overridable);
+  //  - empty `text` renders `children` unchanged.
+  // Pass an object for the two variations: `id` names the hidden copy, and
+  // `interactive: true` says `children` is already focusable (a button), so no
+  // extra tab stop is added — give that child `aria-describedby={id}` itself.
+  // Ignored when `toggletip` is set.
+  describe?: boolean | { id?: string; interactive?: boolean }
 }
 
-export function HoverTooltip({ text, children, placement = 'top', maxWidth, portal = true, block = false, boundaryRef, toggletip = false, ariaLabel }: HoverTooltipProps) {
+export function HoverTooltip({ text, children, placement: placementProp, maxWidth: maxWidthProp, portal = true, block = false, boundaryRef, toggletip = false, ariaLabel, describe = false }: HoverTooltipProps) {
+  const describing = !!describe && !toggletip
+  const placement = placementProp ?? (describing ? 'bottom' : 'top')
+  const maxWidth = maxWidthProp ?? (describing ? 320 : undefined)
+  const describeOpts = typeof describe === 'object' ? describe : {}
+  const generatedDescribeId = useId()
+  const describeId = describeOpts.id ?? generatedDescribeId
   const [anchor, setAnchor] = useState<DOMRect | null>(null)
   const ref = useRef<HTMLElement | null>(null)
   // toggletip mode only: click's own open/closed parity, independent of the
@@ -255,7 +276,14 @@ export function HoverTooltip({ text, children, placement = 'top', maxWidth, port
   const handleFocus = () => show()
   const handleBlur = () => hide()
 
-  const inner = <>{children}{portal && bubble ? createPortal(bubble, document.body) : bubble}</>
+  if (describing && !text) return <>{children}</>
+
+  const trigger = describing && !describeOpts.interactive
+    // Focusable on purpose: keyboard users reach the explainer by focusing the term.
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+    ? <span tabIndex={0} aria-describedby={describeId}>{children}</span>
+    : children
+  const inner = <>{trigger}{portal && bubble ? createPortal(bubble, document.body) : bubble}</>
 
   if (toggletip) {
     const handleClick = () => {
@@ -301,7 +329,7 @@ export function HoverTooltip({ text, children, placement = 'top', maxWidth, port
     )
   }
 
-  return block
+  const wrapper = block
     ? (
       <div ref={setRef} style={{ display: 'block', width: '100%' }} onPointerEnter={handlePointerEnter} onPointerLeave={handlePointerLeave} onFocus={handleFocus} onBlur={handleBlur}>
         {inner}
@@ -312,4 +340,12 @@ export function HoverTooltip({ text, children, placement = 'top', maxWidth, port
         {inner}
       </span>
     )
+
+  if (!describing) return wrapper
+  return (
+    <>
+      {wrapper}
+      <span id={describeId} style={SR_ONLY}>{text}</span>
+    </>
+  )
 }

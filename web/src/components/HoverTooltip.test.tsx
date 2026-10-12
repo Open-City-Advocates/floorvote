@@ -500,3 +500,56 @@ describe('HoverTooltip', () => {
     })
   })
 })
+
+// Folded in from TermHover (now HoverTooltip's `describe` option).
+const bubble = (text: string) => screen.getAllByText(text).find(el => el.style.position === 'fixed')
+
+describe('HoverTooltip describe option', () => {
+  it('shows the explainer on hover and renders no info button', () => {
+    render(<HoverTooltip text="A bill that became law." describe>Chapter</HoverTooltip>)
+    expect(screen.queryByRole('button')).toBeNull()
+    expect(bubble('A bill that became law.')).toBeUndefined()
+    fireEvent.pointerEnter(screen.getByText('Chapter'), { pointerType: 'mouse' })
+    expect(bubble('A bill that became law.')).toBeDefined()
+    fireEvent.pointerLeave(screen.getByText('Chapter'), { pointerType: 'mouse' })
+    expect(bubble('A bill that became law.')).toBeUndefined()
+  })
+
+  it('is keyboard focusable and described for screen readers', () => {
+    render(<HoverTooltip text="A bill that became law." describe>Chapter</HoverTooltip>)
+    const term = screen.getByText('Chapter')
+    expect(term).toHaveAttribute('tabindex', '0')
+    expect(term).toHaveAccessibleDescription('A bill that became law.')
+    fireEvent.focus(term)
+    expect(bubble('A bill that became law.')).toBeDefined()
+  })
+
+  it('renders plain text when there is no explainer', () => {
+    render(<HoverTooltip text={null} describe>Chapter</HoverTooltip>)
+    const term = screen.getByText('Chapter')
+    expect(term).not.toHaveAttribute('tabindex')
+    expect(term).not.toHaveAttribute('aria-describedby')
+  })
+
+  it('with interactive adds no tab stop and uses the given id for the hidden copy', () => {
+    render(<HoverTooltip text="A bill that became law." describe={{ id: 'status-explainer', interactive: true }}><button aria-describedby="status-explainer">Chapter</button></HoverTooltip>)
+    const btn = screen.getByRole('button', { name: 'Chapter' })
+    expect(btn).not.toHaveAttribute('tabindex')
+    expect(btn).toHaveAccessibleDescription('A bill that became law.')
+    expect(document.getElementById('status-explainer')).toHaveTextContent('A bill that became law.')
+  })
+
+  it('opens below with a wrapping bubble by default', () => {
+    render(<HoverTooltip text="A bill that became law." describe>Chapter</HoverTooltip>)
+    fireEvent.pointerEnter(screen.getByText('Chapter'), { pointerType: 'mouse' })
+    const b = bubble('A bill that became law.')!
+    expect(b.style.maxWidth).toBe('320px')
+    expect(b.style.transform).toBe('translateX(-50%)')
+  })
+
+  it('adds no tab stop or hidden copy when off', () => {
+    render(<HoverTooltip text="Tip"><span>Chapter</span></HoverTooltip>)
+    expect(screen.getByText('Chapter')).not.toHaveAttribute('tabindex')
+    expect(screen.queryByText('Tip')).toBeNull()
+  })
+})
