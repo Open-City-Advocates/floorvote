@@ -51,9 +51,9 @@ Admins can also restrict voting on a per-member basis, for cases where someone s
 
 ## Notifications
 
-Members get notified whenever anyone @-mentions them (or a team role they have) in a comment.
+Members get notified whenever anyone @-mentions them (or a team role they have) in a comment, and they always get an email for it. Admins can turn conversation emails off for the whole instance on the Notifications settings page.
 
-Weekly or daily email digests round up what's changed on prioritized bills, and a week-ahead email flags upcoming hearings.
+Weekly or daily email digests round up what's changed on prioritized bills, and a week-ahead email flags upcoming hearings. Each member controls both from the "Your Email" section of their profile.
 
 ## Feed
 

@@ -369,9 +369,12 @@ export function Profile() {
         </div>
       </div>
 
-      {/* Preferences card */}
+      {/* Email card: one section for every email a member can control, plus the always-sent line */}
       <div style={SECTION_CARD}>
-        <h2 style={CARD_TITLE}>Preferences</h2>
+        <h2 style={CARD_TITLE}>Your Email</h2>
+        <p style={{ ...HELPER_TEXT, marginTop: 0, marginBottom: 12 }}>
+          You'll always get an email when someone mentions you, your role, or @everyone.
+        </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div
             id="setting-email-digest"

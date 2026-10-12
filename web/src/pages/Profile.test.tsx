@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { Profile } from './Profile'
 import * as api from '../lib/api'
@@ -70,10 +70,40 @@ describe('Profile heading structure', () => {
     expect(h1s[0]).toHaveTextContent('Profile')
   })
 
-  it('exposes the Preferences and Account section titles as level-2 headings', () => {
+  it('exposes the Your Email and Account section titles as level-2 headings', () => {
     mockConfig({})
     render(<MemoryRouter><Profile /></MemoryRouter>)
-    expect(screen.getByRole('heading', { level: 2, name: 'Preferences' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Your Email' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 2, name: 'Account' })).toBeInTheDocument()
+  })
+})
+
+describe('Profile "Your Email" section', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    Element.prototype.scrollIntoView = vi.fn()
+  })
+
+  it('holds the digest and week-ahead switches and states that mention emails are always sent', async () => {
+    mockConfig({ 'email-digest': { enabled: true }, 'week-ahead': { enabled: true } })
+    render(<MemoryRouter><Profile /></MemoryRouter>)
+    const heading = screen.getByRole('heading', { level: 2, name: 'Your Email' })
+    const section = heading.parentElement as HTMLElement
+    expect(within(section).getByRole('switch', { name: /recent bill activity/i })).toBeInTheDocument()
+    expect(within(section).getByRole('switch', { name: /upcoming hearings and events/i })).toBeInTheDocument()
+    expect(within(section).getByText("You'll always get an email when someone mentions you, your role, or @everyone.")).toBeInTheDocument()
+    expect(within(section).queryByRole('switch', { name: /mention/i })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['setting-email-digest', /recent bill activity/i],
+    ['setting-week-ahead', /upcoming hearings and events/i],
+  ])('email-footer deep link #%s lands on and highlights its switch', async (id, name) => {
+    mockConfig({ 'email-digest': { enabled: true }, 'week-ahead': { enabled: true } })
+    render(<MemoryRouter initialEntries={[`/profile#${id}`]}><Profile /></MemoryRouter>)
+    const row = document.getElementById(id) as HTMLElement
+    expect(row).toContainElement(screen.getByRole('switch', { name }))
+    await vi.waitFor(() => expect(row.style.boxShadow).not.toBe(''))
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
   })
 })
