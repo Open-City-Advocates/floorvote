@@ -37,8 +37,9 @@ export function Notifications() {
   const [saving, setSaving] = useState<string | null>(null)
 
   // Turning a setting OFF stops email for everyone, so confirm first (browser confirm,
-  // matching the rest of the app). Turning ON is benign — members can still opt out
-  // individually — so it applies immediately.
+  // matching the rest of the app). Turning ON is benign, so it
+  // applies immediately. Per-member opt-out applies only to the digest and week-ahead
+  // switches, not to conversation emails (mentions are always sent to members).
   const confirmOff = (label: string, memberCanOptOut = true) =>
     window.confirm(`Turn off ${label} for everyone? This stops it for all members, not just you.${memberCanOptOut ? ' Members can also opt out individually on their Account page.' : ''}`)
 
