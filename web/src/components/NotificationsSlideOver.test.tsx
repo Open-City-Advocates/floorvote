@@ -3,7 +3,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { NotificationsSlideOver } from './NotificationsSlideOver'
 import { NotificationsProvider } from '../context/NotificationsContext'
-import { markMentionsRead } from '../lib/demoReadState'
+import { markNotificationsRead } from '../lib/demoReadState'
 import { MENTION_STYLE } from '../../../shared/mentionStyle'
 
 // Mutable flag so individual tests can opt into demoLocked without a
@@ -385,8 +385,8 @@ describe('NotificationsSlideOver demo read state', () => {
     await new Promise(r => setTimeout(r, 50))
 
     expect(apiFetch).not.toHaveBeenCalledWith('/notifications/mark-read', expect.anything())
-    const { readMentionIds } = await import('../lib/demoReadState')
-    expect(readMentionIds(demoState.demoResetAt)).toEqual(new Set())
+    const { readNotificationIds } = await import('../lib/demoReadState')
+    expect(readNotificationIds(demoState.demoResetAt)).toEqual(new Set())
   })
 
   // Guards the trap this replaced: the previous version of this test set
@@ -408,8 +408,8 @@ describe('NotificationsSlideOver demo read state', () => {
     vi.mocked(apiFetch).mockClear()
     renderPanel()
     await screen.findByText('@Board')
-    const { readMentionIds } = await import('../lib/demoReadState')
-    await waitFor(() => expect(readMentionIds(demoState.demoResetAt)).toEqual(new Set(['m1', 'm2'])))
+    const { readNotificationIds } = await import('../lib/demoReadState')
+    await waitFor(() => expect(readNotificationIds(demoState.demoResetAt)).toEqual(new Set(['m1', 'm2'])))
     expect(apiFetch).not.toHaveBeenCalledWith('/notifications/mark-read', expect.anything())
   })
 
@@ -418,7 +418,7 @@ describe('NotificationsSlideOver demo read state', () => {
   // a day for mentions this browser has already read.
   it('treats a locally-read mention as read even when the server says unread', async () => {
     demoState.demoMode = true
-    markMentionsRead(['m1'], demoState.demoResetAt)
+    markNotificationsRead(['m1'], demoState.demoResetAt)
     renderPanel()
     const row = (await screen.findByText('@Board')).closest('a') as HTMLElement
     expect(row.style.borderLeft).toContain('transparent')

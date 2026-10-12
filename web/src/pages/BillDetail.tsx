@@ -46,7 +46,7 @@ import { CommentContent } from '../components/CommentContent'
 import { CustomFieldsSection, type CustomFieldDef } from '../components/CustomFieldsSection'
 import { useDemo } from '../context/DemoContext'
 import { useNotifications } from '../context/NotificationsContext'
-import { markMentionsRead } from '../lib/demoReadState'
+import { markNotificationsRead } from '../lib/demoReadState'
 import { relativeTime, absoluteTime } from '../lib/time'
 import { COMMENT_STYLE } from '../../../shared/commentStyle'
 import { billDisplayTitle } from '../../../shared/billTitle'
@@ -855,7 +855,7 @@ export function BillDetail() {
   useEffect(() => {
     if (!bill?.id || !demoSettled) return
     if (demoMode) {
-      markMentionsRead(billNotificationIds ? billNotificationIds.split(',') : [], demoResetAt)
+      markNotificationsRead(billNotificationIds ? billNotificationIds.split(',') : [], demoResetAt)
       void refreshNotifications()
       return
     }

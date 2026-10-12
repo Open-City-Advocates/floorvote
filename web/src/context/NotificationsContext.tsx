@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { apiFetch } from '../lib/api'
 import { useDemo } from './DemoContext'
-import { isUnreadForDemo, readMentionIds } from '../lib/demoReadState'
+import { isUnreadForDemo, readNotificationIds } from '../lib/demoReadState'
 
 // Lives here rather than in NotificationsSlideOver because the context now owns
 // the data. The panel imports it back; the reverse would be a cycle.
@@ -107,10 +107,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     // predicate the panel paints its blue rails with, so the bell's number is
     // exactly the number of rails the panel would draw.
     //
-    // readMentionIds() is hoisted out of the filter callback: it round-trips
+    // readNotificationIds() is hoisted out of the filter callback: it round-trips
     // through localStorage.getItem + JSON.parse, so calling it once per render
     // instead of once per notification matters once the list is not tiny.
-    const alreadyRead = readMentionIds(demoResetAt)
+    const alreadyRead = readNotificationIds(demoResetAt)
     effectiveUnread = notifications.filter(n => isUnreadForDemo(n, alreadyRead)).length
   } else if (demoSettled) {
     effectiveUnread = unreadCount

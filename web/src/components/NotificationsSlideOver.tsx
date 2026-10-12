@@ -6,7 +6,7 @@ import DOMPurify from 'dompurify'
 import { apiFetch } from '../lib/api'
 import { useNotifications, type MentionNotification, type NotificationItem } from '../context/NotificationsContext'
 import { useDemo } from '../context/DemoContext'
-import { isUnreadForDemo, readMentionIds, markMentionsRead } from '../lib/demoReadState'
+import { isUnreadForDemo, readNotificationIds, markNotificationsRead } from '../lib/demoReadState'
 import { billUrl } from '../lib/sessionSlug'
 import { TOOLTIP_STYLE, tooltipPositionBelow } from '../lib/chipStyles'
 import { BillBadge } from './BillBadge'
@@ -141,9 +141,9 @@ export function NotificationsSlideOver(
       // Overlay the local set onto the server's isUnread before freezing: after a
       // reset the server calls every row unread again, and this browser's own
       // reading is the only record that survives it.
-      const alreadyRead = readMentionIds(demoResetAt)
+      const alreadyRead = readNotificationIds(demoResetAt)
       setSnapshot(liveNotifications.map(m => ({ ...m, isUnread: isUnreadForDemo(m, alreadyRead) })))
-      markMentionsRead(liveNotifications.map(m => m.id), demoResetAt)
+      markNotificationsRead(liveNotifications.map(m => m.id), demoResetAt)
       return
     }
     setSnapshot(liveNotifications)
