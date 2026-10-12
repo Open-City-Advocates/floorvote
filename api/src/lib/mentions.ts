@@ -197,42 +197,37 @@ type NotificationTarget = {
   userId: string
   via: 'user' | 'role' | 'everyone'
   roleName?: string
+  /** What the mention record points at: the user, the role, or 'all' for @everyone. */
+  sourceId: string
 }
 
-export async function extractAndNotifyMentions(
-  commentId: string,
+type Db = ReturnType<typeof getDb>
+
+/**
+ * Resolves a comment's mention spans to the people they reach, one target per
+ * person. A person reached more than one way is attributed to the first that
+ * applies: direct mention, then role, then @everyone. The author is never a
+ * target, @everyone only counts from an admin or owner, and role and @everyone
+ * expansion skips members without a login session (invite-pending or
+ * deactivated).
+ *
+ * Both the create path and the edit diff resolve through here, so "who does this
+ * comment reach" has one definition.
+ */
+async function resolveMentionTargets(
+  db: Db,
   html: string,
   authorUserId: string,
   authorRole: 'admin' | 'member' | 'owner',
-  billId: string,
-  env: MentionEnv,
-  waitUntil?: (p: Promise<unknown>) => void,
-): Promise<string[]> {
+): Promise<NotificationTarget[]> {
   const mentions = extractMentions(html)
   if (mentions.length === 0) return []
 
-  const db = getDb(env.DB)
   const targets = new Map<string, NotificationTarget>()
-  const mentionRows: Array<{
-    id: string
-    commentId: string
-    userId: string
-    sourceType: 'user' | 'role' | 'everyone'
-    sourceId: string
-  }> = []
 
   for (const m of mentions) {
-    if (m.type === 'user') {
-      if (m.id !== authorUserId && !targets.has(m.id)) {
-        targets.set(m.id, { userId: m.id, via: 'user' })
-        mentionRows.push({
-          id: crypto.randomUUID(),
-          commentId,
-          userId: m.id,
-          sourceType: 'user',
-          sourceId: m.id,
-        })
-      }
+    if (m.type === 'user' && m.id !== authorUserId && !targets.has(m.id)) {
+      targets.set(m.id, { userId: m.id, via: 'user', sourceId: m.id })
     }
   }
 
@@ -254,14 +249,7 @@ export async function extractAndNotifyMentions(
 
     for (const rm of roleMembers) {
       if (rm.userId !== authorUserId && !targets.has(rm.userId)) {
-        targets.set(rm.userId, { userId: rm.userId, via: 'role', roleName: roleNameMap.get(rm.roleId) })
-        mentionRows.push({
-          id: crypto.randomUUID(),
-          commentId,
-          userId: rm.userId,
-          sourceType: 'role',
-          sourceId: rm.roleId,
-        })
+        targets.set(rm.userId, { userId: rm.userId, via: 'role', roleName: roleNameMap.get(rm.roleId), sourceId: rm.roleId })
       }
     }
   }
@@ -273,36 +261,108 @@ export async function extractAndNotifyMentions(
       .all()
     for (const u of allUsers) {
       if (u.id !== authorUserId && !targets.has(u.id)) {
-        targets.set(u.id, { userId: u.id, via: 'everyone' })
-        mentionRows.push({
-          id: crypto.randomUUID(),
-          commentId,
-          userId: u.id,
-          sourceType: 'everyone',
-          sourceId: 'all',
-        })
+        targets.set(u.id, { userId: u.id, via: 'everyone', sourceId: 'all' })
       }
     }
   }
 
-  if (mentionRows.length > 0) {
-    await db.insert(commentMentions).values(mentionRows)
-  }
+  return [...targets.values()]
+}
 
-  if (targets.size > 0) {
-    const targetList = [...targets.values()]
-    if (await mentionEmailsEnabled(db)) {
-      const emailTask = sendMentionEmails(targetList, authorUserId, billId, commentId, html, env)
-      if (waitUntil) {
-        waitUntil(emailTask)
-      } else {
-        emailTask.catch(() => {})
-      }
+/** Writes mention records for the given targets, then emails them unless an admin turned mention emails off. */
+async function recordAndEmail(
+  db: Db,
+  newTargets: NotificationTarget[],
+  commentId: string,
+  html: string,
+  authorUserId: string,
+  billId: string,
+  env: MentionEnv,
+  waitUntil?: (p: Promise<unknown>) => void,
+): Promise<void> {
+  if (newTargets.length === 0) return
+
+  await db.insert(commentMentions).values(newTargets.map(t => ({
+    id: crypto.randomUUID(),
+    commentId,
+    userId: t.userId,
+    sourceType: t.via,
+    sourceId: t.sourceId,
+  })))
+
+  if (await mentionEmailsEnabled(db)) {
+    const emailTask = sendMentionEmails(newTargets, authorUserId, billId, commentId, html, env)
+    if (waitUntil) {
+      waitUntil(emailTask)
+    } else {
+      emailTask.catch(() => {})
     }
-    return targetList.map(t => t.userId)
+  }
+}
+
+/** Create path: record a mention for, and email, everyone the new comment reaches. Returns their user ids. */
+export async function extractAndNotifyMentions(
+  commentId: string,
+  html: string,
+  authorUserId: string,
+  authorRole: 'admin' | 'member' | 'owner',
+  billId: string,
+  env: MentionEnv,
+  waitUntil?: (p: Promise<unknown>) => void,
+): Promise<string[]> {
+  const db = getDb(env.DB)
+  const targets = await resolveMentionTargets(db, html, authorUserId, authorRole)
+  await recordAndEmail(db, targets, commentId, html, authorUserId, billId, env, waitUntil)
+  return targets.map(t => t.userId)
+}
+
+/**
+ * Edit path: reconcile the comment's mention records with its new content instead
+ * of starting over. Records are keyed by person (comment + user), so:
+ *
+ *   - still reached: the record stays, read state and all, and nobody is emailed.
+ *     Its source (user, role, or everyone) is refreshed if the way they are
+ *     reached changed, e.g. the role that reached them was swapped out.
+ *   - no longer reached: the record is deleted and nothing is sent.
+ *   - newly reached: a record is created and they are emailed once.
+ *
+ * Diffing on the resolved person, not the mention span, is what keeps someone
+ * already mentioned directly from being emailed again when a role that includes
+ * them is added. Returns everyone the edited comment now reaches, kept and new.
+ */
+export async function syncMentionsOnEdit(
+  commentId: string,
+  html: string,
+  authorUserId: string,
+  authorRole: 'admin' | 'member' | 'owner',
+  billId: string,
+  env: MentionEnv,
+  waitUntil?: (p: Promise<unknown>) => void,
+): Promise<string[]> {
+  const db = getDb(env.DB)
+  const targets = await resolveMentionTargets(db, html, authorUserId, authorRole)
+  const existing = await db.select().from(commentMentions).where(eq(commentMentions.commentId, commentId)).all()
+
+  const targetById = new Map(targets.map(t => [t.userId, t]))
+  const existingIds = new Set(existing.map(r => r.userId))
+
+  const removedIds = existing.filter(r => !targetById.has(r.userId)).map(r => r.id)
+  if (removedIds.length > 0) {
+    await db.delete(commentMentions).where(inArray(commentMentions.id, removedIds))
   }
 
-  return []
+  for (const row of existing) {
+    const target = targetById.get(row.userId)
+    if (target && (row.sourceType !== target.via || row.sourceId !== target.sourceId)) {
+      await db.update(commentMentions)
+        .set({ sourceType: target.via, sourceId: target.sourceId })
+        .where(eq(commentMentions.id, row.id))
+    }
+  }
+
+  const added = targets.filter(t => !existingIds.has(t.userId))
+  await recordAndEmail(db, added, commentId, html, authorUserId, billId, env, waitUntil)
+  return targets.map(t => t.userId)
 }
 
 async function sendMentionEmails(
