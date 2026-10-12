@@ -84,7 +84,7 @@ const notifState = vi.hoisted(() => ({
 vi.mock('../context/NotificationsContext', () => ({
   useNotifications: () => ({
     unreadCount: 0,
-    mentions: notifState.mentionIds.map(id => ({ id, billId: '42' })),
+    notifications: notifState.mentionIds.map(id => ({ kind: 'mention', id, billId: '42' })),
     refresh: notifState.refresh,
   }),
 }))

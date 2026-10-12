@@ -3,7 +3,7 @@
 // The database cannot carry this on a demo. Every visitor is auto-logged in as
 // the same `demo-user` row (api/src/index.ts), so one person's reading clears
 // the badge for everybody after them; and the reset cron (0 0,6,12,18) wipes
-// comment_mentions.read_at four times a day, so the badge re-lights on its own.
+// notifications.read_at four times a day, so the badge re-lights on its own.
 //
 // Mention ids survive that reset unchanged — demoReset.ts re-inserts the seed's
 // literal ids (lm-m-1, lm-m-8, …) verbatim — which is what makes a local set

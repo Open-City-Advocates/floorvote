@@ -38,9 +38,10 @@ vi.mock('../lib/api', () => ({
       if (gate.hold && nth >= gate.holdFrom) await gate.hold
       return {
         unreadCount: 1,
-        mentions: [
+        notifications: [
           ...(gate.lateRow && nth >= 2 ? [gate.lateRow] : []),
           {
+            kind: 'mention',
             id: 'm1',
             commentId: 'c1',
             billId: 'b1',
@@ -61,6 +62,7 @@ vi.mock('../lib/api', () => ({
           // in its attribution line — the common case, and the reason the body
           // can't have a leading pill stripped out of it (see the describe below).
           {
+            kind: 'mention',
             id: 'm2',
             commentId: 'c2',
             billId: 'b2',
@@ -263,6 +265,7 @@ describe('NotificationsSlideOver instant open', () => {
   // between is marked read, and its badge cleared, having never shown its rail.
   it('pulls in a mention that arrived since the last poll before marking read', async () => {
     gate.lateRow = {
+      kind: 'mention',
       id: 'm3',
       commentId: 'c3',
       billId: 'b3',
@@ -292,6 +295,7 @@ describe('NotificationsSlideOver instant open', () => {
 
   it('marks read exactly once per open, despite reconciling back into the snapshot', async () => {
     gate.lateRow = {
+      kind: 'mention',
       id: 'm3',
       commentId: 'c3',
       billId: 'b3',

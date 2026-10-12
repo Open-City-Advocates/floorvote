@@ -13,10 +13,10 @@ vi.mock('./DemoContext', () => ({
 // the answer the demo should show — that difference is the whole test.
 const payload = vi.hoisted(() => ({
   unreadCount: 2,
-  mentions: [
-    { id: 'm1', isUnread: true },
-    { id: 'm2', isUnread: true },
-    { id: 'm3', isUnread: false },
+  notifications: [
+    { kind: 'mention', id: 'm1', isUnread: true },
+    { kind: 'mention', id: 'm2', isUnread: true },
+    { kind: 'mention', id: 'm3', isUnread: false },
   ],
 }))
 
