@@ -136,8 +136,9 @@ type NotMeStatus = { status: 'valid' | 'expired' | 'invalid' }
  * Where "This wasn't me" leads from an old-address notice. Built like the
  * confirmation page: the token is read once and taken out of the address bar,
  * loading the page only asks whether the link is still good, and the button
- * does the work. Pressing it signs the member out everywhere and emails the
- * instance's owners and admins. It never undoes the change.
+ * does the work. Pressing it signs the member out everywhere, cancels a
+ * pending change, and emails the instance's owners and admins. It never undoes
+ * a change that has taken effect.
  */
 export function EmailChangeNotMe() {
   usePageTitle("Didn't Ask for This Change?")
@@ -185,7 +186,7 @@ export function EmailChangeNotMe() {
             : `We couldn't email your ${PRODUCT_NAME} admins. Please contact one of them directly.`}
         </p>
         <p style={styles.body}>
-          This doesn&apos;t undo the change. If your sign-in email was changed, an admin can restore it.
+          Any change that hadn&apos;t been confirmed was cancelled. A change that already took effect isn&apos;t undone, but an admin can restore your address.
         </p>
         <a href="/login" className="blue-link" style={styles.link}>Sign in</a>
       </Card>
@@ -216,7 +217,7 @@ export function EmailChangeNotMe() {
         Someone asked to change the sign-in email for your {PRODUCT_NAME} account. If that wasn&apos;t you, press the
         button. It signs you out everywhere and emails your admins so they can look into it.
       </p>
-      <p style={styles.body}>It doesn&apos;t undo the change. If you did ask for it, you can close this page.</p>
+      <p style={styles.body}>It cancels a change that hasn&apos;t been confirmed yet, but it doesn&apos;t undo one that has. If you did ask for it, you can close this page.</p>
       <form onSubmit={handlePress}>
         <button type="submit" disabled={submitting} style={{ ...styles.button, opacity: submitting ? 0.7 : 1 }}>
           {submitting ? 'Working…' : "This wasn't me"}
