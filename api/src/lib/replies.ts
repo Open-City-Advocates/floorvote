@@ -148,27 +148,17 @@ export function renderReplyEmail(input: ReplyEmailInput): string {
 }
 
 /**
- * Message-ID parts must be dot-atom text, and bill ids are not guaranteed to
- * be, so anything else becomes an underscore.
+ * Headers that group a bill's reply emails into one conversation: every email
+ * on a bill references one shared, bill-keyed id, so a mail client threads them
+ * (together with the constant subject) even though no message with that id
+ * exists. Message-ID is deliberately not set. Cloudflare Email Service controls
+ * it and rejects the whole send with E_HEADER_NOT_ALLOWED if it is present.
  */
-function idPart(s: string): string {
-  return s.replace(/[^A-Za-z0-9._-]/g, '_')
-}
-
-/**
- * Headers that group a bill's reply emails into one conversation. Each email
- * has its own Message-ID and all of a bill's emails reference one shared,
- * bill-keyed id, so a mail client threads them (together with the constant
- * subject) even though no message with that id exists.
- */
-export function replyThreadHeaders(appUrl: string, billId: string, commentId: string): Record<string, string> {
-  const host = new URL(appUrl).hostname
-  const root = `<bill-${idPart(billId)}@${host}>`
-  return {
-    'Message-ID': `<comment-${idPart(commentId)}@${host}>`,
-    'In-Reply-To': root,
-    'References': root,
-  }
+export function replyThreadHeaders(appUrl: string, billId: string): Record<string, string> {
+  // The id-left part must be dot-atom text, and bill ids are not guaranteed to
+  // be, so anything else becomes an underscore.
+  const root = `<bill-${billId.replace(/[^A-Za-z0-9._-]/g, '_')}@${new URL(appUrl).hostname}>`
+  return { 'In-Reply-To': root, 'References': root }
 }
 
 async function sendReplyEmails(
@@ -200,7 +190,7 @@ async function sendReplyEmails(
   })
   // One subject per bill, so replies group even in clients that thread on it.
   const subject = `[${bill.billNumber}] New comment`
-  const headers = replyThreadHeaders(env.APP_URL, billId, comment.id)
+  const headers = replyThreadHeaders(env.APP_URL, billId)
 
   const messages: EmailMessage[] = recipients.map(p => ({ to: [p.email], subject, html, headers }))
   console.log(`[replies] sending email to ${messages.length} recipient(s) for bill ${bill.billNumber}`)

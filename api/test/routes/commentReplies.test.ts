@@ -191,25 +191,29 @@ describe('replying to a bill notifies its other commenters', () => {
     await comment('ben', '<p>First</p>')
     await comment('cara', '<p>Second</p>')
     send.mockClear()
-    const c1 = await comment('ann', '<p>Third</p>')
-    const c2 = await comment('ann', '<p>Fourth</p>')
+    await comment('ann', '<p>Third</p>')
+    await comment('ann', '<p>Fourth</p>')
 
     const toBen = sent().filter(m => m.to[0] === 'ben@example.com')
     expect(toBen).toHaveLength(2)
     expect(emailedTo().filter(e => e === 'cara@example.com')).toHaveLength(2)
     const [first, second] = toBen
-    // One conversation per bill: the same subject and bill-keyed References, a
-    // distinct Message-ID per comment.
+    // One conversation per bill: the same subject and one shared bill-keyed
+    // reference on every email.
     expect(first.subject).toBe(second.subject)
     expect(first.subject).toContain('HB 1')
     expect(first.headers!['In-Reply-To']).toBe(second.headers!['In-Reply-To'])
     expect(first.headers!['References']).toBe(first.headers!['In-Reply-To'])
     expect(first.headers!['In-Reply-To']).toContain(billId)
-    expect(first.headers!['Message-ID']).not.toBe(second.headers!['Message-ID'])
-    expect(first.headers!['Message-ID']).toContain(c1)
-    expect(second.headers!['Message-ID']).toContain(c2)
-    for (const h of Object.values(first.headers!)) expect(h).toMatch(/^<[^<>\s@]+@[^<>\s@]+>$/)
+    expect(first.headers!['In-Reply-To']).toMatch(/^<[^<>\s@]+@[^<>\s@]+>$/)
     expect(first.html).toContain('Third')
+    // Cloudflare Email Service rejects the whole send when a header is
+    // platform-controlled (Message-ID, for one), so only these may be set.
+    for (const m of sent()) {
+      for (const name of Object.keys(m.headers ?? {})) {
+        expect(name).toMatch(/^(In-Reply-To|References|List-[A-Za-z-]+|X-[A-Za-z-]+)$/)
+      }
+    }
     // Replies don't carry a List-Unsubscribe until per-bill mute exists (#355).
     expect(first.headers!['List-Unsubscribe']).toBeUndefined()
   })
