@@ -671,6 +671,7 @@ adminApiRouter.get('/members/:id/auth-events', async (c) => {
       createdAt: authEvents.createdAt,
       messageId: authEvents.messageId,
       email: authEvents.email,
+      actorId: authEvents.actorId,
       actorName: authEventActorName,
     })
     .from(authEvents)
