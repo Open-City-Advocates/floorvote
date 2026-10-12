@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm'
 import type { AppDb, Env } from '../types'
-import { users, sessions, emailChanges, emailChangeReports } from '../db/schema'
+import { users, sessions, emailChanges, emailChangeReports, authEvents } from '../db/schema'
 import { generateToken, hashToken } from './crypto'
 import { recordAuthEvent } from './authEvents'
 import { sendBatch, resolveAssocName, type EmailMessage } from './email'
@@ -109,14 +109,15 @@ function whenText(dbTs: string): string {
  * pending change if they started it from this notice's address, records the
  * event, and emails the instance's active owners and admins who changed what
  * and when. Spends the token, so a second press does nothing. `alerted` says
- * whether at least one alert went out, so the page can be honest if none did.
+ * whether at least one alert went out, so the page can be honest if none did,
+ * and `cancelled` whether a pending change was cancelled.
  */
 export async function reportNotMe(
   env: Env,
   db: AppDb,
   rawToken: string,
   ctx: { userAgent: string | null; ipCountry: string | null },
-): Promise<{ ok: true; alerted: boolean } | Refusal> {
+): Promise<{ ok: true; alerted: boolean; cancelled: boolean } | Refusal> {
   const found = await reportFor(db, rawToken)
   if (!found) return { ok: false, status: 404, error: NOT_ME_ERRORS.invalidLink }
   if (!found.live) return { ok: false, status: 410, error: NOT_ME_ERRORS.expiredLink }
@@ -152,7 +153,7 @@ export async function reportNotMe(
     })
   }
 
-  return { ok: true, alerted: await alertAdmins(env, db, row, cancelled[0]?.newEmail ?? null) }
+  return { ok: true, alerted: await alertAdmins(env, db, row, cancelled[0]?.newEmail ?? null), cancelled: cancelled.length > 0 }
 }
 
 /**
@@ -183,6 +184,13 @@ async function alertAdmins(env: Env, db: AppDb, row: ReportRow, cancelledTo: str
       : requester ? `${requester.name || requester.email} (${requester.email})` : 'a member who has since been removed'
     const current = normalizeMemberAddress(member.email)
     const stillPending = await db.select({ newEmail: emailChanges.newEmail }).from(emailChanges).where(eq(emailChanges.userId, row.userId)).get()
+    // The commit's own event is the record that the change took effect.
+    const committed = await db.select({ id: authEvents.id }).from(authEvents).where(and(
+      eq(authEvents.userId, row.userId),
+      eq(authEvents.event, 'email_change_confirmed'),
+      eq(authEvents.email, row.newEmail),
+      eq(authEvents.reason, row.oldEmail),
+    )).get()
     const { subject, html, text } = renderEmailChangeReportedEmail({
       appUrl: env.APP_URL,
       instanceName: (await resolveAssocName(env, db)) ?? '',
@@ -194,6 +202,7 @@ async function alertAdmins(env: Env, db: AppDb, row: ReportRow, cancelledTo: str
       requestedAt: whenText(row.requestedAt),
       current: current === normalizeMemberAddress(row.oldEmail) ? 'old' : current === normalizeMemberAddress(row.newEmail) ? 'new' : 'other',
       currentEmail: member.email,
+      changeCommitted: !!committed,
       cancelledTo,
       stillPendingTo: stillPending?.newEmail ?? null,
     })

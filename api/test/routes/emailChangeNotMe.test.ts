@@ -188,7 +188,7 @@ describe('pressing the button', () => {
     expect(await sessionCount(jane)).toBe(2)
     const r = await press(token)
     expect(r.status).toBe(200)
-    expect(r.body).toEqual({ ok: true, alerted: true })
+    expect(r.body).toEqual({ ok: true, alerted: true, cancelled: true })
     expect(r.headers.get('Referrer-Policy')).toBe('no-referrer')
     expect(r.headers.get('Set-Cookie')).toBeNull()
     expect(await sessionCount(jane)).toBe(0)
@@ -286,6 +286,25 @@ describe('pressing the button', () => {
     expect(text).not.toContain('still the old address')
   })
 
+  it('says the change took effect and was restored, when an admin put the old address back', async () => {
+    await confirm(confirmToken)
+    const atCommit = notMeTokenSentTo('jane@oldjob.org')
+    await getDb(env.DB).update(users).set({ email: 'jane@oldjob.org' }).where(eq(users.id, jane))
+    sent = []
+    await press(atCommit)
+    const text = alerts()[0].text
+    expect(text).toContain('The change had taken effect, and their sign-in email has since been restored to the old address')
+    expect(text).not.toContain('had not taken effect')
+  })
+
+  it('makes no claim about history when the member is at the old address and the change never committed', async () => {
+    await press(token)
+    const text = alerts()[0].text
+    expect(text).toContain('Their sign-in email is still the old address')
+    expect(text).not.toContain('had not taken effect')
+    expect(text).not.toContain('restored')
+  })
+
   it("names the pending change that was cancelled when it was not the one the notice described", async () => {
     // The member's request to jane@newjob.org was replaced from the same mailbox
     // by one to jane@third.org. Pressing the first notice's link cancels the second.
@@ -305,6 +324,7 @@ describe('pressing the button', () => {
     sent = []
     const r = await press(atCommit)
     expect(r.status).toBe(200)
+    expect(r.body.cancelled).toBe(false)
     expect((await member(jane)).email).toBe('jane@newjob.org')
     expect(alerts()[0].text).toContain('The change had already taken effect')
     expect(alerts()[0].text).not.toContain('was cancelled')

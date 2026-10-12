@@ -147,7 +147,7 @@ export function EmailChangeNotMe() {
   const [token] = useState(() => searchParams.get('token') ?? '')
   const [status, setStatus] = useState<NotMeStatus | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [done, setDone] = useState<{ alerted: boolean } | null>(null)
+  const [done, setDone] = useState<{ alerted: boolean; cancelled: boolean } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -166,7 +166,7 @@ export function EmailChangeNotMe() {
     setSubmitting(true)
     setError(null)
     try {
-      setDone(await apiFetch<{ ok: true; alerted: boolean }>('/auth/email-change/not-me', {
+      setDone(await apiFetch<{ ok: true; alerted: boolean; cancelled: boolean }>('/auth/email-change/not-me', {
         method: 'POST',
         body: JSON.stringify({ token }),
       }))
@@ -186,7 +186,7 @@ export function EmailChangeNotMe() {
             : `We couldn't email your ${PRODUCT_NAME} admins. Please contact one of them directly.`}
         </p>
         <p style={styles.body}>
-          A change you asked for that hadn&apos;t been confirmed was cancelled. A change that already took effect isn&apos;t undone, but an admin can restore your address.
+          {done.cancelled && <>A change you asked for that hadn&apos;t been confirmed was cancelled. </>}A change that already took effect isn&apos;t undone, but an admin can restore your address.
         </p>
         <a href="/login" className="blue-link" style={styles.link}>Sign in</a>
       </Card>
