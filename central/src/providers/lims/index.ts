@@ -33,7 +33,6 @@ export const lims: Provider<'LIMS_API_KEY' | 'LIMS_STATES' | 'LIMS_CATEGORIES'> 
   attribution: {
     name: 'DC Council LIMS',
     url: 'https://lims.dccouncil.gov',
-    note: 'Legislative data comes from the Council of the District of Columbia\'s Legislative Information Management System (LIMS).',
   },
   coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: true, billText: true },
   envKeys: ['LIMS_API_KEY', 'LIMS_STATES', 'LIMS_CATEGORIES'],

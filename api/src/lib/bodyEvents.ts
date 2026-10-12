@@ -112,9 +112,11 @@ export async function readStateAttribution(db: AppDb): Promise<Attribution | nul
 }
 
 /**
- * What an instance accepts as attribution: credits that have an id, a name, a
- * note, and an http(s) link, since the footer renders them as links. Names
- * and notes are cut to a sensible length. A credit whose license is present
+ * What an instance accepts as attribution: credits that have an id, a name,
+ * and an http(s) link, since the footer renders them as links. A note is
+ * optional (an older central sends one for every credit, a newer one only
+ * where a license needs explaining), and kept when present. Names and notes
+ * are cut to a sensible length. A credit whose license is present
  * but has no name or http(s) link is dropped whole, not shown without it: the
  * license link is the credit CC BY asks for. Null when the value isn't a list
  * of providers.
@@ -126,13 +128,14 @@ function cleanAttribution(value: unknown): Attribution | null {
   const providers: ProviderCredit[] = []
   for (const p of raw.providers as Record<string, any>[]) {
     const id = text(p?.id, 64), name = text(p?.name, CREDIT_NAME_MAX), note = text(p?.note, CREDIT_NOTE_MAX), url = httpUrl(p?.url)
-    if (!id || !name || !note || !url) continue
+    if (!id || !name || !url) continue
+    const withNote = note ? { note } : {}
     if (p.license == null) {
-      providers.push({ id, name, url, note })
+      providers.push({ id, name, url, ...withNote })
       continue
     }
     const licenseName = text(p.license.name, CREDIT_NAME_MAX), licenseUrl = httpUrl(p.license.url)
-    if (licenseName && licenseUrl) providers.push({ id, name, url, note, license: { name: licenseName, url: licenseUrl } })
+    if (licenseName && licenseUrl) providers.push({ id, name, url, ...withNote, license: { name: licenseName, url: licenseUrl } })
   }
   return { providers }
 }

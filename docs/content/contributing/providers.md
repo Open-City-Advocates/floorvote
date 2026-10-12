@@ -88,11 +88,11 @@ The template compiles and passes lint behind the import boundary, and it is deli
 
 ### The data credit
 
-Every instance covering one of your states shows your credit in its sidebar footer: "Data:" and your name, linked to your data page. You declare it as `attribution` in `index.ts`:
+Every instance covering one of your states shows your credit in its sidebar footer, on one "Data:" line with the other providers' credits: your name, linked to your data page. You declare it as `attribution` in `index.ts`:
 
 - `name` and `url` credit the publisher.
-- `note` is one plain sentence on where the data comes from and on what terms. It appears on hover and for screen readers.
-- `license` (a name and URL) is optional. Add it only when the publisher's license asks for credit, as LegiScan's CC BY 4.0 does.
+- `license` (a name and URL) is optional. Add it only when the publisher's license asks for credit, as LegiScan's CC BY 4.0 does. It is linked after your name.
+- `note` is optional, and only matters with a `license`: one plain sentence explaining the license, shown on hover over the license link and for screen readers. A credit with no license shows just your name, with no hover, so leave `note` out.
 
 Central sends the credit to each instance along with the states you own for it, so a state claimed for your provider changes the footer by itself. No instance setting and no web code is involved.
 

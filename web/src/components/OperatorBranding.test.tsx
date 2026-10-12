@@ -212,15 +212,44 @@ describe('OperatorBranding data credit by provider', () => {
   it('credits a provider the web app has never heard of from its declaration alone', () => {
     renderWithConfig([md])
     expect(screen.getByRole('link', { name: 'Maryland General Assembly' })).toHaveAttribute('href', 'https://mgaleg.maryland.gov')
-    expect(screen.getByText('From the General Assembly.')).toBeInTheDocument() // the screen-reader copy of the note
     expect(screen.queryByRole('link', { name: 'LegiScan' })).toBeNull()
   })
 
+  it('puts every credit on one "Data:" line, the default provider first, comma-separated', () => {
+    renderWithConfig([legiscan, dc, md])
+    expect(screen.getAllByText(/Data:/)).toHaveLength(1)
+    const line = screen.getByText(/Data:/)
+    expect(line.textContent).toBe('Data: LegiScan (CC BY 4.0)From LegiScan, CC BY., DC Council LIMS, Maryland General Assembly')
+  })
+
+  it('gives an unlicensed credit no hover and no screen-reader note, even if an older central sent one', async () => {
+    renderWithConfig([legiscan, dc])
+    const link = screen.getByRole('link', { name: 'DC Council LIMS' })
+    expect(link).not.toHaveAttribute('aria-describedby')
+    fireEvent.mouseEnter(link)
+    await new Promise(r => setTimeout(r, 400))
+    expect(screen.queryByText('From the Council.')).toBeNull()
+  })
+
+  it('keeps the license hover and its screen-reader note on a licensed credit', async () => {
+    renderWithConfig([legiscan, dc])
+    const license = screen.getByRole('link', { name: 'CC BY 4.0' })
+    expect(document.getElementById(license.getAttribute('aria-describedby')!)).toHaveTextContent('From LegiScan, CC BY.')
+    fireEvent.mouseEnter(license)
+    expect(await screen.findAllByText('From LegiScan, CC BY.')).not.toHaveLength(0)
+  })
+
+  it('renders a licensed credit that has no note, with no hover', () => {
+    const { note: _n, ...noNote } = legiscan
+    renderWithConfig([noNote])
+    expect(screen.getByRole('link', { name: 'CC BY 4.0' })).not.toHaveAttribute('aria-describedby')
+  })
+
   it('makes a provider id safe to use as an element id, so the note still describes the link', () => {
-    renderWithConfig([{ ...dc, id: 'li ms"x' }])
-    const describedBy = screen.getByRole('link', { name: 'DC Council LIMS' }).getAttribute('aria-describedby')
+    renderWithConfig([{ ...legiscan, id: 'li ms"x' }])
+    const describedBy = screen.getByRole('link', { name: 'CC BY 4.0' }).getAttribute('aria-describedby')
     expect(describedBy).toBe('footer-data-note-li-ms-x')
-    expect(document.getElementById(describedBy!)).toHaveTextContent('From the Council.')
+    expect(document.getElementById(describedBy!)).toHaveTextContent('From LegiScan, CC BY.')
   })
 
   it('credits LegiScan when the config carries no attribution, or none that names a provider', () => {
