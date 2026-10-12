@@ -418,7 +418,22 @@ export function lisStatus(rec: LisRecord, sessionCode: string): number {
   return LIS_STATUS.introduced
 }
 
-const REFERRAL = /^Referred to Committee (?:on|for) (.+)$/i
+/**
+ * A history line that sends the bill to a committee: the first referral
+ * ("Referred to Committee on Finance"), a re-referral ("Rereferred to
+ * Appropriations", written after a committee reports a bill on to another),
+ * and the plain "Referred to Rules". The lines that say where a bill came
+ * from too ("Reported from Labor and Commerce and referred to Appropriations",
+ * "Rereferred from X to Y") are each followed by a line of one of these, so
+ * they aren't read as referrals of their own.
+ */
+const REFERRAL = /^(?:Referred to Committee (?:on|for)|Rereferred to|Referred to) (.+)$/i
+
+/**
+ * A history line that takes the bill out of the committee it was in: the
+ * committee reported it, or its work on the bill ended there.
+ */
+const LEAVES_COMMITTEE = /^(?:Reported from|Failed to report|Passed by indefinitely|Stricken|Left in|Continued|Tabled|Incorporated|Discharged)\b/i
 
 /** "H Read third time and passed House (64-Y 34-N 0-A)" → { chamber: 'H', action: "Read third time ..." }. */
 function splitAction(desc: string): { chamber: string; action: string } {
@@ -526,10 +541,57 @@ function referrals(rec: LisRecord): { date: string; chamber: string; name: strin
   return out
 }
 
+/**
+ * The committee a bill waits in, like the pending committee of another
+ * provider: the one its latest referral names, until a later history line
+ * reports the bill out or ends it there (LEAVES_COMMITTEE), and only while the
+ * bill is still alive. A bill that has failed, been continued, or passed both
+ * chambers waits in no committee. One that passed its own chamber and was
+ * referred in the other waits in that chamber's committee.
+ *
+ * History is read in date order, and a referral stays ahead of the line that
+ * reported the bill on to it ("Reported from Finance and rereferred to
+ * Appropriations" comes first, then "Rereferred to Appropriations", both
+ * dated that day), since the file's order within a day is kept.
+ */
+function pendingCommittee(rec: LisRecord, status: number): { chamber: string; name: string } | null {
+  if (status !== LIS_STATUS.inCommittee && status !== LIS_STATUS.passedHouse && status !== LIS_STATUS.passedSenate) return null
+  let pending: { chamber: string; name: string } | null = null
+  const dated = lisHistory(rec).filter(([date]) => date).sort((a, b) => a[0].localeCompare(b[0]))
+  for (const [, desc] of dated) {
+    const { chamber, action } = splitAction(desc)
+    const m = REFERRAL.exec(action)
+    if (m) pending = { chamber, name: m[1].trim() }
+    else if (LEAVES_COMMITTEE.test(action)) pending = null
+  }
+  return pending
+}
+
+/**
+ * The key a roll call has in central's id table. A vote's reference id names
+ * the vote, not the bill: one block vote carries many bills, each with its
+ * own copy of the vote's member rows, so the id is the bill's too. Otherwise
+ * every bill on the vote would write the same central roll call, and the last
+ * would take it from the rest.
+ */
+export function lisRollCallKey(sessionCode: string, billNumber: string, refid: string): string {
+  return `${sessionCode}/${billNumber}/${refid}`
+}
+
+/**
+ * Whether a vote's member rows record anyone's vote. A voice vote has no
+ * tally: the files list every member as X, "not voting", and the history line
+ * says "(Voice Vote)" in place of a count. That is no roll call, and the
+ * history line already says the item was taken.
+ */
+export function lisVoteHasTally(votes: string): boolean {
+  return parseVotes(votes).some(([, v]) => v !== 'X')
+}
+
 export interface LisIds {
   /** Central person id by LIS member id ("H0173"). */
   person(memberId: string): number
-  /** Central roll call id by history reference id. */
+  /** Central roll call id by history reference id, for the bill being built (see lisRollCallKey). */
   rollCall(refid: string): number
   /** Central supplement id by fiscal impact statement URL. */
   doc(url: string): number
@@ -571,6 +633,9 @@ export async function buildLisBill(
     date: r.date, committee_id: ids.committee(lisCommitteeKey(r.chamber, r.name)), chamber: r.chamber, chamber_id: 0, name: r.name,
   }))
 
+  const pending = pendingCommittee(rec, status)
+  const pendingId = pending ? ids.committee(lisCommitteeKey(pending.chamber, pending.name)) : 0
+
   const sponsors: CentralMeasure['sponsors'] = rec.sponsors.map(([memberId, name, type], i) => {
     const order = Number.parseInt(type, 10) || i + 1
     return {
@@ -580,9 +645,12 @@ export async function buildLisBill(
     }
   }).sort((a, b) => a.sponsor_order - b.sponsor_order)
 
+  // A roll call is a counted vote. One with no tally (lisVoteHasTally) is a
+  // voice vote, which the history line already records, so it is left out
+  // rather than shown as a 0-0 vote that failed.
   const votes: CentralMeasure['votes'] = []
   for (const [date, desc, refid] of entries) {
-    const members = refid && rec.votes[refid] ? parseVotes(rec.votes[refid]) : []
+    const members = refid && rec.votes[refid] && lisVoteHasTally(rec.votes[refid]) ? parseVotes(rec.votes[refid]) : []
     if (members.length === 0 || votes.some(v => v.roll_call_id === ids.rollCall(refid))) continue
     const { chamber, action } = splitAction(desc)
     const count = (code: string) => members.filter(([, v]) => v === code).length
@@ -638,10 +706,10 @@ export async function buildLisBill(
     current_body_id: 0,
     url: '',
     state_link: lisBillUrl(sessionCode, number),
-    pending_committee_id: 0,
+    pending_committee_id: pendingId,
     session_id: session.session_id,
     session,
-    committee: null,
+    committee: pending ? { committee_id: pendingId, chamber: pending.chamber, chamber_id: 0, name: pending.name } : null,
     referrals: referralList,
     progress: [],
     sponsors,

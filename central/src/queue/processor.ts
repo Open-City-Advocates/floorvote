@@ -15,6 +15,7 @@ import { clearProviderData } from '../lib/cutover'
 import { calendarCoverage } from '../lib/bodyEvents'
 import type { Env, Db, IngestorMessage, BillMessage, NotificationMessage, CalendarBlock } from '../types'
 import { personRow } from '../lib/people'
+import { deleteOtherRollCalls, knownRollCallIds } from '../lib/billRollCalls'
 import { writeMemberVotes, type RollCallMemberVotes } from '../lib/rollCallVotes'
 import { loadVoteDataset, VOTE_DATASET_DEFER_SECONDS, VOTE_DATASET_RETRY_SECONDS } from '../cron/vote-datasets'
 import { nowDb } from '../lib/dbTime'
@@ -245,7 +246,10 @@ export async function ingestMeasure(
       db.select({ docId: billTexts.docId }).from(billTexts).where(eq(billTexts.billId, bill.bill_id)).all(),
       db.select({ supplementId: billSupplements.supplementId }).from(billSupplements).where(eq(billSupplements.billId, bill.bill_id)).all(),
       db.select({ amendmentId: billAmendments.amendmentId }).from(billAmendments).where(eq(billAmendments.billId, bill.bill_id)).all(),
-      db.select({ rollCallId: rollCalls.rollCallId }).from(rollCalls).where(eq(rollCalls.billId, bill.bill_id)).all(),
+      db.select({
+        rollCallId: rollCalls.rollCallId, date: rollCalls.date, description: rollCalls.description,
+        yea: rollCalls.yea, nay: rollCalls.nay, chamber: rollCalls.chamber,
+      }).from(rollCalls).where(eq(rollCalls.billId, bill.bill_id)).all(),
       db.select({ peopleId: billSponsors.peopleId, name: people.name, party: people.party })
         .from(billSponsors)
         .leftJoin(people, eq(billSponsors.peopleId, people.peopleId))
@@ -271,7 +275,9 @@ export async function ingestMeasure(
       textDocIds: new Set(textRows.map(t => t.docId)),
       supplementIds: new Set(supplementRows.map(s => s.supplementId)),
       amendmentIds: new Set(amendmentRows.map(a => a.amendmentId)),
-      voteIds: new Set(voteRows.map(v => v.rollCallId)),
+      // A snapshot provider's ingest replaces the bill's roll calls (below), so
+      // a vote it only re-keyed isn't new.
+      voteIds: provider.snapshot ? knownRollCallIds(voteRows, bill.votes ?? []) : new Set(voteRows.map(v => v.rollCallId)),
       sponsorKeys,
       sponsorDetailByKey,
     }
@@ -594,6 +600,9 @@ export async function ingestMeasure(
       })
     }
   }
+  // A snapshot provider's measure is the whole bill: roll calls it no longer
+  // names (a re-keyed id, a vote it now leaves out) don't stay beside the new.
+  if (provider.snapshot && bill.votes) await deleteOtherRollCalls(env.DB, bill.bill_id, bill.votes.map(v => v.roll_call_id))
   // One write for every member vote of the bill: a Virginia budget bill has
   // thousands, and one query each would pass D1's per-invocation query limit.
   if (memberVotes.length > 0) await writeMemberVotes(env.DB, memberVotes, { replace: true })

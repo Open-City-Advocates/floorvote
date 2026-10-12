@@ -143,6 +143,136 @@ describe('Virginia from the LIS data files', () => {
   })
 })
 
+describe('Virginia votes and committees', () => {
+  const countOf = (v: any, option: string) => v.counts.find((c: any) => c.option === option)?.value
+  const votesOf = async (number: string) => (await getJson(`/bills/${toHandle(await billId(number))}`)).votes as any[]
+  const replaceOnce = (text: string, from: string, to: string) => {
+    expect(text).toContain(from)
+    return text.replace(from, to)
+  }
+  /** A voice vote on the Senate floor, as the files record one: every member "X", and a history line with no count. */
+  function withVoiceVotes(bills: string[], refid = 'VSV1094') {
+    const files = s2026()
+    const counted = files.votes.split('\n').find(l => l.startsWith('"SV866"'))!
+    files.votes += `${counted.replace(/"[YNA]"/g, '"X"').replace('"SV866"', `"${refid}"`)}\n`
+    files.history += bills.map(b => `"${b}","3/3/2026","S Passed by for the day  Block Vote (Voice Vote)","${refid}"\n`).join('')
+    return files
+  }
+
+  it('gives every bill on a block vote the vote, not only the last bill ingested', async () => {
+    await claim('lis')
+    await syncAndIngest()
+    // HB 1 and HB 61 are both on the Senate's constitutional reading vote (SV866), 40 to 0.
+    const [hb1, hb61] = [await votesOf('HB1'), await votesOf('HB61')]
+    const shared = (votes: any[]) => votes.filter(v => countOf(v, 'yes') === 40 && countOf(v, 'no') === 0)
+    expect(shared(hb1)).toHaveLength(1)
+    expect(shared(hb61)).toHaveLength(1)
+    expect(shared(hb1)[0].legislatorVotes).toHaveLength(40)
+    expect(shared(hb61)[0].legislatorVotes).toHaveLength(40)
+    // Two bills, two roll calls, each with its own id.
+    expect(shared(hb1)[0].id).not.toBe(shared(hb61)[0].id)
+    // Every counted vote in each bill's history is a roll call on it: no bill lost a vote to another.
+    const db = drizzle(env.DB, { schema })
+    for (const [number, votes] of [['HB1', hb1], ['HB61', hb61]] as const) {
+      const rows = await db.select().from(schema.rollCalls).where(eq(schema.rollCalls.billId, await billId(number))).all()
+      expect(rows.map(r => String(r.rollCallId)).sort()).toEqual(votes.map(v => v.id).sort())
+    }
+    // HB 1's history names 7 counted votes, HB 61's 12, and each bill has all of them.
+    expect(hb1).toHaveLength(7)
+    expect(hb61).toHaveLength(12)
+  })
+
+  it('keeps a bill\'s roll call ids the same on every ingest', async () => {
+    await claim('lis')
+    await syncAndIngest()
+    const before = (await votesOf('HB1')).map(v => v.id).sort()
+    await ingest(await billId('HB1'))
+    expect((await votesOf('HB1')).map(v => v.id).sort()).toEqual(before)
+  })
+
+  it('leaves a voice vote out, rather than showing a 0-0 vote that failed', async () => {
+    serve('20261', withVoiceVotes(['HB1', 'HB61']))
+    await claim('lis')
+    await syncAndIngest()
+    for (const number of ['HB1', 'HB61']) {
+      const votes = await votesOf(number)
+      expect(votes.some(v => /Block Vote \(Voice Vote\)/.test(v.motionText)), number).toBe(false)
+      expect(votes.every(v => countOf(v, 'yes') + countOf(v, 'no') > 0 && v.legislatorVotes.length > 0), number).toBe(true)
+      expect(votes.every(v => v.legislatorVotes.every((l: any) => l.vote !== 'Not Voting' || countOf(v, 'yes') > 0)), number).toBe(true)
+      // The history still says it happened.
+      const bill = await getJson(`/bills/${toHandle(await billId(number))}`)
+      expect(bill.actions.map((a: any) => a.description)).toContain('Passed by for the day  Block Vote (Voice Vote)')
+    }
+    const db = drizzle(env.DB, { schema })
+    const memberRows = await db.select().from(schema.rollCallVotes).all()
+    expect(memberRows.some(r => r.voteText === 'Not Voting' && memberRows.filter(m => m.rollCallId === r.rollCallId).every(m => m.voteText === 'Not Voting'))).toBe(false)
+  })
+
+  it('replaces a bill\'s roll calls on its next ingest, so rows the old mapping left don\'t stay beside the new ones', async () => {
+    const files = withVoiceVotes(['HB1'])
+    serve('20261', files)
+    await claim('lis')
+    await syncAndIngest()
+    const hb1 = await billId('HB1')
+    const db = drizzle(env.DB, { schema })
+    const idsOf = async () => (await db.select({ id: schema.rollCalls.rollCallId }).from(schema.rollCalls).where(eq(schema.rollCalls.billId, hb1)).all()).map(r => r.id).sort()
+    const expected = await idsOf()
+
+    // The state a central that ingested HB 1 before the fix holds: the shared vote under an id from the
+    // reference id alone, and the voice vote as a 0-0 roll call with every member "Not Voting".
+    const OLD_SHARED = 3_900_000_001
+    const OLD_VOICE = 3_900_000_002
+    const shared = (await db.select().from(schema.rollCalls).where(eq(schema.rollCalls.billId, hb1)).all()).find(r => r.yea === 40)!
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE roll_call_votes SET id = ? || '-' || people_id, roll_call_id = ? WHERE roll_call_id = ?`).bind(OLD_SHARED, OLD_SHARED, shared.rollCallId),
+      env.DB.prepare(`UPDATE roll_calls SET roll_call_id = ? WHERE roll_call_id = ?`).bind(OLD_SHARED, shared.rollCallId),
+      env.DB.prepare(`INSERT INTO roll_calls (roll_call_id, bill_id, date, description, yea, nay, nv, absent, total, passed, chamber)
+        VALUES (?, ?, '2026-03-03', 'Passed by for the day  Block Vote (Voice Vote)', 0, 0, 40, 0, 40, 0, 'S')`).bind(OLD_VOICE, hb1),
+      env.DB.prepare(`INSERT INTO roll_call_votes (id, roll_call_id, people_id, vote_id, vote_text)
+        SELECT ? || '-' || people_id, ?, people_id, 3, 'Not Voting' FROM roll_call_votes WHERE roll_call_id = ?`).bind(OLD_VOICE, OLD_VOICE, OLD_SHARED),
+      env.DB.prepare(`DELETE FROM bill_change_log WHERE bill_id = ?`).bind(hb1),
+    ])
+    expect(await idsOf()).toContain(OLD_VOICE)
+
+    for (const m of await ingest(hb1)) expect(m.retry).not.toHaveBeenCalled()
+    // The old rows and their member votes are gone, and the bill holds exactly the roll calls the mapping builds now.
+    expect(await idsOf()).toEqual(expected)
+    const left = await env.DB.prepare(`SELECT COUNT(*) AS n FROM roll_call_votes WHERE roll_call_id IN (?, ?)`).bind(OLD_SHARED, OLD_VOICE).first<{ n: number }>()
+    expect(left!.n).toBe(0)
+    const orphans = await env.DB.prepare(`SELECT COUNT(*) AS n FROM roll_call_votes WHERE roll_call_id NOT IN (SELECT roll_call_id FROM roll_calls)`).first<{ n: number }>()
+    expect(orphans!.n).toBe(0)
+    // Instances aren't told of a "new" vote for each old one the ingest only re-keyed.
+    const log = await db.select().from(schema.billChangeLog).where(eq(schema.billChangeLog.billId, hb1)).all()
+    expect(log.filter(c => c.changeType === 'vote_added')).toEqual([])
+  })
+
+  it('sets the committee a bill waits in, and keeps a bill\'s re-referrals', async () => {
+    // HB 1 as it stood on February 23: passed the House, reported from a Senate committee and rereferred to another.
+    const files = s2026()
+    files.history = files.history.split('\n').filter(line => {
+      const m = /^"HB1","(\d+)\/(\d+)\/(\d{4})"/.exec(line)
+      return !m || Number(m[3]) * 10000 + Number(m[1]) * 100 + Number(m[2]) <= 20260223
+    }).join('\n')
+    files.bills = replaceOnce(files.bills, '"N","Y","Y","Y","N","N","Y","N","HB1"', '"N","Y","N","N","N","N","N","N","HB1"')
+    // The chapter number is in the row twice, as the chapter and as the Acts of Assembly text.
+    files.bills = files.bills.split('\n').map(line => (line.startsWith('"HB1",') ? line.replaceAll('"CHAP0350"', '""') : line)).join('\n')
+    serve('20261', files)
+    await claim('lis')
+    await syncAndIngest()
+
+    const bill = await getJson(`/bills/${toHandle(await billId('HB1'))}`)
+    expect(bill.status).toBe('Passed the House')
+    expect(bill.committee).toMatchObject({ name: 'Finance and Appropriations', chamber: 'S' })
+    expect(bill.referrals.map((r: any) => [r.chamber, r.name])).toEqual([
+      ['H', 'Labor and Commerce'], ['H', 'Appropriations'], ['S', 'Commerce and Labor'], ['S', 'Finance and Appropriations'],
+    ])
+    // The pending committee is the committee of the last referral, one committees row.
+    expect(bill.committee.committeeId).toBe(bill.referrals[3].committeeId)
+    // A bill that is done with committees (HB 61 passed both chambers) waits in none.
+    expect((await getJson(`/bills/${toHandle(await billId('HB61'))}`)).committee).toBeNull()
+  })
+})
+
 describe('a carried-over bill', () => {
   it('is a new bill in its new session, linked to the one it continues', async () => {
     serve('20271', s2027())
