@@ -144,6 +144,18 @@ describe('POST /admin/members/:id/change-email for an active member: who may', (
     expect(sent).toHaveLength(0)
   })
 
+  it('refuses a superadmin who is still a pending invite, because they only ever sign in by dashboard login', async () => {
+    // Invited, never used a sign-in link: the pending-invite shortcut must not reach them.
+    const root = await seedUser({ email: 'root@operator.example', role: 'member', invitedBy: owner })
+    await seedSession(root)
+    for (const cookie of [adminCookie, ownerCookie]) {
+      const r = await changeFor(cookie, root, 'someone@elsewhere.org')
+      expect(r).toMatchObject({ status: 403, body: { error: "This account's address is managed centrally, so it can't be changed here." } })
+    }
+    expect((await member(root)).email).toBe('root@operator.example')
+    expect(sent).toHaveLength(0)
+  })
+
   it('refuses a plain member, who is no admin', async () => {
     const r = await changeFor(`session=${await seedSession(jane)}`, jane, NEW)
     expect(r.status).toBe(403)
@@ -178,6 +190,8 @@ describe('the request: same rules as a member asking', () => {
     const toOld = sent.filter(m => m.to.includes('jane@oldjob.org'))
     expect(toOld).toHaveLength(1)
     expect(toOld[0].text).toContain('An admin asked to change the sign-in email')
+    expect(toOld[0].text).toContain("If you asked an admin to make this change, you don't need to do anything.")
+    expect(toOld[0].text).not.toContain('If you asked for this')
     expect(toOld[0].html).toContain('j***@newjob.org')
     expect(toOld[0].html).not.toContain(NEW)
     expect(toOld[0].html).toContain("This wasn't me")
@@ -241,7 +255,8 @@ describe('the request: send limits', () => {
   it("applies the admin's hourly cap across all members", async () => {
     for (let i = 0; i < 50; i++) await seedAuthEvent(owner, 'email_change_requested', { email: `x${i}@x.org`, actorId: admin })
     const r = await changeFor(adminCookie, jane, NEW)
-    expect(r).toMatchObject({ status: 429, body: { error: "You've sent a lot of invites and sign-in links in the past hour. Please wait a little while before sending more." } })
+    // Email-change requests are tallied apart from invites and sign-in links, and say so.
+    expect(r).toMatchObject({ status: 429, body: { error: "You've asked to change a lot of members' email addresses in the past hour. Please wait a little while before asking again." } })
     expect(sent).toHaveLength(0)
     expect(await pending()).toHaveLength(0)
   })
@@ -250,7 +265,7 @@ describe('the request: send limits', () => {
     for (let i = 0; i < 5; i++) await seedAuthEvent(owner, 'email_change_requested', { email: NEW, actorId: owner })
     const r = await changeFor(adminCookie, jane, NEW)
     expect(r.status).toBe(429)
-    expect((r.body.error as string)).toContain('That address was sent several')
+    expect(r.body.error).toBe('That address was sent several email-change confirmations in the past hour. Ask the person to check their spam folder, or try again in a little while.')
     expect(sent).toHaveLength(0)
   })
 
@@ -314,6 +329,7 @@ describe('confirming an admin-initiated change', () => {
     expect(toOld[0].text).toContain('j***@newjob.org')
     expect(toOld[0].text).toContain('signed out everywhere.')
     expect(toOld[0].text).not.toContain('except the device')
+    expect(toOld[0].text).toContain("If you asked an admin to make this change, you don't need to do anything.")
     expect(toOld[0].text).toMatch(NOT_ME_LINK)
   })
 

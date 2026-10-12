@@ -5,7 +5,7 @@ import { generateToken, hashToken } from './crypto'
 import { checkMemberAddresses, normalizeMemberAddress } from './memberAddress'
 import { isPreviouslyBounced } from './bouncedAddresses'
 import { isSuperadminEmailViaCentral } from './superadminCentral'
-import { claimSend, adminSendChecks, type SendLimit } from './adminSendLimits'
+import { claimSend, adminSendChecks, type SendCheck, type SendLimit } from './adminSendLimits'
 import { recordAuthEvent } from './authEvents'
 import { sendBatch, resolveAssocName, type EmailMessage } from './email'
 import { renderEmailChangeConfirmEmail, renderEmailChangeNoticeEmail } from './emailChangeEmail'
@@ -79,6 +79,22 @@ export function emailChangeError(key: keyof typeof EMAIL_CHANGE_ERRORS, byAdmin:
  */
 export function mayChangeEmail(actor: { role: string }, target: { role: string }): boolean {
   return actor.role === 'owner' || (actor.role === 'admin' && target.role === 'member')
+}
+
+/**
+ * An admin's email-change requests also count against the admin send caps
+ * (#418), with the same numbers as invites and sign-in links but tallied apart
+ * from them: claimSend counts rows of its own event, here email_change_requested.
+ * So the refusals say what was limited, not "invites and sign-in links".
+ */
+const ADMIN_EMAIL_CHANGE_LIMIT_MESSAGES = {
+  actor_id: "You've asked to change a lot of members' email addresses in the past hour. Please wait a little while before asking again.",
+  user_id: "A change to this member's email was requested several times in the past hour. Please try again in a little while.",
+  email: 'That address was sent several email-change confirmations in the past hour. Ask the person to check their spam folder, or try again in a little while.',
+} as const
+
+function adminEmailChangeChecks(adminId: string, memberId: string, address: string): SendCheck[] {
+  return adminSendChecks(adminId, memberId, address).map(ch => ({ ...ch, message: ADMIN_EMAIL_CHANGE_LIMIT_MESSAGES[ch.column] }))
 }
 
 export type Refusal = { ok: false; status: 400 | 403 | 404 | 409 | 410 | 429 | 502; error: string }
@@ -155,7 +171,7 @@ async function noticeToOldAddress(
  * commit, so no path in (the member's own, an admin's later) can skip it and a
  * change pending while the address joined central's list cannot commit.
  */
-async function refuseSuperadmin(env: Env, currentEmail: string, byAdmin: boolean): Promise<Refusal | null> {
+export async function refuseSuperadmin(env: Env, currentEmail: string, byAdmin: boolean): Promise<Refusal | null> {
   return (await isSuperadminEmailViaCentral(env, currentEmail))
     ? { ok: false, status: 403, error: emailChangeError('superadmin', byAdmin) }
     : null
@@ -211,7 +227,7 @@ export async function requestEmailChange(
     [
       { column: 'user_id', value: member.id, limit: EMAIL_CHANGE_LIMIT, message: emailChangeError('limit', byAdmin) },
       // An admin's request also counts against the admin send limits (#418).
-      ...(byAdmin ? adminSendChecks(input.requesterId, member.id, newEmail) : []),
+      ...(byAdmin ? adminEmailChangeChecks(input.requesterId, member.id, newEmail) : []),
     ],
   )
   if (!claim.ok) return { ok: false, status: 429, error: claim.message }
@@ -361,6 +377,13 @@ export async function confirmEmailChange(
   const changed = sql`(SELECT email FROM users WHERE id = ${row.userId}) = ${newEmail}`
   const moved = sql`${changed} AND EXISTS (SELECT 1 FROM email_changes WHERE id = ${row.id})`
   const keep = row.requestingSessionId
+  // An admin's change also needs the admin to still hold the standing to ask
+  // for it at the moment of the write, not only when it was checked above: a
+  // role change landing in between must not slip through.
+  const requesterStanding = row.requestedBy === row.userId
+    ? sql`1`
+    : sql`EXISTS (SELECT 1 FROM users r WHERE r.id = ${row.requestedBy} AND r.deactivated_at IS NULL
+        AND (r.role = 'owner' OR (r.role = 'admin' AND (SELECT role FROM users WHERE id = ${row.userId}) = 'member')))`
   let updated: { id: string }[]
   let others: { userId: string; oldEmail: string; newEmail: string }[]
   try {
@@ -369,6 +392,7 @@ export async function confirmEmailChange(
         eq(users.id, row.userId),
         eq(users.email, row.oldEmail),
         isNull(users.deactivatedAt),
+        requesterStanding,
         sql`NOT EXISTS (SELECT 1 FROM users other WHERE lower(other.email) = ${newEmail} AND other.id != ${row.userId})`,
         sql`EXISTS (SELECT 1 FROM email_changes WHERE id = ${row.id} AND datetime(expires_at) > datetime('now'))`,
       )).returning({ id: users.id }),
