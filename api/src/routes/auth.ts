@@ -354,7 +354,7 @@ authRoutes.post('/email-change/not-me', async (c) => {
   if (typeof body.token !== 'string' || !body.token) return c.json({ error: NOT_ME_ERRORS.invalidLink }, 404)
   const result = await reportNotMe(c.env, getDb(c.env.DB), body.token, authReqContext(c))
   if (!result.ok) return c.json({ error: result.error }, result.status)
-  return c.json({ ok: true, alerted: result.alerted })
+  return c.json({ ok: true, alerted: result.alerted, cancelled: result.cancelled })
 })
 
 // GET /auth/me

@@ -110,6 +110,8 @@ export function renderEmailChangeReportedEmail(input: {
   current: 'old' | 'new' | 'other'
   /** Their sign-in email then, named when it is neither the old nor the new address. */
   currentEmail: string
+  /** Whether the change the notice described is known to have taken effect at some point. */
+  changeCommitted: boolean
   /** The address a pending change was cancelled for, if pressing the button cancelled one. */
   cancelledTo: string | null
   /** The address of a pending change still waiting for confirmation, if one was left in place. */
@@ -118,14 +120,13 @@ export function renderEmailChangeReportedEmail(input: {
   const subject = `${input.memberName} says they didn't change their sign-in email`
   const href = `${input.appUrl}/admin/members?search=${encodeURIComponent(input.memberEmail)}`
   const intro = `${input.memberName} pressed "This wasn't me" on a notice about a change to their sign-in email${atInstanceText(input.instanceName)}. Every session they had has been signed out.`
-  const nothingPending = !input.cancelledTo && !input.stillPendingTo
   const status = [
     input.current === 'new'
       ? 'The change had already taken effect. The new address was their sign-in email.'
       : input.current === 'other'
         ? `The change had already taken effect, and their sign-in email has since changed again, to ${input.currentEmail}.`
-        : nothingPending
-          ? 'The change had not taken effect, and nothing was pending. Their sign-in email is still the old address.'
+        : input.changeCommitted
+          ? 'The change had taken effect, and their sign-in email has since been restored to the old address.'
           : 'Their sign-in email is still the old address.',
     input.cancelledTo ? `The pending change to ${input.cancelledTo} was cancelled, so it can no longer be confirmed.` : '',
     input.stillPendingTo ? `A pending change to ${input.stillPendingTo} was not cancelled and is still waiting for confirmation.` : '',

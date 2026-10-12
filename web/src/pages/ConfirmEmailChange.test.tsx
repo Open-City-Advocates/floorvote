@@ -106,7 +106,7 @@ describe('EmailChangeNotMe', () => {
   type NotMeStatus = { status: 'valid' | 'expired' | 'invalid' }
 
   /** Route apiFetch: the status call answers `status`, and the press answers `press`. */
-  function notMeServer(status: NotMeStatus, press: unknown = { ok: true, alerted: true }) {
+  function notMeServer(status: NotMeStatus, press: unknown = { ok: true, alerted: true, cancelled: true }) {
     return vi.spyOn(api, 'apiFetch').mockImplementation(async (path: string) => {
       if (path === '/auth/email-change/not-me/status') return status as never
       if (path === '/auth/email-change/not-me') {
@@ -153,6 +153,14 @@ describe('EmailChangeNotMe', () => {
     expect(screen.getByText(/A change you asked for that hadn't been confirmed was cancelled/)).toBeInTheDocument()
     expect(screen.getByText(/already took effect isn't undone/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Sign in/ })).toHaveAttribute('href', '/login')
+  })
+
+  it('says nothing was cancelled only when the server did not cancel anything', async () => {
+    notMeServer({ status: 'valid' }, { ok: true, alerted: true, cancelled: false })
+    renderNotMe()
+    fireEvent.click(await screen.findByRole('button', { name: BUTTON }))
+    expect(await screen.findByText(/already took effect isn't undone/)).toBeInTheDocument()
+    expect(screen.queryByText(/was cancelled/)).not.toBeInTheDocument()
   })
 
   it('is honest when no alert could be sent', async () => {
