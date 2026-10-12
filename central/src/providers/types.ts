@@ -230,6 +230,19 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
    * SQLite datetime modifier, such as '-2 days'), at most `perPass` per pass.
    */
   readonly detailsRefresh?: { maxAge: string; perPass: number }
+
+  /**
+   * Whether the provider's measure carries the bill's whole set of roll calls,
+   * every time. Core's ingest then replaces the bill's roll calls: a roll call
+   * the bill holds that the measure doesn't name is deleted, with its member
+   * votes, so a provider can change how it derives roll call ids, or stop
+   * emitting a vote, and the old rows go on the bill's next ingest. Leave it
+   * off (the default) unless an empty or short `votes` always means the bill
+   * has none: a feed that can answer without a section (LIMS's details with
+   * no actions) would have its stored votes wiped. Without it the ingest only
+   * upserts roll calls.
+   */
+  readonly replacesRollCalls?: boolean
 }
 
 /** What a provider declares about itself for the State coverage page (`Provider.coverage`). */

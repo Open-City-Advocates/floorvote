@@ -1,13 +1,14 @@
 import type { CentralMeasure } from '../providers'
 
 /**
- * A snapshot provider's measure is the whole bill, so its ingest replaces the
- * bill's roll calls the way it replaces its history and sponsors: a roll call
- * the bill holds that the measure no longer names is deleted, with its member
- * votes. That is what lets a provider change how it derives roll call ids, or
- * stop emitting a vote, without leaving the old rows beside the new ones.
- * LegiScan's getBill is not that: its roll calls are static, and the member
- * votes come from a dataset, so its ingest only upserts.
+ * A provider that sets `replacesRollCalls` says its measure carries all of
+ * the bill's roll calls, so its ingest replaces them the way it replaces the
+ * bill's history and sponsors: a roll call the bill holds that the measure no
+ * longer names is deleted, with its member votes. That is what lets a provider
+ * change how it derives roll call ids, or stop emitting a vote, without
+ * leaving the old rows beside the new ones. It is opt-in: LegiScan's roll
+ * calls are static, with member votes from a dataset, and LIMS's details can
+ * answer with no actions, so those ingests only upsert.
  */
 
 /** A stored roll call's fields the ingest compares. */
@@ -48,12 +49,18 @@ export function knownRollCallIds(stored: StoredRollCall[], incoming: CentralMeas
   return known
 }
 
-/** Delete the bill's roll calls, and their member votes, whose ids aren't `keep`. One batch, so none is left half deleted. */
-export async function deleteOtherRollCalls(d1: D1Database, billId: number, keep: number[]): Promise<void> {
+/**
+ * Delete the bill's roll calls, and their member votes, whose ids aren't
+ * `keep`, while the bill still belongs to `providerId`: a cutover (or its undo)
+ * that gave the bill to another provider mid-ingest leaves its roll calls
+ * alone. One batch, so none is left half deleted.
+ */
+export async function deleteOtherRollCalls(d1: D1Database, billId: number, providerId: string, keep: number[]): Promise<void> {
   const ids = JSON.stringify(keep)
-  const others = `FROM roll_calls WHERE bill_id = ? AND roll_call_id NOT IN (SELECT value FROM json_each(?))`
+  const others = `FROM roll_calls WHERE bill_id = ? AND roll_call_id NOT IN (SELECT value FROM json_each(?))
+    AND EXISTS (SELECT 1 FROM bills WHERE bill_id = ? AND provider = ?)`
   await d1.batch([
-    d1.prepare(`DELETE FROM roll_call_votes WHERE roll_call_id IN (SELECT roll_call_id ${others})`).bind(billId, ids),
-    d1.prepare(`DELETE ${others}`).bind(billId, ids),
+    d1.prepare(`DELETE FROM roll_call_votes WHERE roll_call_id IN (SELECT roll_call_id ${others})`).bind(billId, ids, billId, providerId),
+    d1.prepare(`DELETE ${others}`).bind(billId, ids, billId, providerId),
   ])
 }

@@ -25,6 +25,8 @@ export const lis: Provider = {
   coverage: { maintainers: ['anotherpanacea-eng', 'wtadler'], status: 'experimental', memberVotes: true, billText: false },
   envKeys: [],
   states: [LIS_STATE],
+  // A bill's record carries every vote (VOTE.CSV is read whole or the pass fails).
+  replacesRollCalls: true,
 
   /**
    * The sessions the LIS has published for this year and next: the regular

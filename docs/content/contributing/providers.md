@@ -55,6 +55,12 @@ If the feed publishes a checksum for a document, send it. If it doesn't, send an
 
 Fixing a mapping doesn't reach bills already ingested without hashes, since their change hash doesn't move. Re-ingest them (`POST /api/admin/reingest-tenant/:tenantId?provider=<id>&confirm=true`).
 
+### Roll calls
+
+A roll call's id must be unique to the bill. A vote the feed shares among several bills (a block vote) has one reference id in the feed, so derive the roll call's id from the bill and the reference id together, or each bill overwrites the others' roll call. Leave out a vote that has no tally (a voice vote with no count) rather than sending a 0-0 roll call that reads as failed.
+
+By default core only upserts a bill's roll calls on ingest, so a roll call you stop sending stays. If your measure always carries every roll call the bill has, so that an empty `votes` means it has none, set `replacesRollCalls: true` on your provider: the ingest then deletes the bill's roll calls (and their member votes) that the measure doesn't name. Don't set it for a feed that can answer without a votes section, or a bad answer wipes the stored votes.
+
 ## Pick a sync style
 
 Providers sync one of two ways:

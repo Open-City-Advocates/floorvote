@@ -364,6 +364,18 @@ describe('buildLisBill', () => {
     expect(await pending({ Carried_over: 'Y' }, [...first, ['2026-02-06', 'H Continued to next session in Labor and Commerce (Voice Vote)', '']])).toBeNull()
     // Passed both chambers: done with committees.
     expect(await pending({ Passed_house: 'Y', Passed_senate: 'Y', Passed: 'Y' }, senate)).toBeNull()
+    // Recommitted by a floor motion after it was passed by for the day: it is back in that committee.
+    const recommitted = [
+      ...senate.slice(0, 4),
+      ['2026-03-02', 'S Passed by for the day', ''],
+      ['2026-03-03', 'S Motion to recommit to Education and Health agreed to', ''],
+      ['2026-03-03', 'S Recommitted to Education and Health', ''],
+    ] as [string, string, string][]
+    expect(await pending({ Passed_house: 'Y' }, recommitted)).toMatchObject({ name: 'Education and Health', chamber: 'S' })
+    const back = await buildLisBill(record('HB5', { Passed_house: 'Y' }, recommitted), '20261', 1, 'h', SESSION, ids())
+    expect(back.referrals.at(-1)).toMatchObject({ name: 'Education and Health', chamber: 'S' })
+    // And out again once the committee reports it.
+    expect(await pending({ Passed_house: 'Y' }, [...recommitted, ['2026-03-05', 'S Reported from Education and Health with amendment (14-Y 0-N 1-A)', 'S1V9']])).toBeNull()
     // A bill with no referral has no pending committee.
     expect(await pending({}, [['2026-01-10', 'H Prefiled and ordered printed', '']])).toBeNull()
   })

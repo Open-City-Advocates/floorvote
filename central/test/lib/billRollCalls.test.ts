@@ -43,17 +43,30 @@ describe('deleteOtherRollCalls', () => {
       `INSERT INTO roll_calls (roll_call_id, bill_id, date, yea, nay, nv, absent, total, passed) VALUES (?, ?, '2026-03-03', 1, 0, 0, 0, 1, 1)`).bind(id, bill)
     const member = (rc: number) => env.DB.prepare(
       `INSERT INTO roll_call_votes (id, roll_call_id, people_id, vote_id, vote_text) VALUES (?, ?, 1, 1, 'Yea')`).bind(`${rc}-1`, rc)
-    await env.DB.batch([row(1, 100), row(2, 100), row(3, 100), row(4, 200), member(1), member(2), member(4)])
+    const bill = (id: number, provider: string) => env.DB.prepare(
+      `INSERT INTO bills (bill_id, change_hash, session_id, state, provider, state_id, bill_number, title, status) VALUES (?, 'h', 1, 'VA', ?, 46, 'HB1', 't', 1)`).bind(id, provider)
+    await env.DB.batch([bill(100, 'lis'), bill(200, 'lis'), row(1, 100), row(2, 100), row(3, 100), row(4, 200), member(1), member(2), member(4)])
 
-    await deleteOtherRollCalls(env.DB, 100, [1, 3])
+    await deleteOtherRollCalls(env.DB, 100, 'lis', [1, 3])
     const ids = async () => (await env.DB.prepare('SELECT roll_call_id AS id FROM roll_calls ORDER BY 1').all<{ id: number }>()).results.map(r => r.id)
     const votes = async () => (await env.DB.prepare('SELECT roll_call_id AS id FROM roll_call_votes ORDER BY 1').all<{ id: number }>()).results.map(r => r.id)
     expect(await ids()).toEqual([1, 3, 4])
     expect(await votes()).toEqual([1, 4])
 
     // No roll calls named: the bill has none, and the other bill is untouched.
-    await deleteOtherRollCalls(env.DB, 100, [])
+    await deleteOtherRollCalls(env.DB, 100, 'lis', [])
     expect(await ids()).toEqual([4])
     expect(await votes()).toEqual([4])
+  })
+
+  it('leaves a bill another provider has taken since the ingest began', async () => {
+    const bill = env.DB.prepare(
+      `INSERT INTO bills (bill_id, change_hash, session_id, state, provider, state_id, bill_number, title, status) VALUES (100, 'h', 1, 'VA', 'legiscan', 46, 'HB1', 't', 1)`)
+    const rc = env.DB.prepare(
+      `INSERT INTO roll_calls (roll_call_id, bill_id, date, yea, nay, nv, absent, total, passed) VALUES (1, 100, '2026-03-03', 1, 0, 0, 0, 1, 1)`)
+    await env.DB.batch([bill, rc])
+    // The ingest is the LIS's, and the bill is LegiScan's now.
+    await deleteOtherRollCalls(env.DB, 100, 'lis', [])
+    expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM roll_calls').first<{ n: number }>())!.n).toBe(1)
   })
 })

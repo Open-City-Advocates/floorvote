@@ -275,9 +275,9 @@ export async function ingestMeasure(
       textDocIds: new Set(textRows.map(t => t.docId)),
       supplementIds: new Set(supplementRows.map(s => s.supplementId)),
       amendmentIds: new Set(amendmentRows.map(a => a.amendmentId)),
-      // A snapshot provider's ingest replaces the bill's roll calls (below), so
+      // A provider that replaces the bill's roll calls (below) has re-keyed, so
       // a vote it only re-keyed isn't new.
-      voteIds: provider.snapshot ? knownRollCallIds(voteRows, bill.votes ?? []) : new Set(voteRows.map(v => v.rollCallId)),
+      voteIds: provider.replacesRollCalls ? knownRollCallIds(voteRows, bill.votes ?? []) : new Set(voteRows.map(v => v.rollCallId)),
       sponsorKeys,
       sponsorDetailByKey,
     }
@@ -600,9 +600,10 @@ export async function ingestMeasure(
       })
     }
   }
-  // A snapshot provider's measure is the whole bill: roll calls it no longer
-  // names (a re-keyed id, a vote it now leaves out) don't stay beside the new.
-  if (provider.snapshot && bill.votes) await deleteOtherRollCalls(env.DB, bill.bill_id, bill.votes.map(v => v.roll_call_id))
+  // A provider that says its measure carries every roll call (`replacesRollCalls`):
+  // roll calls it no longer names (a re-keyed id, a vote it now leaves out)
+  // don't stay beside the new.
+  if (provider.replacesRollCalls && bill.votes) await deleteOtherRollCalls(env.DB, bill.bill_id, provider.id, bill.votes.map(v => v.roll_call_id))
   // One write for every member vote of the bill: a Virginia budget bill has
   // thousands, and one query each would pass D1's per-invocation query limit.
   if (memberVotes.length > 0) await writeMemberVotes(env.DB, memberVotes, { replace: true })
