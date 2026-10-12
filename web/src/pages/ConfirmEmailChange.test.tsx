@@ -18,7 +18,7 @@ type Status = { status: 'valid'; email: string } | { status: 'expired' } | { sta
 /** Route apiFetch: the status GET answers `status`; the confirm POST answers `confirm`. */
 function server(status: Status, confirm: unknown = { ok: true, email: 'jane@newjob.org' }) {
   return vi.spyOn(api, 'apiFetch').mockImplementation(async (path: string) => {
-    if (path.startsWith('/auth/email-change/status')) return status as never
+    if (path === '/auth/email-change/status') return status as never
     if (path === '/auth/email-change/confirm') {
       if (confirm instanceof Error) throw confirm
       return confirm as never
@@ -29,8 +29,14 @@ function server(status: Status, confirm: unknown = { ok: true, email: 'jane@newj
 
 const posts = (spy: ReturnType<typeof server>) => spy.mock.calls.filter(c => c[0] === '/auth/email-change/confirm')
 
-const renderPage = (token = 'abc123') =>
-  render(<MemoryRouter initialEntries={[`/auth/confirm-email?token=${token}`]}><ConfirmEmailChange /></MemoryRouter>)
+const statusCalls = (spy: ReturnType<typeof server>) => spy.mock.calls.filter(c => c[0] === '/auth/email-change/status')
+
+const renderPage = (token = 'abc123') => {
+  // The router reads the URL it is given; the real address bar is what a
+  // browser would show, and what ends up in history and logs.
+  window.history.replaceState({}, '', `/auth/confirm-email?token=${token}`)
+  return render(<MemoryRouter initialEntries={[`/auth/confirm-email?token=${token}`]}><ConfirmEmailChange /></MemoryRouter>)
+}
 
 describe('ConfirmEmailChange', () => {
   it('loading the page only reads the status: it shows the new address and a button, and posts nothing', async () => {
@@ -38,8 +44,18 @@ describe('ConfirmEmailChange', () => {
     renderPage()
     expect(await screen.findByRole('button', { name: 'Confirm new email' })).toBeInTheDocument()
     expect(screen.getByText('jane@newjob.org')).toBeInTheDocument()
-    expect(spy).toHaveBeenCalledWith('/auth/email-change/status?token=abc123')
+    expect(statusCalls(spy)).toEqual([['/auth/email-change/status', { method: 'POST', body: JSON.stringify({ token: 'abc123' }) }]])
     expect(posts(spy)).toHaveLength(0)
+  })
+
+  it('takes the token out of the address bar once read, and still confirms with it', async () => {
+    const spy = server({ status: 'valid', email: 'jane@newjob.org' })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm new email' }))
+    await screen.findByRole('heading', { name: 'Email Changed' })
+    expect(window.location.search).toBe('')
+    expect(window.location.href).not.toContain('abc123')
+    expect(posts(spy)).toEqual([['/auth/email-change/confirm', { method: 'POST', body: JSON.stringify({ token: 'abc123' }) }]])
   })
 
   it('pressing the button confirms with the token and says the change is done', async () => {

@@ -10,6 +10,11 @@ import { color, radius, fontSize, fontWeight, shadow } from '../styles/tokens'
 // the page "This wasn't me" in the old-address notices opens (/auth/not-me).
 // Neither needs a session: the new inbox may be read on any device.
 //
+// The token is read from the URL once, kept in memory, and then removed from
+// the address bar, so it does not linger in history or a copied address. The
+// status call carries it in a POST body for the same reason: a GET query lands
+// in access logs.
+//
 // Loading the confirmation page only reads the link's status. Mail scanners
 // prefetch links, so the change happens only when someone presses the button.
 // Confirming never signs anyone in.
@@ -40,7 +45,8 @@ export function ConfirmEmailChange() {
   usePageTitle('Confirm New Email')
   useNoReferrer()
   const [searchParams] = useSearchParams()
-  const token = searchParams.get('token') ?? ''
+  // Held in state: the address bar loses it below, but the confirm still needs it.
+  const [token] = useState(() => searchParams.get('token') ?? '')
   const [status, setStatus] = useState<Status | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [done, setDone] = useState<string | null>(null)
@@ -48,8 +54,9 @@ export function ConfirmEmailChange() {
 
   useEffect(() => {
     if (!token) { setStatus({ status: 'invalid' }); return }
+    window.history.replaceState(window.history.state, '', window.location.pathname + window.location.hash)
     let cancelled = false
-    apiFetch<Status>(`/auth/email-change/status?token=${encodeURIComponent(token)}`)
+    apiFetch<Status>('/auth/email-change/status', { method: 'POST', body: JSON.stringify({ token }) })
       .then((s) => { if (!cancelled) setStatus(s) })
       // Can't tell: offer the button, and let the confirm say what's wrong.
       .catch(() => { if (!cancelled) setStatus(null) })
