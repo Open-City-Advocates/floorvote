@@ -20,7 +20,7 @@ import { getHearingsCalendar, hearingCommittee, hearingKind, limsBodyEvents, map
 import { lims } from '../../../src/providers/lims'
 
 // The DC Council's hearings calendar (#297), recorded from the live feed by
-// @anotherpanacea for #217: one list of events per month.
+// @anotherpanacea-eng for #217: one list of events per month.
 const months = JSON.parse(calendarRaw) as Record<string, LimsHearing[]>
 const events = Object.values(months).flat()
 const byId = (id: number) => events.find(e => e.hearingId === id)!

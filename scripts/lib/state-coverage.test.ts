@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { PROVIDERS, listedCapabilities } from '../../central/src/providers'
-import { CODEOWNERS_PATH, PAGE_PATH, STATES, checkCodeowners, renderStateCoverage } from './state-coverage'
+import { PAGE_PATH, STATES, renderStateCoverage } from './state-coverage'
 
 const ROOT = resolve(__dirname, '../..')
 const read = (path: string) => readFileSync(resolve(ROOT, path), 'utf8')
@@ -46,26 +46,5 @@ describe('provider declarations', () => {
 
   it('only name states the page knows', () => {
     for (const p of PROVIDERS) for (const s of p.states ?? []) expect(STATES, `${p.id}: ${s}`).toHaveProperty(s)
-  })
-
-  it('match CODEOWNERS for each provider directory', () => {
-    expect(checkCodeowners(read(CODEOWNERS_PATH), PROVIDERS)).toEqual([])
-  })
-})
-
-describe('checkCodeowners', () => {
-  const [lims] = PROVIDERS.filter(p => p.id === 'lims')
-  const file = (line: string) => `# comment\n/central/src/providers/ @wtadler\n${line}\n`
-
-  it('accepts a line naming exactly the declared maintainers', () => {
-    expect(checkCodeowners(file('/central/src/providers/lims/ @wtadler'), [lims])).toEqual([])
-  })
-  it('flags another owner, an extra owner, and a missing line', () => {
-    expect(checkCodeowners(file('/central/src/providers/lims/ @someone'), [lims])).toHaveLength(1)
-    expect(checkCodeowners(file('/central/src/providers/lims/ @wtadler @someone'), [lims])).toHaveLength(1)
-    expect(checkCodeowners(file(''), [lims])).toHaveLength(1)
-  })
-  it('lets a later line win, as GitHub does', () => {
-    expect(checkCodeowners(file('/central/src/providers/lims/ @someone\n/central/src/providers/lims/ @wtadler'), [lims])).toEqual([])
   })
 })

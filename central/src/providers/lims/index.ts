@@ -34,7 +34,7 @@ export const lims: Provider<'LIMS_API_KEY' | 'LIMS_STATES' | 'LIMS_CATEGORIES'> 
     name: 'DC Council LIMS',
     url: 'https://lims.dccouncil.gov',
   },
-  coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: true, billText: true },
+  coverage: { maintainers: ['anotherpanacea-eng', 'wtadler'], status: 'experimental', memberVotes: true, billText: true },
   envKeys: ['LIMS_API_KEY', 'LIMS_STATES', 'LIMS_CATEGORIES'],
   states: [LIMS_STATE],
   configured: env => !!env.LIMS_API_KEY,

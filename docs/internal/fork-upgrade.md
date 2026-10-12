@@ -1,6 +1,6 @@
 # Moving a Fork onto Upstream
 
-This guide is for a downstream fork that runs DC from the Council's LIMS in production and wants to run upstream FloorVote instead. It was written for, and rehearsed on, the Open-City-Advocates fork (`oca-production` at `dfb763d`, October 2, 2026). That fork's DC work is @anotherpanacea's (#206, #214, #216, #217, #218, and #254–#259), and upstream's provider model (#283) is built from it, so most of the fork's DC code now has an upstream home. Another fork that runs its own features on top of upstream can use the same steps.
+This guide is for a downstream fork that runs DC from the Council's LIMS in production and wants to run upstream FloorVote instead. It was written for, and rehearsed on, the Open-City-Advocates fork (`oca-production` at `dfb763d`, October 2, 2026). That fork's DC work is @anotherpanacea-eng's (#206, #214, #216, #217, #218, and #254–#259), and upstream's provider model (#283) is built from it, so most of the fork's DC code now has an upstream home. Another fork that runs its own features on top of upstream can use the same steps.
 
 Upgrade to an upstream release that includes the provider model: `main` once #358 merges (closing #303), `provider-model` until then. The commands below call it `<ref>`.
 

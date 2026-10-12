@@ -18,7 +18,7 @@ import { clean, committeeKey, referralParts } from './map'
  * recorded in test/fixtures/lims/hearings-calendar.json. hearingsInventory
  * (inventory.ts) says what the mapping does with each field.
  *
- * Adapted from #217 by @anotherpanacea.
+ * Adapted from #217 by @anotherpanacea-eng.
  */
 const HEARINGS_URL = 'https://lims.dccouncil.gov/Hearings/API/Public/GetHearingsCalendar'
 
