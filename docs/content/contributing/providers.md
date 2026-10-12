@@ -53,7 +53,7 @@ Each text a provider lists needs a non-empty `text_hash`. An instance runs AI on
 
 If the feed publishes a checksum for a document, send it. If it doesn't, send any stable token that names the document, such as a hash of its `doc_id`, the way LIMS and Maryland do. It then changes only when a different text becomes the bill's newest, and the model reads that text once. A provider that implements `fetchDocument` sends the MD5 of the document's bytes, which core checks the provider's copy against.
 
-Central re-ingests a tracked bill whose stored texts have no hash on each pass, at most 100 a pass, so an empty hash costs a re-ingest on every pass as well.
+Fixing a mapping doesn't reach bills already ingested without hashes, since their change hash doesn't move. Re-ingest them (`POST /api/admin/reingest-tenant/:tenantId?provider=<id>&confirm=true`).
 
 ## Pick a sync style
 
