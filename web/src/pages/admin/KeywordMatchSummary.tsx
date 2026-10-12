@@ -7,7 +7,7 @@ type Summary = { total: number; matched: number; newlyMatched: number; unmatched
 
 // How long typing must pause before the count is refreshed. Counting reads
 // every bill the instance tracks, so it should not run on each keystroke.
-const DEBOUNCE_MS = 400
+const DEBOUNCE_MS = 500
 
 /** The keywords a textarea holds: one per line, trimmed, blank lines dropped. */
 function keywordList(text: string): string[] {
@@ -22,6 +22,19 @@ function sameKeywords(a: string, b: string): boolean {
 function isSummary(value: unknown): value is Summary {
   const s = value as Summary | null
   return !!s && [s.total, s.matched, s.newlyMatched, s.unmatched].every(n => typeof n === 'number')
+}
+
+/**
+ * A whole-number percentage that never rounds into a claim it is not: a share
+ * above zero reads "<1%" rather than "0%", and one below all reads ">99%".
+ */
+function percentOf(matched: number, total: number): string {
+  if (total === 0 || matched === 0) return '0%'
+  if (matched === total) return '100%'
+  const rounded = Math.round((matched / total) * 100)
+  if (rounded === 0) return '<1%'
+  if (rounded === 100) return '>99%'
+  return `${rounded}%`
 }
 
 const count = (n: number) => n.toLocaleString('en-US')
@@ -63,7 +76,6 @@ export function KeywordMatchSummary({ keywords, savedKeywords }: { keywords: str
   if (!summary) return null
 
   const { total, matched, newlyMatched, unmatched } = summary
-  const percent = total === 0 ? 0 : Math.round((matched / total) * 100)
   const changes = [
     newlyMatched > 0 ? <>newly match <strong>{bills(newlyMatched)}</strong></> : null,
     unmatched > 0 ? <>unmatch <strong>{bills(unmatched)}</strong></> : null,
@@ -72,7 +84,7 @@ export function KeywordMatchSummary({ keywords, savedKeywords }: { keywords: str
   return (
     <div role="status" style={{ ...HELPER_TEXT, color: color.textSlate, marginTop: 8 }}>
       <p style={{ margin: 0 }}>
-        This keyword set matches <strong>{count(matched)} of {bills(total)} ({percent}%)</strong>.
+        This keyword set matches <strong>{count(matched)} of {bills(total)} ({percentOf(matched, total)})</strong>.
       </p>
       {!sameKeywords(keywords, savedKeywords) && (
         <p style={{ margin: '4px 0 0' }}>

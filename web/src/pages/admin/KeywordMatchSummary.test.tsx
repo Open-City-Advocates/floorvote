@@ -56,6 +56,32 @@ describe('KeywordMatchSummary', () => {
       expect(screen.getByText('2,405 of 6,500 bills (37%)')).toBeTruthy()
     })
 
+    it('reads "<1%" rather than "0%" for a small share above zero', async () => {
+      respondWith({ total: 6500, matched: 22, newlyMatched: 0, unmatched: 0 })
+      render(<KeywordMatchSummary keywords="election" savedKeywords="election" />)
+      await settle()
+      expect(screen.getByText('22 of 6,500 bills (<1%)')).toBeTruthy()
+    })
+
+    it('reads ">99%" rather than "100%" when some bills do not match', async () => {
+      respondWith({ total: 6500, matched: 6490, newlyMatched: 0, unmatched: 0 })
+      render(<KeywordMatchSummary keywords="*corporat*" savedKeywords="*corporat*" />)
+      await settle()
+      expect(screen.getByText('6,490 of 6,500 bills (>99%)')).toBeTruthy()
+    })
+
+    it('reads "0%" for no matches and "100%" for every bill', async () => {
+      respondWith({ total: 6500, matched: 0, newlyMatched: 0, unmatched: 0 })
+      const { rerender } = render(<KeywordMatchSummary keywords="zzz" savedKeywords="zzz" />)
+      await settle()
+      expect(screen.getByText('0 of 6,500 bills (0%)')).toBeTruthy()
+
+      respondWith({ total: 6500, matched: 6500, newlyMatched: 0, unmatched: 0 })
+      rerender(<KeywordMatchSummary keywords="*" savedKeywords="*" />)
+      await settle()
+      expect(screen.getByText('6,500 of 6,500 bills (100%)')).toBeTruthy()
+    })
+
     it('uses the singular when the instance has one bill', async () => {
       respondWith({ total: 1, matched: 1, newlyMatched: 0, unmatched: 0 })
       render(<KeywordMatchSummary keywords="election" savedKeywords="election" />)
@@ -176,10 +202,10 @@ describe('KeywordMatchSummary', () => {
       rerender(<KeywordMatchSummary keywords="ele" savedKeywords="e" />)
       await settle(100)
       rerender(<KeywordMatchSummary keywords="elec" savedKeywords="e" />)
-      await settle(300)
+      await settle(400)
       expect(mockFetch).toHaveBeenCalledTimes(1)
 
-      await settle(300)
+      await settle(100)
       expect(mockFetch).toHaveBeenCalledTimes(2)
       expect(bodyOf(1)).toEqual({ keywords: ['elec'] })
     })
