@@ -47,6 +47,14 @@ Adding a provider to the registry doesn't change any deployment. A state syncs f
 
 Each provider writes its own status codes, in a block no other provider uses: LegiScan 0 through 12, LIMS the 100s, Maryland's MGA the 200s, Virginia's LIS the 300s. Take the next free hundred.
 
+### Every text carries a hash
+
+Each text a provider lists needs a non-empty `text_hash`. An instance runs AI on a bill only when the bill arrives with one, and uses it to skip a text the model already read. A provider that sends none gets no summaries, tags, or relevance scores on any of its bills, and nothing says why.
+
+If the feed publishes a checksum for a document, send it. If it doesn't, send any stable token that names the document, such as a hash of its `doc_id`, the way LIMS and Maryland do. It then changes only when a different text becomes the bill's newest, and the model reads that text once. A provider that implements `fetchDocument` sends the MD5 of the document's bytes, which core checks the provider's copy against.
+
+Fixing a mapping doesn't reach bills already ingested without hashes, since their change hash doesn't move. Re-ingest them (`POST /api/admin/reingest-tenant/:tenantId?provider=<id>&confirm=true`).
+
 ## Pick a sync style
 
 Providers sync one of two ways:

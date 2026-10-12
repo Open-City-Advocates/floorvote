@@ -98,6 +98,9 @@ describe('Maryland from the General Assembly', () => {
       stateLink: 'https://mgaleg.maryland.gov/2026RS/fnotes/bil_0001/hb0001.pdf',
     })])
     expect(bill.texts.map((t: any) => t.note)).toEqual(['First Reader', 'Third Reader'])
+    // Instances run AI only for a bill that arrives with a text hash.
+    expect(bill.textHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(bill.textR2Key).toBeTruthy()
 
     // Subjects, without the printed index's cross-references.
     expect(bill.subjects).toEqual(expect.arrayContaining(['Utility Regulation', 'Contracts', 'Public Service Commission']))

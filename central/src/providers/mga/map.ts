@@ -191,6 +191,18 @@ export async function mgaRecordHash(r: MgaRecord): Promise<string> {
   return sha256Hex(JSON.stringify(rest))
 }
 
+/**
+ * A text's `text_hash`. The MGA publishes no hash or size for its PDFs, so
+ * this names the document by its id, as LIMS does: stable, and different for
+ * each reading, so a bill's newest text changes the hash and a bill with
+ * nothing new keeps it. It must not be empty. Instances run AI only for a
+ * bill whose texts carry a hash, which they also compare to skip a text the
+ * model already read.
+ */
+export function mgaTextHash(docId: number): Promise<string> {
+  return sha256Hex(`mga-doc:${docId}`)
+}
+
 export function toMgaMasterListEntry(
   r: MgaRecord, sessionCode: string, billId: number, hash: string, storedDescription: string | null,
 ): SyncEntry {
@@ -397,15 +409,16 @@ export async function buildMgaBill(
     T: r.ThirdReadingDateHouseOfOrigin ?? r.SecondReadingDateHouseOfOrigin ?? r.FirstReadingDateHouseOfOrigin ?? yearStart,
     E: r.ThirdReadingDateOppositeHouse ?? r.ThirdReadingDateHouseOfOrigin ?? yearStart,
   }
-  const texts: CentralMeasure['texts'] = mgaTextVersions(r).map(letter => {
+  const texts: CentralMeasure['texts'] = await Promise.all(mgaTextVersions(r).map(async letter => {
     const v = VERSIONS.find(x => x.letter === letter)!
+    const docId = ids.doc(`${sessionCode}/${r.BillNumber}${letter}`)
     return {
-      doc_id: ids.doc(`${sessionCode}/${r.BillNumber}${letter}`), date: versionDate[letter], type: v.type, type_id: v.typeId,
+      doc_id: docId, date: versionDate[letter], type: v.type, type_id: v.typeId,
       mime: 'application/pdf', mime_id: 2, url: '', state_link: paths.text(letter),
-      text_size: 0, text_hash: '',
+      text_size: 0, text_hash: await mgaTextHash(docId),
       alt_bill_text: 0, alt_mime: '', alt_mime_id: 0, alt_state_link: '', alt_text_size: 0, alt_text_hash: '',
     }
-  })
+  }))
 
   const supplements: CentralMeasure['supplements'] = hasFiscalNote(r) && r.FirstReadingDateHouseOfOrigin ? [{
     supplement_id: ids.doc(`${sessionCode}/${r.BillNumber}/fiscal-note`), date: r.FirstReadingDateHouseOfOrigin,

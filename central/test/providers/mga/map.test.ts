@@ -168,6 +168,10 @@ describe('buildMgaBill', () => {
       ['Third Reader', 'https://mgaleg.maryland.gov/2026RS/bills/hb/hb0001T.pdf'],
     ])
     expect(new Set(b.texts.map(t => t.doc_id)).size).toBe(2)
+    // Every text carries a hash, which instances need before they run AI, and a different one for each reading.
+    expect(b.texts.every(t => /^[0-9a-f]{64}$/.test(t.text_hash))).toBe(true)
+    expect(new Set(b.texts.map(t => t.text_hash)).size).toBe(2)
+    expect(b.texts.map(t => t.text_hash)).toEqual((await buildMgaBill(rec('HB0001'), '2026RS', 3000000101, 'other', SESSION, ids)).texts.map(t => t.text_hash))
     // The declared capabilities (the State coverage page) match what the mapping produces.
     expect(getProvider('mga').coverage).toMatchObject({
       memberVotes: b.votes.some(v => v.member_votes?.length), billText: b.texts.length > 0,

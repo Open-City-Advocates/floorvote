@@ -523,7 +523,11 @@ export async function processCentralNotification(
   // never re-run AI on text changes, freezing its summary at promote-time.
   let shouldRunAi = msg.forceAI || derivedMatchType !== null
   if (shouldRunAi && !hasFullText) {
-    console.warn(`[processor] skipping AI for ${msg.billId}: no full text available in central; leaving as stub`)
+    const textCount = centralBill.texts?.length ?? 0
+    const why = textCount === 0
+      ? 'central lists no texts'
+      : 'central lists texts but sent no text hash (the provider may be emitting an empty text_hash)'
+    console.warn(`[processor] skipping AI for ${msg.billId}: ${why} (texts=${textCount}, textHash=${centralBill.textHash ? 'present' : 'missing'}); leaving as stub`)
     shouldRunAi = false
   }
   // Demo tenants never call the model. This is the chokepoint: every route that
