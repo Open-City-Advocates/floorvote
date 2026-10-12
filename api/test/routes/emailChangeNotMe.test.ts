@@ -207,18 +207,38 @@ describe('pressing the button', () => {
       expect(body).toContain('jane@newjob.org')
       expect(mail.text).toContain('Requested by: the member')
       expect(mail.text).toMatch(/Requested: \w+ \d{1,2}, \d{4} at \d{1,2}:\d{2} [ap]\.m\. UTC/)
-      expect(mail.text).toContain('The change had not taken effect')
+      expect(mail.text).toContain('The pending change was cancelled')
     }
     // Nobody else hears of it: not the standard member, and no mail to the member.
     expect(sent.filter(m => m.to.includes('bob@org.org') || m.to.includes('jane@oldjob.org') || m.to.includes('jane@newjob.org'))).toHaveLength(0)
   })
 
-  it("leaves the member's email unchanged, and any pending change as it was", async () => {
+  it("cancels the member's pending change, so the confirmation link can no longer commit it", async () => {
     await press(token)
+    expect(await getDb(env.DB).select().from(emailChanges).all()).toHaveLength(0)
+    const r = await confirm(confirmToken)
+    expect(r.status).toBe(404)
     expect((await member(jane)).email).toBe('jane@oldjob.org')
-    const pending = await getDb(env.DB).select().from(emailChanges).all()
-    expect(pending).toHaveLength(1)
-    expect(pending[0].newEmail).toBe('jane@newjob.org')
+    const [ev] = (await eventsFor(jane)).filter(e => e.event === 'email_change_cancelled')
+    expect(ev).toMatchObject({ email: 'jane@newjob.org', reason: 'jane@oldjob.org', actorId: null })
+  })
+
+  it('leaves another member\'s pending change alone', async () => {
+    const bobToken = await issueNotMeToken(getDb(env.DB), {
+      id: crypto.randomUUID(), userId: bob, oldEmail: 'bob@org.org', newEmail: 'bob@elsewhere.org', requestedBy: bob,
+    })
+    await getDb(env.DB).insert(emailChanges).values({
+      id: crypto.randomUUID(), userId: bob, oldEmail: 'bob@org.org', newEmail: 'bob@elsewhere.org', requestedBy: bob,
+      tokenHash: 'bobhash', expiresAt: '2999-01-01 00:00:00',
+    })
+    await press(bobToken)
+    const left = await getDb(env.DB).select().from(emailChanges).all()
+    expect(left.map(r => r.userId)).toEqual([jane])
+  })
+
+  it('tells the admins the pending change was cancelled', async () => {
+    await press(token)
+    expect(alerts()[0].text).toContain('The pending change was cancelled')
   })
 
   it('does not reverse a change that has taken effect, and says so to the admins', async () => {
@@ -229,7 +249,10 @@ describe('pressing the button', () => {
     const r = await press(atCommit)
     expect(r.status).toBe(200)
     expect((await member(jane)).email).toBe('jane@newjob.org')
-    expect(alerts()[0].text).toContain('The change had taken effect')
+    expect(alerts()[0].text).toContain('The change had already taken effect')
+    expect(alerts()[0].text).not.toContain('pending change was cancelled')
+    expect(await getDb(env.DB).select().from(emailChanges).all()).toHaveLength(0)
+    expect((await eventsFor(jane)).filter(e => e.event === 'email_change_cancelled')).toHaveLength(0)
     expect(alerts()[0].text).toContain('Old address: jane@oldjob.org')
     expect(alerts()[0].text).toContain('New address: jane@newjob.org')
   })

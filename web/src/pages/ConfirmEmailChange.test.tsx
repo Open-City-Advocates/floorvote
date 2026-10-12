@@ -130,6 +130,7 @@ describe('EmailChangeNotMe', () => {
     renderNotMe()
     expect(await screen.findByRole('button', { name: BUTTON })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: "Didn't Ask for This Change?" })).toBeInTheDocument()
+    expect(screen.getByText(/cancels a change that hasn't been confirmed yet, but it doesn't undo one that has/)).toBeInTheDocument()
     expect(notMeStatusCalls(spy)).toEqual([['/auth/email-change/not-me/status', { method: 'POST', body: JSON.stringify({ token: 'tok456' }) }]])
     expect(presses(spy)).toHaveLength(0)
   })
@@ -149,7 +150,8 @@ describe('EmailChangeNotMe', () => {
     renderNotMe()
     fireEvent.click(await screen.findByRole('button', { name: BUTTON }))
     expect(await screen.findByText(/We emailed your FloorVote admins/)).toBeInTheDocument()
-    expect(screen.getByText(/doesn't undo the change/)).toBeInTheDocument()
+    expect(screen.getByText(/Any change that hadn't been confirmed was cancelled/)).toBeInTheDocument()
+    expect(screen.getByText(/already took effect isn't undone/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Sign in/ })).toHaveAttribute('href', '/login')
   })
 

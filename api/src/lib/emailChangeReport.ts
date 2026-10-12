@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm'
 import type { AppDb, Env } from '../types'
-import { users, sessions, emailChangeReports } from '../db/schema'
+import { users, sessions, emailChanges, emailChangeReports } from '../db/schema'
 import { generateToken, hashToken } from './crypto'
 import { recordAuthEvent } from './authEvents'
 import { sendBatch, resolveAssocName, type EmailMessage } from './email'
@@ -16,8 +16,10 @@ import { renderEmailChangeReportedEmail } from './emailChangeEmail'
 // reportNotMe, which ends every one of the member's sessions and emails the
 // instance's owners and admins, then records the event.
 //
-// It never reverses the change: the old mailbox may now belong to someone
-// else, and an admin can restore the address. It never signs anyone in either.
+// It cancels the member's pending change, if there is one, so nobody can still
+// confirm it from the new inbox. It never reverses a change that has already
+// taken effect: the old mailbox may now belong to someone else, and an admin
+// can restore the address. It never signs anyone in either.
 // A token works once, and so does its sibling's, because spending one deletes
 // every token of the same change. The report would otherwise alert the admins
 // twice.
@@ -99,8 +101,8 @@ function whenText(dbTs: string): string {
 }
 
 /**
- * Press "This wasn't me". Ends every session the member has, records the
- * event, and emails the instance's active owners and admins who changed what
+ * Press "This wasn't me". Ends every session the member has, cancels their
+ * pending change, records the event, and emails the instance's active owners and admins who changed what
  * and when. Spends the token, so a second press does nothing. `alerted` says
  * whether at least one alert went out, so the page can be honest if none did.
  */
@@ -115,15 +117,15 @@ export async function reportNotMe(
   if (!found.live) return { ok: false, status: 410, error: NOT_ME_ERRORS.expiredLink }
   const { row } = found
 
-  // One batch. The sessions go only while this token is still in date, and
-  // spending it deletes every token of the same change. A press that loses a
-  // race finds its token already gone: it ends nothing, and its own row is
-  // missing from `spent`, so it alerts nobody.
-  const [, spent] = await db.batch([
-    db.delete(sessions).where(and(
-      eq(sessions.userId, row.userId),
-      sql`EXISTS (SELECT 1 FROM email_change_reports WHERE id = ${row.id} AND datetime(expires_at) > datetime('now'))`,
-    )),
+  // One batch. The sessions and the pending change go only while this token
+  // is still in date, and spending it deletes every token of the same change.
+  // A press that loses a race finds its token already gone: it ends nothing,
+  // and its own row is missing from `spent`, so it alerts nobody.
+  const live = sql`EXISTS (SELECT 1 FROM email_change_reports WHERE id = ${row.id} AND datetime(expires_at) > datetime('now'))`
+  const [, cancelled, spent] = await db.batch([
+    db.delete(sessions).where(and(eq(sessions.userId, row.userId), live)),
+    db.delete(emailChanges).where(and(eq(emailChanges.userId, row.userId), live))
+      .returning({ userId: emailChanges.userId, oldEmail: emailChanges.oldEmail, newEmail: emailChanges.newEmail }),
     db.delete(emailChangeReports)
       .where(and(eq(emailChangeReports.changeId, row.changeId), eq(emailChangeReports.userId, row.userId)))
       .returning({ id: emailChangeReports.id }),
@@ -133,8 +135,13 @@ export async function reportNotMe(
   await recordAuthEvent(db, {
     event: 'email_change_reported', userId: row.userId, email: row.newEmail, reason: row.oldEmail, ...ctx,
   })
+  for (const c of cancelled) {
+    await recordAuthEvent(db, {
+      event: 'email_change_cancelled', userId: c.userId, email: c.newEmail, reason: c.oldEmail, ...ctx,
+    })
+  }
 
-  return { ok: true, alerted: await alertAdmins(env, db, row) }
+  return { ok: true, alerted: await alertAdmins(env, db, row, cancelled.length > 0) }
 }
 
 /**
@@ -142,7 +149,7 @@ export async function reportNotMe(
  * member who reported: their own address may be the one in doubt, and they
  * know. Runs after the sessions are gone, so a failure is logged, never raised.
  */
-async function alertAdmins(env: Env, db: AppDb, row: ReportRow): Promise<boolean> {
+async function alertAdmins(env: Env, db: AppDb, row: ReportRow, cancelledPending: boolean): Promise<boolean> {
   try {
     const member = await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, row.userId)).get()
     if (!member) return false
@@ -172,6 +179,7 @@ async function alertAdmins(env: Env, db: AppDb, row: ReportRow): Promise<boolean
       requestedBy,
       requestedAt: whenText(row.requestedAt),
       tookEffect: normalizeMemberAddress(member.email) === normalizeMemberAddress(row.newEmail),
+      cancelledPending,
     })
     const messages: EmailMessage[] = recipients.map(r => ({ to: [r.email], subject, html, text }))
     const { sent } = await sendBatch(env, messages, 'email-change-reported', db)

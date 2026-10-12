@@ -108,13 +108,17 @@ export function renderEmailChangeReportedEmail(input: {
   requestedAt: string
   /** Whether the new address had become the member's sign-in email by the time of the report. */
   tookEffect: boolean
+  /** Whether pressing the button cancelled a pending change. */
+  cancelledPending: boolean
 }): Rendered {
   const subject = `${input.memberName} says they didn't change their sign-in email`
   const href = `${input.appUrl}/admin/members?search=${encodeURIComponent(input.memberEmail)}`
   const intro = `${input.memberName} pressed "This wasn't me" on a notice about a change to their sign-in email${atInstanceText(input.instanceName)}. Every session they had has been signed out.`
   const status = input.tookEffect
-    ? 'The change had taken effect. The new address was their sign-in email.'
-    : 'The change had not taken effect. Their sign-in email was still the old address.'
+    ? `The change had already taken effect. The new address was their sign-in email.${input.cancelledPending ? ' A pending change was also cancelled.' : ''}`
+    : input.cancelledPending
+      ? 'The pending change was cancelled, so it can no longer be confirmed. Their sign-in email is still the old address.'
+      : 'The change had not taken effect, and nothing was pending. Their sign-in email is still the old address.'
   const rows: [string, string][] = [
     ['Member', input.memberName],
     ['Old address', input.oldEmail],
@@ -122,7 +126,7 @@ export function renderEmailChangeReportedEmail(input: {
     ['Requested by', input.requestedBy],
     ['Requested', input.requestedAt],
   ]
-  const advice = "FloorVote did not reverse the change, because the old mailbox may now belong to someone else. Reach the member another way, such as by phone, before you act. An admin can change their email back from Members."
+  const advice = "FloorVote does not reverse a change that has taken effect, because the old mailbox may now belong to someone else. Reach the member another way, such as by phone, before you act. An admin can change their email back from Members."
   const footer = 'Sent to every active owner and admin as an account security alert.'
 
   const table = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${color.white};border:1px solid ${color.borderDefault};border-radius:${radius.lg}px;margin:0 0 14px;"><tbody>${rows.map(([k, v], i) => `
