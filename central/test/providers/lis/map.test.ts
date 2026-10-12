@@ -6,7 +6,7 @@ import { parseCsv, parseCsvRecords, forEachCsvRow } from '../../../src/providers
 import type { LisFiles } from '../../../src/providers/lis/client'
 import {
   buildLisBill, continuationTarget, LisAssembler, LIS_FILE_ORDER, lisBillNumber, lisCarriedFromCandidates, lisCarry,
-  lisDate, lisExtras, lisHistory, lisStatus, LIS_STATUS, parseVotes, toLisMasterListEntry, type LisIds, type LisRecord,
+  lisDate, lisExtras, lisHistory, lisRollCallKey, lisStatus, lisVoteHasTally, LIS_STATUS, lisCommitteeKeys, parseVotes, toLisMasterListEntry, type LisIds, type LisRecord,
 } from '../../../src/providers/lis/map'
 import { vocabulary } from '../../../src/providers/lis/vocabulary'
 import { inventory } from '../../../src/providers/lis/inventory'
@@ -304,6 +304,133 @@ describe('buildLisBill', () => {
     expect(e).toMatchObject({ number: 'HB1', status: LIS_STATUS.approved, last_action_date: '2026-04-08' })
     expect(e.description).toMatch(/^Minimum wage\./)
     expect(e.last_action).toMatch(/Chapter text \(CHAP0350\)|Approved by Governor/)
+  })
+
+  it('refers a bill to the committees a re-referral and a plain referral name, not only a first referral', async () => {
+    const rec = record('SB9', {}, [
+      ['2026-01-10', 'S Referred to Committee on Commerce and Labor', 'S02'],
+      ['2026-02-23', 'S Reported from Commerce and Labor and rereferred to Finance and Appropriations (8-Y 5-N)', 'S2V1869'],
+      ['2026-02-23', 'S Rereferred to Finance and Appropriations', ''],
+      ['2026-02-27', 'S Referred from Finance and Appropriations and referred to Rules (Voice Vote)', ''],
+      ['2026-02-27', 'S Referred to Rules', ''],
+      ['2026-02-28', 'S Rereferred from Rules to Education and Health (Voice Vote)', ''],
+      ['2026-02-28', 'S Rereferred to Education and Health', ''],
+    ])
+    const b = await buildLisBill(rec, '20261', 1, 'h', SESSION, ids())
+    // One referral for each line that sends the bill to a committee, and none for the lines that say where it came from.
+    expect(b.referrals.map(r => [r.date, r.chamber, r.name])).toEqual([
+      ['2026-01-10', 'S', 'Commerce and Labor'],
+      ['2026-02-23', 'S', 'Finance and Appropriations'],
+      ['2026-02-27', 'S', 'Rules'],
+      ['2026-02-28', 'S', 'Education and Health'],
+    ])
+    expect(lisCommitteeKeys(rec)).toEqual(
+      ['S/commerce and labor', 'S/finance and appropriations', 'S/rules', 'S/education and health'])
+    expect(vocabulary.statuses[lisStatus(record('SB9', {}, [['2026-01-14', 'H Referred to Rules', '']]), '20261')].label).toBe('In committee')
+  })
+
+  it('sets the committee a bill waits in from its latest referral', async () => {
+    const pending = async (flags: Record<string, string>, history: [string, string, string][]) => {
+      const b = await buildLisBill(record('HB5', flags, history), '20261', 1, 'h', SESSION, ids())
+      return b.committee && { name: b.committee.name, chamber: b.committee.chamber, id: b.committee.committee_id, pending: b.pending_committee_id }
+    }
+    const first: [string, string, string][] = [['2026-01-10', 'H Prefiled and ordered printed', ''], ['2026-01-10', 'H Referred to Committee on Labor and Commerce', 'H14']]
+    expect(await pending({}, first)).toMatchObject({ name: 'Labor and Commerce', chamber: 'H' })
+    // The id is the committee's own, the one the referral carries.
+    const b = await buildLisBill(record('HB5', {}, first), '20261', 1, 'h', SESSION, ids())
+    expect(b.pending_committee_id).toBe(b.referrals[0].committee_id)
+    expect(b.committee).toMatchObject({ committee_id: b.referrals[0].committee_id })
+
+    // Reported to another committee: the one it was rereferred to, though the report line comes first.
+    const moved = [...first,
+      ['2026-01-20', 'H Reported from Labor and Commerce and referred to Appropriations (15-Y 7-N)', 'H14V2610034'],
+      ['2026-01-20', 'H Referred to Committee on Appropriations', ''],
+      ['2026-01-27', 'H Placed on Appropriations Agenda', '5242'],
+    ] as [string, string, string][]
+    expect(await pending({}, moved)).toMatchObject({ name: 'Appropriations', chamber: 'H' })
+    // Rereferred in the other chamber after passing its own: it waits there.
+    const senate = [...moved,
+      ['2026-02-03', 'H Read third time and passed House (64-Y 34-N 0-A)', '2619916'],
+      ['2026-02-04', 'S Referred to Committee on Commerce and Labor', 'S02'],
+      ['2026-02-23', 'S Reported from Commerce and Labor and rereferred to Finance and Appropriations (8-Y 5-N)', 'S2V1869'],
+      ['2026-02-23', 'S Rereferred to Finance and Appropriations', ''],
+    ] as [string, string, string][]
+    expect(await pending({ Passed_house: 'Y' }, senate)).toMatchObject({ name: 'Finance and Appropriations', chamber: 'S' })
+
+    // Reported out to the floor: no committee holds it.
+    expect(await pending({}, [...first, ['2026-01-20', 'H Reported from Labor and Commerce (15-Y 7-N)', 'H14V2610034']])).toBeNull()
+    // Left, defeated, or continued in committee: it is not waiting there.
+    expect(await pending({ Failed: 'Y' }, [...first, ['2026-02-10', 'H Left in Labor and Commerce', '']])).toBeNull()
+    expect(await pending({ Carried_over: 'Y' }, [...first, ['2026-02-06', 'H Continued to next session in Labor and Commerce (Voice Vote)', '']])).toBeNull()
+    // Passed both chambers: done with committees.
+    expect(await pending({ Passed_house: 'Y', Passed_senate: 'Y', Passed: 'Y' }, senate)).toBeNull()
+    // Recommitted by a floor motion after it was passed by for the day: it is back in that committee.
+    const recommitted = [
+      ...senate.slice(0, 4),
+      ['2026-03-02', 'S Passed by for the day', ''],
+      ['2026-03-03', 'S Motion to recommit to Education and Health agreed to', ''],
+      ['2026-03-03', 'S Recommitted to Education and Health', ''],
+    ] as [string, string, string][]
+    expect(await pending({ Passed_house: 'Y' }, recommitted)).toMatchObject({ name: 'Education and Health', chamber: 'S' })
+    const back = await buildLisBill(record('HB5', { Passed_house: 'Y' }, recommitted), '20261', 1, 'h', SESSION, ids())
+    expect(back.referrals.at(-1)).toMatchObject({ name: 'Education and Health', chamber: 'S' })
+    // And out again once the committee reports it.
+    expect(await pending({ Passed_house: 'Y' }, [...recommitted, ['2026-03-05', 'S Reported from Education and Health with amendment (14-Y 0-N 1-A)', 'S1V9']])).toBeNull()
+    // A bill with no referral has no pending committee.
+    expect(await pending({}, [['2026-01-10', 'H Prefiled and ordered printed', '']])).toBeNull()
+  })
+
+  it('reads a bill\'s history in date order when finding its pending committee', async () => {
+    // The file isn't in date order: the later day's lines come first. Within a day they keep the file's order, report first.
+    const rec = record('HB5', {}, [
+      ['2026-02-23', 'S Reported from Commerce and Labor and rereferred to Finance and Appropriations (8-Y 5-N)', 'S2V1869'],
+      ['2026-02-23', 'S Rereferred to Finance and Appropriations', ''],
+      ['2026-01-10', 'S Referred to Committee on Commerce and Labor', 'S02'],
+    ])
+    expect((await buildLisBill(rec, '20261', 1, 'h', SESSION, ids())).committee).toMatchObject({ name: 'Finance and Appropriations', chamber: 'S' })
+  })
+
+  it('keeps a vote\'s id apart for each bill on it, since a block vote carries many bills', async () => {
+    const vote = 'H0056Y,H0108Y,H0124N'
+    const history: [string, string, string][] = [['2026-02-17', 'H Read third time and passed House (2-Y 1-N 0-A)', 'SHARED']]
+    const a = { ...record('HB5', {}, history), votes: { SHARED: vote } }
+    const b = { ...record('HB6', {}, history), votes: { SHARED: vote } }
+    // Ids come from the id table by the key the provider asks for, so a bill's key must name the bill.
+    const table = new Map<string, number>()
+    const mint = (key: string) => table.get(key) ?? (table.set(key, 3000000400 + table.size), table.get(key)!)
+    const build = (rec: LisRecord) => buildLisBill(rec, '20261', 1, 'h', SESSION,
+      { ...ids(), rollCall: refid => mint(lisRollCallKey('20261', rec.bill.Bill_id, refid)) })
+    const [va, vb] = [(await build(a)).votes, (await build(b)).votes]
+    expect(va).toHaveLength(1)
+    expect(vb).toHaveLength(1)
+    expect(va[0].roll_call_id).not.toBe(vb[0].roll_call_id)
+    // Stable: the same bill and vote ask for the same id every time.
+    expect(lisRollCallKey('20261', 'HB5', 'SHARED')).toBe('20261/HB5/SHARED')
+    expect(mint(lisRollCallKey('20261', 'HB5', 'SHARED'))).toBe(va[0].roll_call_id)
+  })
+
+  it('leaves a voice vote out as a roll call, since no member has a recorded vote', async () => {
+    // A block voice vote in the files: the Senate roll, every member "X" (not voting), and no count in the history line.
+    const roll = (code: string) => ['S0019', 'S0062', 'S0067', 'S0068'].map(m => `${m}${code}`).join(',')
+    const rec: LisRecord = {
+      ...record('HB5', {}, [
+        ['2026-03-03', 'S Constitutional reading dispensed (on 2nd reading) (40-Y 0-N 0-A)', 'SV866'],
+        ['2026-03-03', 'S Passed by for the day  Block Vote (Voice Vote)', 'VSV1094'],
+        ['2026-03-04', 'S Committee substitute agreed to (Voice Vote)', 'VSV1095'],
+        ['2026-03-04', 'S Passed Senate (21-Y 19-N 0-A)', 'SV899'],
+      ]),
+      votes: { SV866: roll('Y'), VSV1094: roll('X'), VSV1095: roll('X'), SV899: 'S0019Y,S0062N,S0067N,S0068X' },
+    }
+    expect(lisVoteHasTally(rec.votes.VSV1094)).toBe(false)
+    expect(lisVoteHasTally(rec.votes.SV866)).toBe(true)
+    expect(lisVoteHasTally('S0019X,S0062A')).toBe(true)
+
+    const b = await buildLisBill(rec, '20261', 1, 'h', SESSION, ids())
+    // Only the counted votes are roll calls, and none is a 0-0 vote that failed.
+    expect(b.votes.map(v => v.desc)).toEqual(['Constitutional reading dispensed (on 2nd reading) (40-Y 0-N 0-A)', 'Passed Senate (21-Y 19-N 0-A)'])
+    expect(b.votes.every(v => v.yea + v.nay > 0 && v.member_votes!.length > 0)).toBe(true)
+    // The voice votes are still in the history.
+    expect(b.history.map(h => h.action)).toEqual(expect.arrayContaining(['Passed by for the day  Block Vote (Voice Vote)', 'Committee substitute agreed to (Voice Vote)']))
   })
 
   it('reads votes stored compactly', () => {

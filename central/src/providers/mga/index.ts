@@ -23,6 +23,8 @@ export const mga: Provider = {
   },
   coverage: { maintainers: ['anotherpanacea-eng', 'wtadler'], status: 'experimental', memberVotes: false, billText: true },
   envKeys: [],
+  // The file carries no votes, so a bill's roll calls are always none.
+  replacesRollCalls: true,
   states: [MGA_STATE],
 
   /**

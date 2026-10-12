@@ -1,7 +1,7 @@
 import { getLisFile, getLisFileEtag, lisSessionExists, LIS_FILES, type LisFile } from './client'
 import {
   buildLisBill, LisAssembler, LIS_FILE_ORDER, LIS_REQUIRED_FILES, LIS_STATE, lisCarriedFromCandidates, lisCommitteeKeys,
-  lisNativeKey, lisRecordHash, parseVotes, toLisMasterListEntry, VA_STATE_ID, type LisRecord,
+  lisNativeKey, lisRecordHash, lisRollCallKey, lisVoteHasTally, parseVotes, toLisMasterListEntry, VA_STATE_ID, type LisRecord,
 } from './map'
 import { vocabulary } from './vocabulary'
 import type { Provider, ProviderContext, ProviderPerson, ProviderRecord, ProviderSnapshot, SyncSession } from '../sdk'
@@ -25,6 +25,8 @@ export const lis: Provider = {
   coverage: { maintainers: ['anotherpanacea-eng', 'wtadler'], status: 'experimental', memberVotes: true, billText: false },
   envKeys: [],
   states: [LIS_STATE],
+  // A bill's record carries every vote (VOTE.CSV is read whole or the pass fails).
+  replacesRollCalls: true,
 
   /**
    * The sessions the LIS has published for this year and next: the regular
@@ -119,9 +121,14 @@ export const lis: Provider = {
     const code = nativeKey.split('/')[0]
     const year = Number(code.slice(0, 4))
 
-    const memberIds = [...rec.sponsors.map(sp => sp[0]), ...Object.values(rec.votes).flatMap(v => parseVotes(v).map(p => p[0]))]
+    // Only counted votes become roll calls (a voice vote has no tally), and a
+    // roll call's id is the bill's own: a block vote's reference id is shared
+    // by every bill on it (lisRollCallKey).
+    const counted = Object.entries(rec.votes).filter(([, v]) => lisVoteHasTally(v))
+    const memberIds = [...rec.sponsors.map(sp => sp[0]), ...counted.flatMap(([, v]) => parseVotes(v).map(p => p[0]))]
     const persons = await ctx.ids('person', memberIds)
-    const rollCalls = await ctx.ids('rollcall', Object.keys(rec.votes).map(r => `${code}/${r}`))
+    const rollKey = (refid: string) => lisRollCallKey(code, rec.bill.Bill_id, refid)
+    const rollCalls = await ctx.ids('rollcall', counted.map(([refid]) => rollKey(refid)))
     const docs = await ctx.ids('doc', rec.fiscal.map(f => f[1]))
     const committees = await ctx.ids('committee', lisCommitteeKeys(rec))
     // The earlier session's copy of a carried-over bill, if central holds it:
@@ -137,7 +144,7 @@ export const lis: Provider = {
       year_end: session?.yearEnd ?? year,
     }, {
       person: id => persons.get(id)!,
-      rollCall: refid => rollCalls.get(`${code}/${refid}`)!,
+      rollCall: refid => rollCalls.get(rollKey(refid))!,
       doc: url => docs.get(url)!,
       committee: key => committees.get(key)!,
       carriedFrom,

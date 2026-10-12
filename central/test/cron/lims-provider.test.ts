@@ -180,6 +180,24 @@ describe('DC from LIMS', () => {
     }
   })
 
+  it('keeps a bill\'s stored votes when LIMS later answers its details with no actions', async () => {
+    await claimDc()
+    await syncAndIngest()
+    const stored = async () => ({
+      rolls: (await env.DB.prepare('SELECT roll_call_id AS id FROM roll_calls WHERE bill_id = ? ORDER BY 1').bind(B0400).all<{ id: number }>()).results.map(r => r.id),
+      members: (await env.DB.prepare(`SELECT COUNT(*) AS n FROM roll_call_votes WHERE roll_call_id IN (SELECT roll_call_id FROM roll_calls WHERE bill_id = ?)`).bind(B0400).first<{ n: number }>())!.n,
+    })
+    const before = await stored()
+    expect(before.rolls.length).toBeGreaterThan(0)
+    expect(before.members).toBeGreaterThan(0)
+
+    // The details come back with no actions (as HN26-0171's do), so the measure has no votes.
+    feed['LegislationDetails/B26-0400'] = () => json({ ...JSON.parse(details0400Raw), actions: null })
+    expect((await ingest(B0400)).retry).not.toHaveBeenCalled()
+    expect(await stored()).toEqual(before)
+    expect((await getJson(`/bills/${toHandle(B0400)}`)).votes.length).toBe(before.rolls.length)
+  })
+
   it('keeps a meeting video only as an http(s) link', async () => {
     const details = JSON.parse(details0400Raw)
     details.committeeHearing[0].videoLink = 'javascript:alert(1)'
