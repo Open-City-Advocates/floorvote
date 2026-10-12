@@ -56,7 +56,8 @@ async function call(path: string, init: RequestInit & { cookie?: string } = {}, 
 const request = (cookie: string, email: unknown, extra: Record<string, unknown> = {}, extraEnv: Record<string, unknown> = {}) =>
   call('/api/users/me/email-change', { method: 'POST', cookie, body: JSON.stringify({ email, ...extra }) }, extraEnv)
 
-const status = (token: string) => call(`/api/auth/email-change/status?token=${encodeURIComponent(token)}`)
+const status = (token: string) =>
+  call('/api/auth/email-change/status', { method: 'POST', body: JSON.stringify({ token }) })
 
 const confirm = (token: string) =>
   call('/api/auth/email-change/confirm', { method: 'POST', body: JSON.stringify({ token }) })
@@ -306,6 +307,12 @@ describe('confirming from the new address', () => {
     expect(sent).toHaveLength(0)
   })
 
+  it('keeps the token out of the URL: the status call is a POST, and a GET with the token in the query is not served', async () => {
+    const res = await app.request(`/api/auth/email-change/status?token=${token}`, {}, testEnv())
+    expect(res.status).toBe(404)
+    expect((await status(token)).body).toEqual({ status: 'valid', email: 'jane@newjob.org' })
+  })
+
   it('pressing the button commits: new address, old links dead, other sessions ended, this one kept', async () => {
     const r = await confirm(token)
     expect(r.status).toBe(200)
@@ -344,6 +351,42 @@ describe('confirming from the new address', () => {
     const results = await Promise.all([confirm(token), confirm(token)])
     expect(results.map(r => r.status).sort()).toEqual([200, 404])
     expect((await eventsFor(jane)).filter(e => e.event === 'email_change_confirmed')).toHaveLength(1)
+  })
+
+  it("a press that loses the race leaves the sign-ins made after the winner's commit alone", async () => {
+    // Both presses pass their checks, then A's batch commits and a new session
+    // and sign-in link arrive (the member signing in at the new address) before
+    // B's batch runs. B updates nothing, so it must delete nothing.
+    const parked: Array<() => void> = []
+    const gated = new Proxy(env.DB, {
+      get(target, prop) {
+        if (prop === 'batch') {
+          return async (stmts: unknown[]) => {
+            if (stmts.length === 4) await new Promise<void>(resolve => parked.push(resolve))
+            return target.batch(stmts as never)
+          }
+        }
+        const v = Reflect.get(target, prop)
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+    })
+    const press = () => call('/api/auth/email-change/confirm', { method: 'POST', body: JSON.stringify({ token }) }, { DB: gated })
+    const a = press()
+    const b = press()
+    const until = async (done: () => boolean | Promise<boolean>) => {
+      for (let i = 0; i < 400 && !(await done()); i++) await new Promise(r => setTimeout(r, 5))
+    }
+    await until(() => parked.length === 2)
+    expect(parked).toHaveLength(2)
+    parked[0]()
+    await until(async () => (await member(jane)).email === 'jane@newjob.org')
+    const fresh = await seedSession(jane)
+    const freshLink = await seedMagicLink(jane)
+    parked[1]()
+    const results = await Promise.all([a, b])
+    expect(results.map(r => r.status)).toContain(200)
+    expect(await sessionAlive(fresh)).toBe(true)
+    expect((await signIn(freshLink)).status).toBe(200)
   })
 
   it('refuses an expired link', async () => {
@@ -393,6 +436,28 @@ describe('confirming from the new address', () => {
     const r = await confirm(tokenSentTo('jane@other.org'))
     expect(r.status).toBe(400)
     expect(r.body).toEqual({ error: "That address can't be used here." })
+  })
+
+  it("refuses to commit once the member's own address has joined central's superadmin list", async () => {
+    superadmins.push('jane@oldjob.org')
+    _resetSuperadminAllowlistCache()
+    const r = await confirm(token)
+    expect(r.status).toBe(403)
+    expect(r.body).toEqual({ error: "Your address is managed centrally, so it can't be changed here." })
+    expect((await member(jane)).email).toBe('jane@oldjob.org')
+    expect(await sessionAlive(otherSession)).toBe(true)
+    expect((await confirm(token)).status).toBe(404)
+  })
+
+  it('still reports success when the notice to the old address cannot be built after the commit', async () => {
+    await env.DB.prepare('DROP TABLE association_config').run()
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const r = await confirm(token)
+    expect(r.status).toBe(200)
+    expect(r.body).toEqual({ ok: true, email: 'jane@newjob.org' })
+    expect((await member(jane)).email).toBe('jane@newjob.org')
+    expect(errors).toHaveBeenCalled()
+    errors.mockRestore()
   })
 
   it('maps a last-moment unique-constraint race to the same clear message', async () => {
@@ -456,5 +521,10 @@ describe('demo', () => {
     expect((await request(janeCookie, 'jane@newjob.org', {}, demo)).status).toBe(403)
     expect((await call('/api/auth/email-change/confirm', { method: 'POST', body: '{"token":"x"}' }, demo)).status).toBe(403)
     expect(sent).toHaveLength(0)
+  })
+
+  it('still answers the read-only status call on a demo instance', async () => {
+    const r = await call('/api/auth/email-change/status', { method: 'POST', body: '{"token":"x"}' }, { DEMO_MODE: 'true' })
+    expect(r).toMatchObject({ status: 200, body: { status: 'invalid' } })
   })
 })

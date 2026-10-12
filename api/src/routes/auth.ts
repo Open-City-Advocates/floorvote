@@ -293,19 +293,21 @@ authRoutes.post('/verify', async (c) => {
 // The confirmation page for an email change (web: /auth/confirm-email) calls
 // these two. Neither needs a session: the link may be opened on any device
 // that reads the new inbox. Status writes nothing, so a scanner prefetching the
-// page changes nothing. Only the POST commits, and it never signs anyone in.
+// page changes nothing. Only confirm commits, and it never signs anyone in.
 // Both refuse to send a referrer, like the page itself (web/public/_headers).
 
-// GET /auth/email-change/status?token=…
-authRoutes.get('/email-change/status', async (c) => {
+// POST /auth/email-change/status  { token }
+// A POST, not a GET, so the token stays out of the URL and so out of access
+// logs. It still writes nothing.
+authRoutes.post('/email-change/status', async (c) => {
   c.header('Referrer-Policy', 'no-referrer')
   const ip = c.req.header('CF-Connecting-IP') || 'unknown'
   if (!(await checkRateLimit(c.env.LOGIN_RATE_LIMITER, `email-change-status:${ip}`))) {
     return c.json({ error: 'Too many requests. Please wait a moment and try again.' }, 429)
   }
-  const rawToken = c.req.query('token')
-  if (!rawToken) return c.json({ status: 'invalid' })
-  return c.json(await emailChangeLinkStatus(getDb(c.env.DB), rawToken))
+  const body = await c.req.json<{ token?: unknown }>().catch(() => ({} as { token?: unknown }))
+  if (typeof body.token !== 'string' || !body.token) return c.json({ status: 'invalid' })
+  return c.json(await emailChangeLinkStatus(getDb(c.env.DB), body.token))
 })
 
 // POST /auth/email-change/confirm  { token }

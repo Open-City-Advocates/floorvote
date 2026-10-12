@@ -99,13 +99,34 @@ async function send(env: Env, db: AppDb, message: EmailMessage, tag: string): Pr
   return sent === 1
 }
 
+/**
+ * Tell the old address. Runs after the request or the commit has already
+ * happened, so a failure here is logged and never turned into an error for a
+ * change that took effect.
+ */
 async function noticeToOldAddress(env: Env, db: AppDb, stage: 'requested' | 'changed', to: string, newEmail: string) {
-  const { subject, html, text } = renderEmailChangeNoticeEmail({
-    stage, appUrl: env.APP_URL, instanceName: (await resolveAssocName(env, db)) ?? '', newEmail, notMeUrl: notMeUrl(env.APP_URL),
-  })
-  if (!(await send(env, db, { to: [to], subject, html, text }, `email-change-notice-${stage}`))) {
-    console.error(`[email-change] the ${stage} notice to the old address did not go out`)
+  try {
+    const { subject, html, text } = renderEmailChangeNoticeEmail({
+      stage, appUrl: env.APP_URL, instanceName: (await resolveAssocName(env, db)) ?? '', newEmail, notMeUrl: notMeUrl(env.APP_URL),
+    })
+    if (!(await send(env, db, { to: [to], subject, html, text }, `email-change-notice-${stage}`))) {
+      console.error(`[email-change] the ${stage} notice to the old address did not go out`)
+    }
+  } catch (e) {
+    console.error(`[email-change] the ${stage} notice to the old address failed`, e)
   }
+}
+
+/**
+ * A superadmin's identity is central's (#370), so their address never changes
+ * here. Checked by the address the member holds, at request and again at
+ * commit, so no path in (the member's own, an admin's later) can skip it and a
+ * change pending while the address joined central's list cannot commit.
+ */
+async function refuseSuperadmin(env: Env, currentEmail: string): Promise<Refusal | null> {
+  return (await isSuperadminEmailViaCentral(env, currentEmail))
+    ? { ok: false, status: 403, error: EMAIL_CHANGE_ERRORS.superadmin }
+    : null
 }
 
 async function recordCancelled(
@@ -140,6 +161,8 @@ export async function requestEmailChange(
   },
 ): Promise<{ ok: true; email: string } | Refusal> {
   const { member } = input
+  const superadmin = await refuseSuperadmin(env, member.email)
+  if (superadmin) return superadmin
   const check = await checkNewAddress(env, db, member, input.rawNewEmail)
   if (!check.ok) return check
   const newEmail = check.email
@@ -251,6 +274,13 @@ export async function confirmEmailChange(
     return { ok: false, status: 409, error: EMAIL_CHANGE_ERRORS.stale }
   }
 
+  // A superadmin's address is central's to manage. It may have joined the list since.
+  const superadmin = await refuseSuperadmin(env, memberRow.email)
+  if (superadmin) {
+    await cancelPending(db, row, superadmin.error)
+    return superadmin
+  }
+
   // Every rule again: the address may have been taken, bounced, or listed since.
   const check = await checkNewAddress(env, db, memberRow, row.newEmail)
   if (!check.ok) {
@@ -259,13 +289,20 @@ export async function confirmEmailChange(
   }
   const newEmail = check.email
 
-  // `changed` gates every statement after the update, so they run only if the
-  // address really moved. The update itself repeats the checks that a
-  // concurrent request could break: the pending change still exists and is in
-  // date (spending a token twice fails here), the member is still active at
-  // the old address, and no other member holds the address in any case. The
-  // unique index on users.email backs the last one up.
+  // The update repeats the checks that a concurrent request could break: the
+  // pending change still exists and is in date (spending a token twice fails
+  // here), the member is still active at the old address, and no other member
+  // holds the address in any case. The unique index on users.email backs the
+  // last one up.
+  //
+  // `moved` gates the session and sign-in-link deletes: they run only for the
+  // press that moved the address. "The address is now the new one" is not
+  // enough, because a second press that raced the first is still true of it
+  // after the first commits, and would end the sign-ins made since. So they
+  // also require the pending change to still exist. They run before the batch
+  // deletes it, so for the winner it does, and for the loser it no longer does.
   const changed = sql`(SELECT email FROM users WHERE id = ${row.userId}) = ${newEmail}`
+  const moved = sql`${changed} AND EXISTS (SELECT 1 FROM email_changes WHERE id = ${row.id})`
   const keep = row.requestingSessionId
   let updated: { id: string }[]
   let others: { userId: string; oldEmail: string; newEmail: string }[]
@@ -278,10 +315,12 @@ export async function confirmEmailChange(
         sql`NOT EXISTS (SELECT 1 FROM users other WHERE lower(other.email) = ${newEmail} AND other.id != ${row.userId})`,
         sql`EXISTS (SELECT 1 FROM email_changes WHERE id = ${row.id} AND datetime(expires_at) > datetime('now'))`,
       )).returning({ id: users.id }),
-      db.delete(magicLinks).where(and(eq(magicLinks.userId, row.userId), isNull(magicLinks.usedAt), changed)),
-      db.delete(sessions).where(and(eq(sessions.userId, row.userId), keep ? ne(sessions.id, keep) : undefined, changed)),
+      db.delete(magicLinks).where(and(eq(magicLinks.userId, row.userId), isNull(magicLinks.usedAt), moved)),
+      db.delete(sessions).where(and(eq(sessions.userId, row.userId), keep ? ne(sessions.id, keep) : undefined, moved)),
       // This change (spending its token) and any other member's change to the
-      // same address, which could never go through now.
+      // same address, which could never go through now. Gated on `changed`
+      // alone: it deletes only pending changes, which a loser may harmlessly
+      // find already gone.
       db.delete(emailChanges).where(and(
         or(eq(emailChanges.id, row.id), eq(emailChanges.newEmail, newEmail)),
         changed,

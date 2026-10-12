@@ -16,7 +16,6 @@ import { hashToken } from '../lib/crypto'
 import { checkRateLimit } from '../../../shared/rateLimit'
 import { verifyTurnstile } from '../../../shared/turnstile'
 import { isSuperadminRequest } from '../lib/superadminRequest'
-import { isSuperadminEmailViaCentral } from '../lib/superadminCentral'
 import { requestEmailChange, EMAIL_CHANGE_ERRORS } from '../lib/emailChange'
 
 export const usersRouter = new Hono<AppEnv>()
@@ -169,8 +168,10 @@ usersRouter.post('/me/email-change', async (c) => {
 
   const db = getDb(c.env.DB)
   const currentUser = c.get('user')
-  // A superadmin's identity is central's (#370), so it never changes here.
-  if (await isSuperadminRequest(c) || await isSuperadminEmailViaCentral(c.env, currentUser.email)) {
+  // A superadmin's identity is central's (#370), so it never changes here. The
+  // address check lives in requestEmailChange and the commit; this one is the
+  // request's own operator cookie, which only the route can see.
+  if (await isSuperadminRequest(c)) {
     return c.json({ error: EMAIL_CHANGE_ERRORS.superadmin }, 403)
   }
 
