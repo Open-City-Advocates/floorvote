@@ -22,6 +22,7 @@ import { termsAcceptanceState } from '../lib/termsAcceptance'
 import type { AppEnv } from '../types'
 import { isValidEmail } from '../../../shared/email'
 import { confirmEmailChange, emailChangeLinkStatus, EMAIL_CHANGE_ERRORS } from '../lib/emailChange'
+import { reportNotMe, notMeLinkStatus, NOT_ME_ERRORS } from '../lib/emailChangeReport'
 
 export const authRoutes = new Hono<AppEnv>()
 
@@ -322,6 +323,38 @@ authRoutes.post('/email-change/confirm', async (c) => {
   const result = await confirmEmailChange(c.env, getDb(c.env.DB), body.token, authReqContext(c))
   if (!result.ok) return c.json({ error: result.error }, result.status)
   return c.json({ ok: true, email: result.email })
+})
+
+// "This wasn't me" in an old-address notice (web: /auth/not-me) calls these two,
+// built like the pair above and for the same reasons: no session (the old
+// inbox may be read anywhere), a POST so the token stays out of the URL, a
+// status call that writes nothing so a scanner prefetching the page changes
+// nothing, and a press that does the work. See lib/emailChangeReport.ts.
+
+// POST /auth/email-change/not-me/status  { token }
+authRoutes.post('/email-change/not-me/status', async (c) => {
+  c.header('Referrer-Policy', 'no-referrer')
+  const ip = c.req.header('CF-Connecting-IP') || 'unknown'
+  if (!(await checkRateLimit(c.env.LOGIN_RATE_LIMITER, `not-me-status:${ip}`))) {
+    return c.json({ error: 'Too many requests. Please wait a moment and try again.' }, 429)
+  }
+  const body = await c.req.json<{ token?: unknown }>().catch(() => ({} as { token?: unknown }))
+  if (typeof body.token !== 'string' || !body.token) return c.json({ status: 'invalid' })
+  return c.json(await notMeLinkStatus(getDb(c.env.DB), body.token))
+})
+
+// POST /auth/email-change/not-me  { token }
+authRoutes.post('/email-change/not-me', async (c) => {
+  c.header('Referrer-Policy', 'no-referrer')
+  const ip = c.req.header('CF-Connecting-IP') || 'unknown'
+  if (!(await checkRateLimit(c.env.LOGIN_RATE_LIMITER, `not-me:${ip}`))) {
+    return c.json({ error: 'Too many requests. Please wait a moment and try again.' }, 429)
+  }
+  const body = await c.req.json<{ token?: unknown }>().catch(() => ({} as { token?: unknown }))
+  if (typeof body.token !== 'string' || !body.token) return c.json({ error: NOT_ME_ERRORS.invalidLink }, 404)
+  const result = await reportNotMe(c.env, getDb(c.env.DB), body.token, authReqContext(c))
+  if (!result.ok) return c.json({ error: result.error }, result.status)
+  return c.json({ ok: true, alerted: result.alerted })
 })
 
 // GET /auth/me
