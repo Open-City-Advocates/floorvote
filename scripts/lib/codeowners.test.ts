@@ -112,21 +112,30 @@ describe('provider-maintainers workflow', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].kind).toBe('create')
     expect(calls[0].args.body).toBe(
-      '<!-- provider-maintainers -->\n@anotherpanacea-eng and @wtadler, this pull request changes the `lis` provider, which you maintain.',
+      '<!-- provider-maintainers -->\n@anotherpanacea-eng, this pull request changes the `lis` provider, which you maintain.',
     )
   })
 
-  it('leaves the author out, in any case', async () => {
-    const calls = await go('AnotherPanacea-Eng', [{ filename: 'central/src/providers/lis/map.ts' }])
-    expect(calls[0].args.body).toBe('<!-- provider-maintainers -->\n@wtadler, this pull request changes the `lis` provider, which you maintain.')
+  it('never mentions a project maintainer', async () => {
+    const calls = await go('someone', [{ filename: 'central/src/providers/legiscan/client.ts' }, { filename: 'central/src/providers/lims/map.ts' }])
+    expect(calls[0].args.body).toBe('<!-- provider-maintainers -->\n@anotherpanacea-eng, this pull request changes the `lims` provider, which you maintain.')
+    expect(String(calls[0].args.body)).not.toContain('wtadler')
   })
 
-  it('posts nothing when the author is the only maintainer', async () => {
-    expect(await go('wtadler', [{ filename: 'central/src/providers/legiscan/client.ts' }])).toEqual([])
+  it('posts nothing on a project maintainer\'s pull request, in any case', async () => {
+    expect(await go('WTadler', [{ filename: 'central/src/providers/lis/map.ts' }])).toEqual([])
+  })
+
+  it('posts nothing on a provider maintainer\'s own provider', async () => {
+    expect(await go('AnotherPanacea-Eng', [{ filename: 'central/src/providers/lis/map.ts' }])).toEqual([])
+  })
+
+  it('posts nothing when only project maintainers maintain the provider', async () => {
+    expect(await go('someone', [{ filename: 'central/src/providers/legiscan/client.ts' }])).toEqual([])
   })
 
   it('counts a provider\'s tests and renames, once, one line per provider in id order', async () => {
-    const calls = await go('wtadler', [
+    const calls = await go('someone', [
       { filename: 'central/test/providers/lims/map.test.ts' },
       { filename: 'central/src/providers/lis/new.ts', previous_filename: 'central/src/providers/lims/old.ts' },
       { filename: 'central/src/providers/lims/map.ts' },

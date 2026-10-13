@@ -171,7 +171,7 @@ Each provider declares who maintains it, as GitHub handles in `coverage.maintain
 
 - The [State coverage](/contributing/state-coverage) page lists each provider's maintainers.
 - [`.github/CODEOWNERS`](https://github.com/floorvote/floorvote/blob/main/.github/CODEOWNERS) is generated from the declarations (`npm run gen:codeowners`), so GitHub asks a provider's maintainers to review changes to its source directory and its tests. Don't edit that file by hand. A test fails when it is out of date.
-- A pull request that changes a provider's directory gets one comment mentioning that provider's maintainers, other than the pull request's author. The comment is updated rather than repeated as the branch changes, and a draft waits until it is marked ready for review.
+- A pull request from an outside contributor that changes a provider's directory gets one comment mentioning that provider's maintainers, other than the author and the project maintainers (the owners of the `*` line in CODEOWNERS), who merge everything and are never mentioned. A pull request opened by a project maintainer gets no comment. The comment is updated rather than repeated as the branch changes, and a draft waits until it is marked ready for review.
 
 Maintainers review changes to their provider. The project maintainer merges.
 
