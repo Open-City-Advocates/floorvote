@@ -79,6 +79,7 @@ import migrationSql83 from '../migrations/0083_calendar_event_rules.sql?raw'
 import migrationSql85 from '../migrations/0085_notifications.sql?raw'
 import migrationSql87 from '../migrations/0087_feed_events_sort_index.sql?raw'
 import migrationSql88 from '../migrations/0088_reply_notifications.sql?raw'
+import migrationSql89 from '../migrations/0089_reaction_notifications.sql?raw'
 import migrationSql93 from '../migrations/0093_feed_events_billless.sql?raw'
 
 export function parseMigration(sql: string, name: string) {
@@ -261,6 +262,7 @@ export async function applyMigrations(opts: { before?: string } = {}): Promise<v
     parseMigration(migrationSql85, '0085_notifications'),
     parseMigration(migrationSql87, '0087_feed_events_sort_index'),
     parseMigration(migrationSql88, '0088_reply_notifications'),
+    parseMigration(migrationSql89, '0089_reaction_notifications'),
     parseMigration(migrationSql93, '0093_feed_events_billless'),
   ]
   const before = opts.before

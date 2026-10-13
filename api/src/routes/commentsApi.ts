@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { comments, commentReactions, feedEvents } from '../db/schema'
 import { syncMentionsOnEdit } from '../lib/mentions'
+import { notifyAuthorOfReaction } from '../lib/reactions'
 import { sanitizeCommentHtml } from '../lib/sanitizeHtml'
 import { nowDb } from '../lib/dbTime'
 import { isReactionEmoji } from '../../../shared/reactionEmojis'
@@ -117,7 +118,7 @@ commentsApiRouter.post('/:id/reactions', async (c) => {
     return c.json({ error: 'emoji must be one of the offered reactions' }, 400)
   }
 
-  const comment = await db.select({ id: comments.id }).from(comments).where(
+  const comment = await db.select({ id: comments.id, billId: comments.billId, userId: comments.userId }).from(comments).where(
     and(eq(comments.id, commentId), isNull(comments.deletedAt))
   ).get()
   if (!comment) return c.json({ error: 'not found' }, 404)
@@ -131,6 +132,10 @@ commentsApiRouter.post('/:id/reactions', async (c) => {
       createdAt: nowDb(),
     })
     .onConflictDoNothing()
+
+  // Always attempted: the notification outlives the reaction, so a re-add is
+  // already recorded and the unique index turns this into a no-op.
+  await notifyAuthorOfReaction(db, comment, currentUser.id, body.emoji)
 
   return c.json({ ok: true })
 })

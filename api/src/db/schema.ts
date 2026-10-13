@@ -408,16 +408,21 @@ export type MentionNotificationData = {
 /** A reply notification carries no data of its own: the comment and its author say it all. */
 export type ReplyNotificationData = Record<string, never>
 
+/** A reaction notification's kind-specific data: which emoji was used. */
+export type ReactionNotificationData = {
+  emoji: string
+}
+
 /**
  * The notifications inbox: one row per event a member is notified about, of a
- * `kind` ('mention' or 'reply'). Rows are written when the event happens and
+ * `kind` ('mention', 'reply', or 'reaction'). Rows are written when the event happens and
  * never recomputed from comments. Rows for deleted comments are hidden at read
  * time, not deleted. Writers and renderers per kind live in lib/notifications.ts.
  */
 export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
   recipientId: text('recipient_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  kind: text('kind', { enum: ['mention', 'reply'] }).notNull(),
+  kind: text('kind', { enum: ['mention', 'reply', 'reaction'] }).notNull(),
   billId: text('bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
   // Nullable for a future kind about a bill alone (no comment). Every kind so far has one.
   commentId: text('comment_id').references(() => comments.id, { onDelete: 'cascade' }),

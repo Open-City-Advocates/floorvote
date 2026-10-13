@@ -7,8 +7,8 @@ import { isUnreadForDemo, readNotificationIds } from '../lib/demoReadState'
 // the data. The panel imports it back; the reverse would be a cycle.
 //
 // GET /notifications returns one row per notification, discriminated on `kind`
-// (api/src/lib/notifications.ts). Mentions and replies so far. A new kind adds a
-// member to the NotificationItem union and a renderer in the panel.
+// (api/src/lib/notifications.ts). Mentions, replies, and reactions so far. A new
+// kind adds a member to the NotificationItem union and a renderer in the panel.
 type NotificationBase = {
   id: string
   commentId: string
@@ -21,26 +21,42 @@ type NotificationBase = {
    *  "filed" — a silent solid badge — instead of failing to typecheck. */
   billIsDraft: boolean
   sessionSlug: string | null
-  authorName: string
-  authorSubtitle: string | null
   commentPreview: string
   commentHtml: string
   createdAt: string
   isUnread: boolean
 }
 
-export type MentionNotification = NotificationBase & {
+/** Mentions and replies are someone else's comment, so they name its author. */
+type AuthoredNotification = NotificationBase & {
+  authorName: string
+  authorSubtitle: string | null
+}
+
+export type MentionNotification = AuthoredNotification & {
   kind: 'mention'
   sourceType: 'user' | 'role' | 'everyone'
   sourceLabel: string | null
 }
 
 /** Someone else commented on a bill the member has commented on. */
-export type ReplyNotification = NotificationBase & {
+export type ReplyNotification = AuthoredNotification & {
   kind: 'reply'
 }
 
-export type NotificationItem = MentionNotification | ReplyNotification
+/**
+ * Someone reacted to the member's own comment. The server collapses a comment's
+ * reactions into this one row, whose `id` stays the same as reactions arrive.
+ * `isUnread` is true if any is. The comment shown is the member's.
+ */
+export type ReactionNotification = NotificationBase & {
+  kind: 'reaction'
+  /** The newest reactors (up to two), each once. */
+  reactors: Array<{ id: string; name: string | null }>
+  reactorCount: number
+}
+
+export type NotificationItem = MentionNotification | ReplyNotification | ReactionNotification
 
 type NotificationsContextType = {
   unreadCount: number
