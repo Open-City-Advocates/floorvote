@@ -198,6 +198,10 @@ npx vitest run --project scripts
 
 Inline `style={{}}` backed by design tokens from `web/src/styles/tokens.ts` (`color`, `radius`, `fontSize`, `fontWeight`, `shadow`). ESLint blocks raw hex colors and raw `borderRadius`/`fontSize`/`fontWeight` values. Spacing (padding, margin, gap) is intentionally NOT tokenized — use raw numbers.
 
+**Color modes.** The app has light and dark modes, chosen per browser in Profile → Preferences (System, the default, follows the device). In the web build each `color` token is a CSS variable (`color.textPrimary` is `var(--fv-text-primary)`), defined for both modes in a `<style>` that `web/vite.config.ts` writes into `index.html`; dark mode is the `dark` class on `<html>`. `shared/tokens.ts` keeps the literal light values, which the API's emails use. Shared modules that import it (chip colors, event lines, mention pills) get the variables when bundled into the web app.
+
+To add a color token, add its light value to `color` in `shared/tokens.ts` and its dark value to `darkColor` in `web/src/styles/colorModes.ts` (TypeScript requires both). In dark mode, tinted fills go dark and text goes light; put text on a colored fill in `textOnFill`, never `white`, which is the card surface. If it's a text color, add its pair to the contrast test in `web/src/styles/tokens.test.ts`. In SVG, set colors through `style`, not the `fill`/`stroke` attributes, so the variable resolves.
+
 Material Symbols icons use an explicit allowlist in `web/index.html` — add new icons to the `icon_names=` query param before using them. Unregistered icons silently render as their literal name text.
 
 ### Explanations
@@ -219,7 +223,7 @@ Route loaders must use `apiFetchForLoader` (not raw `apiFetch`) — a raw 401 by
 5. Relevance scores are 1–10, not 0–100.
 6. Tenants never call legislative APIs directly — all data flows through central.
 7. Use `apiFetchForLoader` in route loaders, not raw `apiFetch`.
-8. Light theme only. No full-page spinners on navigation.
+8. Every color works in both light and dark mode: use a token, never a literal. No full-page spinners on navigation.
 9. Never run `wrangler deploy` directly — use `npm run deploy:tenant`.
 10. Don't mock D1 in tests — use real @cloudflare/vitest-pool-workers bindings.
 11. Don't leave `web/dist` around during local dev — it breaks the Vite `/api` proxy.
