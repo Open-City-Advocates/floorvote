@@ -80,6 +80,24 @@ Wrangler records each applied file by name in `d1_migrations` and applies every 
 - **Register each tenant migration of yours in the api tests.** `applyMigrations()` in `api/test/helpers.ts` lists tenant migrations by name, so add every one you keep (0071, 0072, 0074, and each future `0900_oca_*`) or the api tests run without your tables. Central's tests read the whole folder.
 - **Rehearse before each upstream upgrade.** The script below lists your tables and columns and names any upstream migration that would meet one.
 
+## Keep Fork Features Separate
+
+Your data layer is already apart from upstream's: the 0900 range, the tables and columns `AGENTS.md` lists as yours, and the rehearsal script. Your feature code isn't. The Council directory, CRM, deep analyses, team links, and hearing briefs hook into shared upstream files: the cron list in `central/src/index-legiscan.ts`, the tenant surface allowlist (`central/src/lib/tenantSurface.ts`), the api router, and the web routes. Each upstream change to one of those files is a hand merge. This is fork-side work. Upstream adds nothing for it and promises no hooks.
+
+The pattern that keeps those merges small:
+
+1. **Put fork-only code in fork-only folders** that upstream never creates, such as `central/src/fork/`, `api/src/fork/`, and `web/src/fork/`.
+2. **Cut each edit to a shared file down to one line** that hands off to your folder. One call registers your crons, one adds your routes, one extends the allowlist, and one adds your web routes. An example only, not an upstream API:
+
+   ```ts
+   // central/src/index-legiscan.ts: the only line of yours in this file
+   registerForkCrons(jobs);
+   ```
+
+3. **List the folders and the hook lines in your overlay manifest, and check them in CI** after each upstream merge. A merge that drops a hook line fails the build instead of silently turning a feature off. This is the "assert your overlay in CI" pattern from [Forking and operator overlays](../content/contributing/index.md).
+
+When upstream changes a feature you extended, such as a simpler event-rules UI (#420), you can take upstream's version or keep yours as a fork feature in your folder. Either way, its data stays yours.
+
 ## Before You Deploy
 
 1. **Configuration.** Your gitignored `central/wrangler.toml` already names `src/index-legiscan.ts` and `migrations-legiscan`. Keep the `LIMS_API_KEY` secret (claiming DC for LIMS needs it), `LIMS_STATES = "DC"` for now (a safety net for DC's ownership row, below), the hourly cron, and `LIMS_INGESTOR_QUEUE` with its consumer at `max_concurrency = 1` (LIMS answers 429 above about two concurrent requests). Compare the rest with `central/wrangler.example.toml`. Deploy central before the instances. Each instance's footer credit comes from central now (DC's from the LIMS provider's own declaration), so the LIMS credit is there when the tenant upgrades. Each instance can then drop `DATA_SOURCES = "lims"`, and one that still sets it is unaffected. Its `PROVIDER` var is no longer read. Keep your deep analysis vars if you ported that feature.
