@@ -8,7 +8,7 @@
 //
 // Notifications for deleted comments are hidden here, at read time, rather than
 // deleted when the comment is.
-import { and, desc, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, lte, ne, sql } from 'drizzle-orm'
 import type { getDb } from '../db/client'
 import { notifications, comments, users, bills, roles, type MentionNotificationData, type ReplyNotificationData, type ReactionNotificationData, type NotificationKind } from '../db/schema'
 import { filedSlug } from './sessionSlug'
@@ -115,14 +115,15 @@ export type ReplyNotificationView = NotificationBase & {
 
 /**
  * Someone reacted to the recipient's comment. Stored one row per reactor and
- * emoji, rendered as one row per comment: `id` is the newest of the stored rows,
- * `isUnread` is true if any of them is, and `createdAt` is the newest's.
+ * emoji, rendered as one row per comment: `id` is fixed per comment, so the row
+ * keeps it as reactions arrive, `isUnread` is true if any stored row is, and
+ * `createdAt` is the newest's.
  */
 export type ReactionNotificationView = NotificationBase & {
   kind: 'reaction'
   commentPreview: string
   commentHtml: string
-  /** Each reactor once, newest first, however many emoji they used. */
+  /** The newest reactors (up to two), each once however many emoji they used. */
   reactors: Array<{ id: string; name: string | null }>
   reactorCount: number
 }
@@ -160,48 +161,16 @@ function notificationBase(r: BaseRow): NotificationBase {
   }
 }
 
-type ReactionRow = BaseRow & { commentContent: string; actorId: string; actorName: string | null }
-
-/**
- * One view per comment from its stored reaction rows, which arrive newest first.
- * The group takes the newest row's id and time, and is unread if any row is.
- */
-function collapseReactions(rows: ReactionRow[]): ReactionNotificationView[] {
-  const groups = new Map<string, ReactionNotificationView>()
-  for (const r of rows) {
-    const group = groups.get(r.commentId)
-    if (!group) {
-      groups.set(r.commentId, {
-        ...notificationBase(r),
-        kind: 'reaction',
-        commentPreview: stripHtml(r.commentContent).slice(0, 150),
-        commentHtml: r.commentContent,
-        reactors: [{ id: r.actorId, name: r.actorName }],
-        reactorCount: 1,
-      })
-      continue
-    }
-    if (r.readAt === null) group.isUnread = true
-    if (!group.reactors.some(x => x.id === r.actorId)) {
-      group.reactors.push({ id: r.actorId, name: r.actorName })
-      group.reactorCount = group.reactors.length
-    }
-  }
-  return [...groups.values()]
-}
-
 const LIST_LIMIT = 50
-// Reactions are collapsed after they are read, and a popular comment stores a
-// row per reactor and emoji, so they are read from a wider window than
-// LIST_LIMIT. Otherwise one busy comment could push every mention off the page.
-const REACTION_ROW_WINDOW = 500
+// The ReactionRow headline names at most two reactors and counts the rest.
+const REACTORS_NAMED = 2
 
 /**
  * A member's newest notifications, rendered for GET /notifications. The unread
  * count covers the rows returned.
  */
 export async function listNotifications(db: Db, recipientId: string): Promise<{ unreadCount: number; notifications: NotificationView[] }> {
-  const fetchRows = (kindFilter: SQL, limit: number) => db
+  const rows = await db
     .select({
       id: notifications.id,
       kind: notifications.kind,
@@ -228,15 +197,12 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
     .innerJoin(comments, eq(notifications.commentId, comments.id))
     .innerJoin(users, eq(notifications.actorId, users.id))
     .innerJoin(bills, eq(notifications.billId, bills.id))
-    .where(and(eq(notifications.recipientId, recipientId), isNull(comments.deletedAt), activeUser, kindFilter))
+    .where(and(eq(notifications.recipientId, recipientId), isNull(comments.deletedAt), activeUser, ne(notifications.kind, 'reaction')))
     // rowid breaks ties inside one second, so "newest" is well defined.
     .orderBy(desc(notifications.createdAt), sql`${notifications}.rowid desc`)
-    .limit(limit)
+    .limit(LIST_LIMIT)
     .all()
-
-  const rows = await fetchRows(ne(notifications.kind, 'reaction'), LIST_LIMIT)
-  const reactionRows = await fetchRows(eq(notifications.kind, 'reaction'), REACTION_ROW_WINDOW)
-
+  const reactions = await listReactionGroups(db, recipientId)
 
   // Kind-specific data, parsed once. A row whose data can't be read is dropped.
   type Row = (typeof rows)[number]
@@ -290,7 +256,7 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
     }
   })
 
-  const all = [...rendered, ...collapseReactions(reactionRows)]
+  const all = [...rendered, ...reactions]
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .slice(0, LIST_LIMIT)
 
@@ -298,6 +264,72 @@ export async function listNotifications(db: Db, recipientId: string): Promise<{ 
     unreadCount: all.filter(n => n.isUnread).length,
     notifications: all,
   }
+}
+
+/**
+ * The member's newest reacted comments, one view each, grouped in SQL so a busy
+ * comment's rows (one per reactor and emoji) are never read one by one.
+ */
+async function listReactionGroups(db: Db, recipientId: string): Promise<ReactionNotificationView[]> {
+  const visible = and(eq(notifications.recipientId, recipientId), eq(notifications.kind, 'reaction'), isNull(comments.deletedAt), activeUser)
+  const groups = await db
+    .select({
+      commentId: comments.id,
+      commentContent: comments.content,
+      billId: bills.id,
+      billNumber: bills.billNumber,
+      billTitle: bills.title,
+      billAbstract: bills.abstract,
+      billState: bills.state,
+      billSession: bills.session,
+      billSessionSlug: bills.sessionSlug,
+      billIsDraft: bills.isDraft,
+      createdAt: sql<string>`max(${notifications.createdAt})`,
+      // Null while any of the comment's reactions is unread.
+      readAt: sql<string | null>`case when sum(${notifications.readAt} is null) > 0 then null else max(${notifications.readAt}) end`,
+      reactorCount: sql<number>`count(distinct ${notifications.actorId})`,
+    })
+    .from(notifications)
+    .innerJoin(comments, eq(notifications.commentId, comments.id))
+    .innerJoin(users, eq(notifications.actorId, users.id))
+    .innerJoin(bills, eq(notifications.billId, bills.id))
+    .where(visible)
+    .groupBy(notifications.commentId)
+    .orderBy(sql`max(${notifications.createdAt}) desc`, sql`max(${notifications}.rowid) desc`)
+    .limit(LIST_LIMIT)
+    .all()
+  if (groups.length === 0) return []
+
+  // The newest few reactors of each listed comment, each once.
+  const perReactor = db
+    .select({
+      commentId: sql<string>`${notifications.commentId}`.as('comment_id'),
+      id: sql<string>`${notifications.actorId}`.as('actor_id'),
+      name: userDisplayNameSql.as('actor_name'),
+      rank: sql<number>`row_number() over (partition by ${notifications.commentId} order by max(${notifications.createdAt}) desc, max(${notifications}.rowid) desc)`.as('rank'),
+    })
+    .from(notifications)
+    .innerJoin(comments, eq(notifications.commentId, comments.id))
+    .innerJoin(users, eq(notifications.actorId, users.id))
+    .where(and(visible, inArray(notifications.commentId, groups.map(g => g.commentId))))
+    .groupBy(notifications.commentId, notifications.actorId)
+    .as('per_reactor')
+  const reactorRows = await db.select().from(perReactor).where(lte(perReactor.rank, REACTORS_NAMED)).orderBy(sql`${perReactor.rank}`).all()
+  const reactors = new Map<string, Array<{ id: string; name: string | null }>>()
+  for (const r of reactorRows) {
+    const list = reactors.get(r.commentId) ?? []
+    list.push({ id: r.id, name: r.name })
+    reactors.set(r.commentId, list)
+  }
+
+  return groups.map(g => ({
+    ...notificationBase({ ...g, id: `reaction:${g.commentId}` }),
+    kind: 'reaction',
+    commentPreview: stripHtml(g.commentContent).slice(0, 150),
+    commentHtml: g.commentContent,
+    reactors: reactors.get(g.commentId) ?? [],
+    reactorCount: g.reactorCount,
+  }))
 }
 
 /** Marks every unread notification of the member's read (the panel opened). */

@@ -5,6 +5,7 @@ import { app } from '../../src/index'
 import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedComment } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { comments, notifications } from '../../src/db/schema'
+import { writeNotifications } from '../../src/lib/notifications'
 
 // Reacting to a comment notifies its author, in the app only. One stored row per
 // (comment, reactor, emoji), and the panel gets one collapsed row per comment.
@@ -137,6 +138,36 @@ describe('reacting to a comment notifies its author', () => {
     expect(unreadCount).toBe(1)
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ isUnread: true, reactorCount: 2 })
+  })
+
+  it('keeps the row\'s id when another reaction arrives, so the panel can match it', async () => {
+    await react('ben', '👍')
+    const before = (await inbox('ann')).notifications[0].id
+    await react('cara', '🔥')
+    const { notifications: rows } = await inbox('ann')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe(before)
+  })
+
+  it('lists an older comment\'s unread reaction however many reactions a newer comment has', async () => {
+    const older = await seedComment(billId, ids.ann, '<p>Ann earlier</p>')
+    await react('ben', '👍', older)
+    await getDb(env.DB).update(notifications).set({ createdAt: '2020-01-01 00:00:00' }).where(eq(notifications.commentId, older))
+
+    // 63 reactors x 8 emoji on the newer comment: 504 stored rows.
+    const emoji = ['👍', '❤️', '🔥', '🎉', '😂', '😮', '😢', '👀']
+    const reactors = await Promise.all(Array.from({ length: 63 }, (_, i) => seedUser({ name: `R${i}`, email: `r${i}@example.com` })))
+    await writeNotifications(getDb(env.DB), reactors.flatMap(actorId => emoji.map(e => ({
+      recipientId: ids.ann, kind: 'reaction' as const, billId, commentId, actorId, data: { emoji: e },
+    }))))
+    expect(await stored('ann')).toHaveLength(505)
+
+    const { unreadCount, notifications: rows } = await inbox('ann')
+    expect(rows.map(r => r.commentId)).toEqual([commentId, older])
+    expect(rows[0]).toMatchObject({ reactorCount: 63 })
+    expect(rows[0].reactors).toHaveLength(2)
+    expect(rows[1]).toMatchObject({ isUnread: true, reactorCount: 1, reactors: [{ id: ids.ben, name: 'Ben' }] })
+    expect(unreadCount).toBe(2)
   })
 
   it('hides the row when the comment is deleted', async () => {
