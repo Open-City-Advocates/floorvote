@@ -23,6 +23,7 @@ async function sha256Hex(s: string): Promise<string> {
 let sent: Sent[]
 let superadmins: string[]
 let suppressed: string[]
+let centralDown: boolean
 
 function testEnv(extra: Record<string, unknown> = {}) {
   return {
@@ -33,6 +34,7 @@ function testEnv(extra: Record<string, unknown> = {}) {
       // The superadmin allowlist, as hashes, the way central serves it.
       fetch: async (req: Request) => {
         if (new URL(req.url).pathname === '/api/admin/superadmin/emails') {
+          if (centralDown) return new Response('unavailable', { status: 503 })
           return new Response(JSON.stringify({ hashes: await Promise.all(superadmins.map(sha256Hex)) }))
         }
         return new Response('not found', { status: 404 })
@@ -106,6 +108,7 @@ beforeEach(async () => {
   sent = []
   superadmins = ['root@operator.example']
   suppressed = []
+  centralDown = false
   jane = await seedUser({ email: 'jane@oldjob.org', name: 'Jane Doe' })
   janeSession = await seedSession(jane)
   janeCookie = `session=${janeSession}`
@@ -201,6 +204,19 @@ describe('POST /users/me/email-change: validation', () => {
     expect(r.status).toBe(403)
     expect(r.body).toEqual({ error: "Your address is managed centrally, so it can't be changed here." })
     expect(sent).toHaveLength(0)
+  })
+
+  it("refuses, retryably, when central's superadmin list can't be read and nothing is cached", async () => {
+    // A cold isolate during a central outage must not read as "not a superadmin".
+    centralDown = true
+    const root = await seedUser({ email: 'root@operator.example', role: 'admin' })
+    for (const [cookie, email] of [[`session=${await seedSession(root)}`, 'root@elsewhere.org'], [janeCookie, 'root@operator.example']]) {
+      const r = await request(cookie, email)
+      expect(r).toMatchObject({ status: 503, body: { error: "Can't check this address right now. Try again in a few minutes." } })
+    }
+    expect(sent).toHaveLength(0)
+    expect(await getDb(env.DB).select().from(emailChanges).all()).toHaveLength(0)
+    expect((await eventsFor(jane)).filter(e => e.event === 'email_change_requested')).toHaveLength(0)
   })
 })
 
@@ -447,6 +463,20 @@ describe('confirming from the new address', () => {
     expect((await member(jane)).email).toBe('jane@oldjob.org')
     expect(await sessionAlive(otherSession)).toBe(true)
     expect((await confirm(token)).status).toBe(404)
+  })
+
+  it("refuses, retryably, when central's superadmin list can't be read, and keeps the change pending", async () => {
+    _resetSuperadminAllowlistCache()
+    centralDown = true
+    const r = await confirm(token)
+    expect(r).toMatchObject({ status: 503, body: { error: "Can't check this address right now. Try again in a few minutes." } })
+    expect((await member(jane)).email).toBe('jane@oldjob.org')
+    expect(await sessionAlive(otherSession)).toBe(true)
+
+    centralDown = false
+    _resetSuperadminAllowlistCache()
+    expect((await confirm(token)).status).toBe(200)
+    expect((await member(jane)).email).toBe('jane@newjob.org')
   })
 
   it('still reports success when the notice to the old address cannot be built after the commit', async () => {
