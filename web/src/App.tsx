@@ -21,9 +21,7 @@ import { Notifications } from './pages/admin/Notifications'
 import { EventRules } from './pages/admin/EventRules'
 import { DraftBills } from './pages/admin/DraftBills'
 import { Calendar, calendarLoader } from './pages/Calendar'
-import { People } from './oca/pages/People'
-import { HearingBrief } from './oca/pages/HearingBrief'
-import { PersonRecord } from './oca/pages/PersonRecord'
+import { ocaRoutes } from './oca'
 import { useAuth } from './hooks/useAuth'
 import { SidebarRefreshProvider } from './context/SidebarRefreshContext'
 import { FeedUnreadProvider } from './context/FeedUnreadContext'
@@ -193,9 +191,7 @@ export const routes = createRoutesFromElements(
         <Route path="bills" element={<BillList />} loader={billListLoader} />
         <Route path="bills/:billId" element={<BillDetail />} loader={billDetailLoader} errorElement={<BillDetailError />} />
         <Route path="calendar" element={<Calendar />} loader={calendarLoader} />
-        <Route path="calendar/brief/:eventId" element={<HearingBrief />} />
-        <Route path="people" element={<People />} />
-        <Route path="people/record/:key" element={<PersonRecord />} />
+        {ocaRoutes}
         <Route path="profile" element={<Profile />} />
         <Route element={<RequireAdmin />}>
           <Route path="admin" element={<Navigate to="/admin/members" replace />} />

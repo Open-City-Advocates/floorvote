@@ -19,6 +19,7 @@ import { countBadge } from '../lib/chipStyles'
 import { billUrl } from '../lib/sessionSlug'
 import { isModuleEnabled } from '../lib/modules'
 import { isModifiedClick, maybeOpenInNewTab } from '../lib/modifierClick'
+import { OcaSidebarLinks } from '../oca'
 import { useNotifications } from '../context/NotificationsContext'
 import { useFeedUnread } from '../context/FeedUnreadContext'
 import { useDemo } from '../context/DemoContext'
@@ -589,31 +590,7 @@ export function Sidebar({ isOpen, onClose, containerRef }: SidebarProps) {
             </>
           )}
         </NavLink>
-        {/* DC teams: the Council's committees and staff, and the team's records of them (oca/pages/People.tsx, the fork's own). */}
-        {config?.states.includes('DC') && (
-          <NavLink
-            to="/people"
-            onClick={(e) => {
-              if (isModifiedClick(e)) return
-              onClose()
-            }}
-            onMouseEnter={() => setNavHover('people')}
-            onMouseLeave={() => setNavHover(null)}
-            style={({ isActive }) => ({
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '7px 10px',
-              fontSize: fontSize.base,
-              fontWeight: fontWeight.medium,
-              color: isActive ? color.billBadgeNavy : color.textSlate,
-              background: isActive || navHover === 'people' ? color.bgAmberPriority : 'transparent',
-              textDecoration: 'none',
-              borderRadius: radius.md,
-              margin: '1px 10px',
-            })}
-          >
-            <span style={{ fontFamily: BRAND_FONT }}>People</span>
-          </NavLink>
-        )}
+        <OcaSidebarLinks onClose={onClose} navHover={navHover} setNavHover={setNavHover} />
       </nav>
       </div>
 

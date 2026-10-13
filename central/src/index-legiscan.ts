@@ -14,8 +14,7 @@ import { pullEngagementStats, shouldRunEngagementPull } from './cron/engagement-
 import { processIngestorQueue } from './queue/processor'
 import { processDeadLetterQueue } from './queue/deadLetters'
 import { billsRoutes } from './routes/bills'
-import { ocaAdminRoutes, ocaBillsRoutes } from './oca/routes'
-import { runDcDirectory } from './oca/directory'
+import { registerOcaRoutes, runOcaCrons } from './oca'
 import { tenantsRoutes } from './routes/tenants'
 import { adminRoutes } from './routes/admin'
 import { healthRoutes } from './routes/health'
@@ -60,9 +59,7 @@ app.route('/admin/dash', dashRoutes)
 // callers (tenant centralFetch, operator tooling) target /api/*; bare /tenants,
 // /bills, /admin now fall through to the SPA catch-all below.
 app.route('/api/tenants', tenantsRoutes)
-// The fork's own routes, ahead of upstream's so /api/bills/:id doesn't answer for them (src/oca).
-app.route('/api/bills', ocaBillsRoutes)
-app.route('/api/oca', ocaAdminRoutes)
+registerOcaRoutes(app)
 app.route('/api/bills', billsRoutes)
 app.route('/api/admin', adminRoutes)
 app.route('/api/health', healthRoutes)
@@ -116,8 +113,7 @@ export default {
     for (const provider of PROVIDERS.filter(p => p.listBodyEvents)) {
       ctx.waitUntil(runJob(env, `${provider.id}-body-events`, () => runBodyEventSync(provider, env, db)))
     }
-    // The fork's DC Council directory, seats, and terms: daily at 5 ET (src/oca).
-    ctx.waitUntil(runJob(env, 'dc-directory', () => runDcDirectory(env, db)))
+    runOcaCrons(env, ctx, db)
     if (getCurrentEtHour() === VOTE_DATASET_CHECK_HOUR_ET) {
       ctx.waitUntil(runJob(env, 'vote-datasets', () => checkVoteDatasets(env, db)))
     }

@@ -8,7 +8,7 @@ import { centralFetch } from '../../lib/centralFetch'
 import { backfillCalendar } from '../../lib/calendarBackfill'
 import { isHandle, parseHandle } from '../../../../shared/billHandle'
 import { nowDb } from '../../lib/dbTime'
-import { requestDeepForPrioritized } from '../../oca/deepAnalysis'
+import { ocaPriorityChanged } from '../../oca'
 import { buildBillsWhere, newMatchWhere } from './query'
 import { getNewMatchMinRelevance } from '../../lib/newMatch'
 import { decodeSubjectFilters } from '../../lib/billSubjects'
@@ -137,9 +137,7 @@ export function registerBulkRoutes(router: Hono<AppEnv>) {
           .set({ priority, updatedAt: now })
           .where(inArray(bills.id, billIds.slice(i, i + BULK_CHUNK)))
       }
-      // The fork's deep analyses: request one at an automatic priority, or withdraw a waiting one below it.
-      c.executionCtx.waitUntil(requestDeepForPrioritized(c.env, db, billIds)
-        .catch(err => console.error('[deep] request after bulk priority change failed', err)))
+      ocaPriorityChanged(c, db, billIds)
       if (priority) {
         // Latch each newly-prioritized match as triaged (idempotent — first actor wins).
         for (let i = 0; i < billIds.length; i += BULK_CHUNK) {

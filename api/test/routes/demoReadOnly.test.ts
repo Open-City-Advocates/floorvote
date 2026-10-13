@@ -6,6 +6,7 @@ import { getDb } from '../../src/db/client'
 import { users } from '../../src/db/schema'
 import { DEMO_WRITE_ALLOWLIST } from '../../src/middleware/auth'
 import type { RateLimiter } from '../../../shared/rateLimit'
+import { OCA_DEMO_DENIED } from '../oca'
 
 const LOCKED_BODY = { error: 'This action is locked in the demo' }
 const THROTTLED_BODY = { error: 'Too many changes from this connection — try again shortly' }
@@ -229,22 +230,7 @@ describe('demo write rate limit', () => {
 // classifies it, so neither failure mode — a dead additive route, a live
 // destructive one — can ship silently.
 const DENIED = new Set([
-  // The fork's deep-analysis queue is off on demo tenants and would hand work to an operator's worker.
-  'POST /api/deep/:kind/:subjectId/request',
-  'POST /api/deep/worker/requests/:id/claim',
-  'POST /api/deep/worker/requests/:id/release',
-  'POST /api/deep/worker/requests/:id/result',
-  // The fork's team links point at a team's own documents.
-  'POST /api/links/:kind/:subjectId',
-  'DELETE /api/links/:id',
-  // The fork's Council CRM: a team's notes on real Council offices and staff, not demo material.
-  'PUT /api/crm/people/:key',
-  'POST /api/crm/people/:key/contacts',
-  'PATCH /api/crm/contacts/:id',
-  'DELETE /api/crm/contacts/:id',
-  'POST /api/crm/people/:key/followups',
-  'PATCH /api/crm/followups/:id',
-  'DELETE /api/crm/followups/:id',
+  ...OCA_DEMO_DENIED,
   'DELETE /api/admin/custom-fields/:id',
   'DELETE /api/admin/members/:id',
   'DELETE /api/admin/roles/:id',
@@ -341,8 +327,8 @@ describe('demo write categorisation', () => {
 
   it('pins the size of each category so a silent shift is visible', () => {
     expect(DEMO_WRITE_ALLOWLIST.size).toBe(18)
-    expect(DENIED.size).toBe(64)  // upstream's 51, and the fork's 13 (CRM, deep analyses, team links)
-    expect(registered().length).toBe(88)
+    expect(DENIED.size).toBe(51 + OCA_DEMO_DENIED.length)
+    expect(registered().length).toBe(75 + OCA_DEMO_DENIED.length)
   })
 
   it('refuses every denied route with the read-only message', async () => {

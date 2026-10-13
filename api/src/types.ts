@@ -3,19 +3,14 @@ import type * as schema from './db/schema'
 import type { AuthVariables } from './middleware/auth'
 import type { RateLimiter } from '../../shared/rateLimit'
 import type { CalendarKind } from '../../shared/calendarKinds'
+import type { OcaEnv } from './oca'
 
 export type AppEnv = {
   Bindings: Env
   Variables: AuthVariables
 }
 
-export type Env = {
-  // The fork's deep-analysis queue (oca/deepAnalysis.ts).
-  DEEP_ANALYSIS_ENABLED?: string     // "true" turns on the deep-analysis queue
-  DEEP_ANALYSIS_PRIORITIES?: string  // priorities analysed automatically, comma-separated. Unset = "high,medium"
-  DEEP_WORKER_TOKEN?: string         // secret: bearer token the external deep-analysis worker presents
-  DEEP_WORKER_FIRE_URL?: string      // optional: POSTed when requests are waiting, e.g. a Claude Code routine's /fire URL
-  DEEP_WORKER_FIRE_TOKEN?: string    // secret: bearer token for DEEP_WORKER_FIRE_URL
+export type Env = OcaEnv & {
   DB: D1Database
   BILLS_BUCKET?: R2Bucket
   BILL_QUEUE?: Queue

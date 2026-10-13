@@ -7,8 +7,7 @@ import {
   bills, memberVotes, officialPositions, comments, notes, feedEvents, billTexts,
   billCustomFieldValues, calendarEventBills,
 } from '../../db/schema'
-import { teamLinks } from '../../oca/schema'
-import { requestDeepForPrioritized } from '../../oca/deepAnalysis'
+import { ocaPriorityChanged } from '../../oca'
 import type { AppEnv } from '../../types'
 import { centralFetch } from '../../lib/centralFetch'
 import { backfillCalendar } from '../../lib/calendarBackfill'
@@ -50,7 +49,6 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
       db.delete(memberVotes).where(eq(memberVotes.billId, id)),
       db.delete(notes).where(eq(notes.billId, id)),
       db.delete(billTexts).where(eq(billTexts.billId, id)),
-      db.delete(teamLinks).where(and(eq(teamLinks.subjectKind, 'bill'), eq(teamLinks.subjectId, id))),
       db.delete(bills).where(eq(bills.id, id)),
     ])
     return new Response(null, { status: 204 })
@@ -191,7 +189,6 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     }
     ops.push(db.update(calendarEventBills).set({ billId: filedBillId }).where(eq(calendarEventBills.billId, draftId)))
     ops.push(db.update(feedEvents).set({ billId: filedBillId }).where(eq(feedEvents.billId, draftId)))
-    ops.push(db.update(teamLinks).set({ subjectId: filedBillId }).where(and(eq(teamLinks.subjectKind, 'bill'), eq(teamLinks.subjectId, draftId))))
     ops.push(db.delete(bills).where(eq(bills.id, draftId)))
 
     await db.batch(ops as unknown as Parameters<typeof db.batch>[0])
@@ -288,9 +285,7 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     }
     const priority = (body.priority ?? null) as 'high' | 'medium' | 'low' | null
     await db.update(bills).set({ priority, updatedAt: nowDb() }).where(eq(bills.id, id))
-    // The fork's deep analyses: request one at an automatic priority, or withdraw a waiting one below it.
-    c.executionCtx.waitUntil(requestDeepForPrioritized(c.env, db, [id])
-      .catch(err => console.error('[deep] request after priority change failed', err)))
+    ocaPriorityChanged(c, db, [id])
     let promoted = false
     if (priority) {
       const userId = c.get('user').id

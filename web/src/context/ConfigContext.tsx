@@ -16,8 +16,7 @@ export interface OperatorConfig {
 }
 
 export interface AppConfig {
-  /** The fork's deep-analysis queue (deep analyses and hearing briefs) is on. */
-  deepAnalysis?: boolean
+  deepAnalysis?: boolean  // OCA's deep-analysis queue is on (web/src/oca)
   associationName?: string
   states: string[]
   multiState?: boolean
