@@ -34,6 +34,12 @@ export const ADMIN_SEND_LIMITS = {
   // five active links: enough to resend a couple of times and fix a typo, not
   // enough to pile mail onto one account.
   perMember: { max: 5, windowMinutes: 60 } satisfies SendLimit,
+  // One inbox, whichever member it is attached to. Without this an admin can
+  // rotate an address through several pending invites and stay under the
+  // per-member limit every time. Like the per-member limit, it counts only
+  // admin sends: the public sign-in form has its own cap, and its requests
+  // must not stop an admin resending to someone whose mail isn't arriving.
+  perAddress: { max: 5, windowMinutes: 60 } satisfies SendLimit,
   // One admin, across all members. Leaves room for working through a long list
   // of pending invites in one sitting, while a stolen or runaway session stops
   // at a few dozen messages rather than thousands.
@@ -42,6 +48,7 @@ export const ADMIN_SEND_LIMITS = {
 
 export const ADMIN_SEND_LIMIT_MESSAGES = {
   perMember: 'This member was sent several invites or sign-in links in the past hour. Ask them to check their spam folder, or try again in a little while.',
+  perAddress: 'That address was sent several invites or sign-in links in the past hour. Ask the person to check their spam folder, or try again in a little while.',
   perAdmin: "You've sent a lot of invites and sign-in links in the past hour. Please wait a little while before sending more.",
 } as const
 
@@ -52,7 +59,7 @@ export const ADMIN_SEND_LIMIT_MESSAGES = {
  * requests don't count against an admin helping them.
  */
 export interface SendCheck {
-  column: 'actor_id' | 'user_id'
+  column: 'actor_id' | 'user_id' | 'email'
   value: string
   limit: SendLimit
   message: string
@@ -72,11 +79,16 @@ export interface SendClaim {
 
 export type ClaimResult = { ok: true; id: string } | { ok: false; message: string }
 
-/** The checks for an admin's email to one member. */
-export function adminSendChecks(adminId: string, memberId: string): SendCheck[] {
+/**
+ * The checks for an admin's email to one member's address. The address is
+ * compared lowercased (and `claimSend` writes it lowercased) so the index on
+ * (email, created_at) serves it.
+ */
+export function adminSendChecks(adminId: string, memberId: string, address: string): SendCheck[] {
   return [
     { column: 'actor_id', value: adminId, limit: ADMIN_SEND_LIMITS.perAdmin, message: ADMIN_SEND_LIMIT_MESSAGES.perAdmin },
     { column: 'user_id', value: memberId, limit: ADMIN_SEND_LIMITS.perMember, message: ADMIN_SEND_LIMIT_MESSAGES.perMember, byAdminsOnly: true },
+    { column: 'email', value: address.toLowerCase(), limit: ADMIN_SEND_LIMITS.perAddress, message: ADMIN_SEND_LIMIT_MESSAGES.perAddress, byAdminsOnly: true },
   ]
 }
 

@@ -233,15 +233,15 @@ adminApiRouter.post('/members/bulk-invite', async (c) => {
 
 // Admin-sent links. An admin's email is allowed by claiming a send first
 // (lib/adminSendLimits.ts): the claim is the send's link_requested event and is
-// written only if the admin and the member are both under their limits, in one
-// statement so parallel requests can't slip past. Refused, the caller answers
-// 429 and nothing has been created.
+// written only if the admin, the member, and the address are all under their
+// limits, in one statement so parallel requests can't slip past. Refused, the
+// caller answers 429 and nothing has been created.
 async function claimAdminSend(c: Context<AppEnv>, target: { id: string; email: string }, linkType: 'invite' | 'login') {
   const adminId = c.get('user').id
   return claimSend(
     c.env.DB,
     { event: 'link_requested', userId: target.id, email: target.email, linkType, actorId: adminId, ...authReqContext(c) },
-    adminSendChecks(adminId, target.id),
+    adminSendChecks(adminId, target.id, target.email),
   )
 }
 
@@ -344,7 +344,7 @@ adminApiRouter.post('/members/:id/change-email', async (c) => {
 
   // Last, so a request refused above uses none of the allowance, and before
   // the update so a refused change leaves the address as it was. The send is
-  // to the new address, so that is the address its event records.
+  // to the new address, so that is the address it counts against.
   const claim = await claimAdminSend(c, { id: target.id, email }, 'invite')
   if (!claim.ok) return c.json({ error: claim.message }, 429)
 
