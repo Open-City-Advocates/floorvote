@@ -23,6 +23,7 @@ import { DEFAULT_TAXONOMY, serializeTaxonomy, type TaxonomyItem } from '../../..
 import { useUnsavedRegistration } from '../../lib/unsavedText'
 import { MissingRequiredReason, useRequiredSubmit } from '../../components/RequiredField'
 import TagTaxonomyTable from './TagTaxonomyTable'
+import { KeywordMatchSummary } from './KeywordMatchSummary'
 import { rowsFromTaxonomy, rowsToTaxonomy, type TaxonomyRow } from './taxonomyRows'
 
 type ConfigData = {
@@ -81,6 +82,9 @@ export function Config() {
     useState<Partial<Record<ResettableField, string | TaxonomyRow[]>>>({})
 
   const [keywords, setKeywords] = useState('')
+  // The keywords as last loaded or saved. State rather than the snapshot ref,
+  // because the match summary re-renders on it.
+  const [savedKeywordsText, setSavedKeywordsText] = useState('')
   const [associationName, setAssociationName] = useState('')
   const [orgNoun, setOrgNoun] = useState<string>('team')
   const [nounChoice, setNounChoice] = useState<string>('team')
@@ -192,6 +196,7 @@ export function Config() {
       .then((data) => {
         const keywordsString = Array.isArray(data.keywords) && data.keywords.length > 0 ? data.keywords.join('\n') : ''
         setKeywords(keywordsString)
+        setSavedKeywordsText(keywordsString)
         const associationNameValue = data.association_name ?? ''
         setAssociationName(associationNameValue)
         const noun = data.org_noun ?? 'team'
@@ -377,6 +382,7 @@ export function Config() {
       }
       clearUndoValue('keywords')
       updateSnapshot({ keywords })
+      setSavedKeywordsText(keywords)
       setSavedKeywords(true)
       setTimeout(() => { setSavedKeywords(false); setSyncKeywordsResult(null) }, 4000)
     } catch (err) {
@@ -750,6 +756,7 @@ export function Config() {
                 minHeight={60}
                 style={{ fontFamily: 'monospace', fontSize: fontSize.sm }}
               />
+              <KeywordMatchSummary keywords={keywords} savedKeywords={savedKeywordsText} />
               <div style={hintStyle}>
                 <HintText text={'One keyword or phrase per line. Matching is case-insensitive and checks bill titles, descriptions, and bill numbers. A keyword on its own matches a whole word: `election` matches "election" but not "elections" or "selection". Add `*` to widen it — `election*` also matches "elections". `*corporat*` matches "corporations" and "incorporated". Multi-word phrases work the same way: `board of canvassers` matches that exact phrase. Use `#` for a single digit: `5.#*` matches "5.02" and "5.35" but not "115.385" — useful when a keyword is a number, like a statute section.'} />
               </div>

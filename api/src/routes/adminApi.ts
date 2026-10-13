@@ -9,6 +9,7 @@ import { generateToken, hashToken } from '../lib/crypto'
 import { sendMagicLink } from '../lib/email'
 import { registerWithCentral } from '../cron/sync'
 import { matchesKeywords, billMatchText } from '../lib/keywords'
+import { summarizeKeywordMatches } from '../lib/keywordMatchSummary'
 import { centralFetch } from '../lib/centralFetch'
 import { parseHandle } from '../../../shared/billHandle'
 import { isWildcardKeyword } from '../../../shared/keywords'
@@ -1051,6 +1052,24 @@ adminApiRouter.post('/keyword-resync-preview', async (c) => {
   }
 
   return c.json({ wouldAdd, wouldDemote, wouldProtect })
+})
+
+// POST /admin/keyword-match-summary — how many of the instance's bills a keyword list matches.
+// Accepts { keywords: string[] } (the proposed list, not yet saved) and counts against every
+// bill, analyzed or not, with the shared matcher. Also reports how many bills saving would
+// newly match or unmatch versus the saved list. Reads only; no central or AI calls.
+adminApiRouter.post('/keyword-match-summary', async (c) => {
+  const db = getDb(c.env.DB)
+  const body = await c.req.json().catch(() => null) as { keywords?: unknown } | null
+  const keywords = body?.keywords
+  if (!Array.isArray(keywords) || !keywords.every((k): k is string => typeof k === 'string')) {
+    return c.json({ error: 'keywords must be a list of strings' }, 400)
+  }
+
+  const kwRow = await db.select().from(associationConfig).where(eq(associationConfig.key, 'keywords')).get()
+  const saved: string[] = kwRow ? JSON.parse(kwRow.value) : []
+
+  return c.json(await summarizeKeywordMatches(db, c.env.TENANT_ID, keywords, saved))
 })
 
 // POST /admin/reprocess-bill/:externalId — reprocess a single bill, forcing AI re-run
