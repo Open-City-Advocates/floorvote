@@ -214,6 +214,8 @@ async function corpusFor(db: AppDb, tenantKey: string): Promise<string[] | null>
     if (started) return started
   }
 
+  // Drop the stale corpus first, so the old and new ones are never held at once.
+  corpora.delete(tenantKey)
   const read = loadCorpus(db, tenantKey).finally(() => loading.delete(tenantKey))
   loading.set(tenantKey, read)
   return read
