@@ -66,6 +66,15 @@ describe('GET /notifications', () => {
     expect(body.notifications).toHaveLength(0)
   })
 
+  it("uses the session slug central stored, not the one the session name implies", async () => {
+    const stored = await seedBill({ billNumber: 'HB 2', state: 'RI', session: '2026 Regular Session', sessionSlug: '2026-2' })
+    const storedComment = await seedComment(stored, authorId, '<p>Hi</p>')
+    await seedCommentMention(storedComment, userId, { sourceType: 'user', sourceId: userId })
+
+    const body = await getNotifications(token)
+    expect(body.notifications.find(n => n.commentId === storedComment)?.sessionSlug).toBe('2026-2')
+  })
+
   it('returns an unread mention with kind mention and the correct shape', async () => {
     await seedCommentMention(commentId, userId, { sourceType: 'user', sourceId: userId })
 
