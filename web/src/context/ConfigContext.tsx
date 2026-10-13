@@ -33,6 +33,8 @@ export interface AppConfig {
    */
   attribution?: Attribution
   accountDeletionEnabled?: boolean
+  /** False when an admin turned conversation (mention and reply) emails off for everyone. */
+  conversationEmailsEnabled?: boolean
   /**
    * What each covered state's data can do, by state, from the provider central
    * reads it from. A state left out has none. Gate features on these, never on

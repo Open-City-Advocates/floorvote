@@ -17,8 +17,9 @@ vi.mock('../context/AuthContext', () => ({
   }),
 }))
 
+const appConfig = vi.hoisted(() => ({ value: { orgNoun: 'coalition' } as Record<string, unknown> }))
 vi.mock('../context/ConfigContext', () => ({
-  useConfig: () => ({ config: { orgNoun: 'coalition' }, multiState: false, loading: false }),
+  useConfig: () => ({ config: appConfig.value, multiState: false, loading: false }),
 }))
 
 function mockConfig(modules: Record<string, unknown>) {
@@ -124,5 +125,26 @@ describe('Profile reply-emails switch', () => {
 
     expect(fetch).toHaveBeenCalledWith('/users/me', { method: 'PATCH', body: JSON.stringify({ emailRepliesEnabled: false }) })
     expect(replies).not.toBeChecked()
+  })
+})
+
+describe('Profile reply-emails switch when the org turned conversation emails off', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    appConfig.value = { orgNoun: 'coalition', conversationEmailsEnabled: false }
+    return () => { appConfig.value = { orgNoun: 'coalition' } }
+  })
+
+  it('greys + notes the replies row and does not save a click', async () => {
+    const fetch = vi.spyOn(api, 'apiFetch').mockImplementation(async () => ({}) as never)
+    render(<MemoryRouter><Profile /></MemoryRouter>)
+    const row = document.getElementById('setting-email-replies')!
+
+    expect(within(row).getByText('Turned off by your coalition.')).toBeInTheDocument()
+    expect(row.style.opacity).toBe('0.55')
+    const replies = within(row).getByRole('switch')
+    expect(replies).toBeDisabled()
+    await userEvent.click(replies)
+    expect(fetch).not.toHaveBeenCalledWith('/users/me', expect.anything())
   })
 })

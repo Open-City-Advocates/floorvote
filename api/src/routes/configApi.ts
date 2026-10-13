@@ -5,6 +5,7 @@ import { getDb } from '../db/client'
 import { associationConfig, customFieldDefinitions } from '../db/schema'
 import { ensureAssociationName } from '../lib/associationName'
 import { getAccountDeletionEnabled } from '../lib/accountDeletion'
+import { mentionEmailsEnabled } from '../lib/mentions'
 import { loadEffectiveTaxonomy } from '../lib/taxonomy'
 import { centralFetch } from '../lib/centralFetch'
 import { readStateAttribution, readStateCapabilities } from '../lib/bodyEvents'
@@ -47,6 +48,8 @@ configRouter.get('/', async (c) => {
   const db = getDb(c.env.DB)
   await ensureAssociationName(c.env, db)
   const accountDeletionEnabled = await getAccountDeletionEnabled(db)
+  // The admin's "Conversation emails" switch, so Profile can show the reply-emails switch as off.
+  const conversationEmailsEnabled = await mentionEmailsEnabled(db)
 
   const [nameRow, sessionsRow, posLabelRow, coverageRow, posVocabRow, modulesRow, orgNounRow, demoBannerRow, demoResetAtRow, taxonomyItems, knownCapabilities, knownAttribution] = await Promise.all([
     db.select().from(associationConfig).where(eq(associationConfig.key, 'association_name')).get(),
@@ -225,7 +228,7 @@ configRouter.get('/', async (c) => {
   // reset, and on every non-demo tenant.
   const demoResetAt = demoResetAtRow?.value
 
-  return c.json({ associationName, positionVocabulary, state: c.env.STATE ?? '', states, multiState, sessions, orgNoun, instanceDomains, demoMode, demoLocked, demoResetAt, modules, operator, attribution, accountDeletionEnabled, tagTaxonomy, demoBanner, capabilities })
+  return c.json({ associationName, positionVocabulary, state: c.env.STATE ?? '', states, multiState, sessions, orgNoun, instanceDomains, demoMode, demoLocked, demoResetAt, modules, operator, attribution, accountDeletionEnabled, conversationEmailsEnabled, tagTaxonomy, demoBanner, capabilities })
 })
 
 // GET /config/sessions?state=NJ — per-state session list, proxied from central

@@ -125,9 +125,9 @@ export function Profile() {
     setDigestEnabled(user?.emailDigestEnabled ?? true)
   }, [user?.emailDigestEnabled])
 
-  // Reply emails are a per-member switch only: the instance's "Conversation
-  // emails" switch lives on the admin page, and the in-app replies stay on
-  // whatever this says.
+  // Reply emails: the member's switch, under the admin's "Conversation emails"
+  // switch. In-app replies stay on whatever either says.
+  const repliesAdminOff = config?.conversationEmailsEnabled === false
   const [repliesEnabled, setRepliesEnabled] = useState<boolean>(() => user?.emailRepliesEnabled ?? true)
   const [repliesSaving, setRepliesSaving] = useState(false)
 
@@ -162,7 +162,7 @@ export function Profile() {
   }
 
   async function toggleReplies() {
-    if (demoLocked || repliesSaving) return
+    if (demoLocked || repliesAdminOff || repliesSaving) return
     const next = !repliesEnabled
     setRepliesEnabled(next)
     setRepliesSaving(true)
@@ -411,7 +411,7 @@ export function Profile() {
               border: `1px solid ${color.borderDefault}`,
               borderRadius: radius.lg,
               background: color.white,
-              opacity: demoLocked ? 0.55 : 1,
+              opacity: demoLocked || repliesAdminOff ? 0.55 : 1,
               boxShadow: flashedSetting === 'setting-email-replies' ? `0 0 0 3px ${color.borderAmber}` : undefined,
               transition: 'box-shadow 0.6s ease',
             }}
@@ -420,6 +420,9 @@ export function Profile() {
               <div style={{ fontSize: fontSize.sm, color: color.textSlate, lineHeight: 1.5 }}>
                 <div style={{ fontWeight: fontWeight.bold, color: color.textPrimary }}>Replies on bills you've commented on</div>
                 <div>Email me when someone else comments on a bill I've commented on. Replies still appear in your notifications.</div>
+                {repliesAdminOff && (
+                  <div style={{ marginTop: 2, color: color.textMuted, fontWeight: fontWeight.medium }}>{adminOffNote}</div>
+                )}
               </div>
               <label
                 style={{
@@ -428,7 +431,7 @@ export function Profile() {
                   width: 38,
                   height: 22,
                   flexShrink: 0,
-                  cursor: demoLocked ? 'not-allowed' : 'pointer',
+                  cursor: demoLocked || repliesAdminOff ? 'not-allowed' : 'pointer',
                 }}
               >
                 <input
@@ -436,7 +439,7 @@ export function Profile() {
                   role="switch"
                   aria-label="Toggle Replies on bills you've commented on"
                   checked={repliesEnabled}
-                  disabled={repliesSaving || demoLocked}
+                  disabled={repliesSaving || demoLocked || repliesAdminOff}
                   onChange={toggleReplies}
                   style={{ opacity: 0, width: 0, height: 0, position: 'absolute' }}
                 />

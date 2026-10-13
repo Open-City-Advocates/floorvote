@@ -122,6 +122,16 @@ describe('GET /config', () => {
     expect(body.modules).toEqual({ 'waiting-for-vote': true })
   })
 
+  it('reports whether an admin turned conversation emails off', async () => {
+    const read = async () => {
+      const res = await SELF.fetch('http://localhost/api/config', { headers: { Cookie: cookie } })
+      return (await res.json() as { conversationEmailsEnabled: boolean }).conversationEmailsEnabled
+    }
+    expect(await read()).toBe(true)
+    await getDb(env.DB).insert(associationConfig).values({ key: 'mention_emails_enabled', value: 'false' })
+    expect(await read()).toBe(false)
+  })
+
   it('returns modules as {} when the stored value is malformed JSON', async () => {
     const db = getDb(env.DB)
     await db.insert(associationConfig).values({
