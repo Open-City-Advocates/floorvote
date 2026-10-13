@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest'
-import { getProvider } from '../../../src/providers'
 import sampleRaw from '../../fixtures/mga/2026RS-sample.json?raw'
 import type { MgaRecord } from '../../../src/providers/mga/client'
 import {
@@ -197,10 +196,6 @@ describe('buildMgaBill', () => {
     expect(b.texts.every(t => /^[0-9a-f]{64}$/.test(t.text_hash))).toBe(true)
     expect(new Set(b.texts.map(t => t.text_hash)).size).toBe(2)
     expect(b.texts.map(t => t.text_hash)).toEqual((await buildMgaBill(rec('HB0001'), '2026RS', 3000000101, 'other', SESSION, ids)).texts.map(t => t.text_hash))
-    // The declared capabilities (the State coverage page) match what the mapping produces.
-    expect(getProvider('mga').coverage).toMatchObject({
-      memberVotes: b.votes.some(v => v.member_votes?.length), billText: b.texts.length > 0,
-    })
     expect(b.supplements[0]).toMatchObject({
       type: 'Fiscal Note', state_link: 'https://mgaleg.maryland.gov/2026RS/fnotes/bil_0001/hb0001.pdf',
     })

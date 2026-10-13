@@ -33,10 +33,9 @@ export const template: Provider = {
     name: 'Template Legislature',
     url: 'https://legislature.example.gov',
   },
-  // TEMPLATE: who maintains the provider (GitHub handles, no @), and `experimental` until it has run through a
-  // session. Say whether it supplies member votes and bill text. A test asserts both against your fixtures.
+  // TEMPLATE: who maintains the provider (GitHub handles, no @).
   // Keep CODEOWNERS' line for this directory in step. The State coverage page lists only registered providers.
-  coverage: { maintainers: ['wtadler'], status: 'experimental', memberVotes: false, billText: false },
+  coverage: { maintainers: ['wtadler'] },
   // TEMPLATE: the env keys the provider reads, such as its API key, declared in central's Env type.
   // `ctx.env` holds these and nothing else. Add `configured` when the provider can't run without one.
   envKeys: [],

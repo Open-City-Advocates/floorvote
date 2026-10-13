@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest'
-import { getProvider } from '../../../src/providers'
 import s2026Raw from '../../fixtures/lis/20261-sample.json?raw'
 import s2027Raw from '../../fixtures/lis/20271-sample.json?raw'
 import { parseCsv, parseCsvRecords, forEachCsvRow } from '../../../src/providers/lis/csv'
@@ -255,10 +254,6 @@ describe('buildLisBill', () => {
 
     // Each vote's tally, counted from the member rows, matches the one the history line states.
     expect(b.votes.length).toBeGreaterThan(3)
-    // The declared capabilities (the State coverage page) match what the mapping produces.
-    expect(getProvider('lis').coverage).toMatchObject({
-      memberVotes: b.votes.some(v => v.member_votes?.length), billText: b.texts.length > 0,
-    })
     for (const v of b.votes) {
       const m = /\((\d+)-Y (\d+)-N/.exec(v.desc)
       if (m) expect([v.yea, v.nay]).toEqual([Number(m[1]), Number(m[2])])

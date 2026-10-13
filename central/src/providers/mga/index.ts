@@ -21,7 +21,7 @@ export const mga: Provider = {
     name: 'Maryland General Assembly',
     url: 'https://mgaleg.maryland.gov',
   },
-  coverage: { maintainers: ['anotherpanacea-eng', 'wtadler'], status: 'experimental', memberVotes: false, billText: true },
+  coverage: { maintainers: ['anotherpanacea-eng'] },
   envKeys: [],
   // The file carries no votes, so a bill's roll calls are always none.
   replacesRollCalls: true,

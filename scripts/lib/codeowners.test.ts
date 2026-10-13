@@ -9,7 +9,7 @@ const read = (path: string) => readFileSync(resolve(ROOT, path), 'utf8')
 
 const provider = (id: string, maintainers: string[]): Parameters<typeof renderCodeowners>[0][number] => ({
   id,
-  coverage: { maintainers, status: 'experimental', memberVotes: false, billText: false },
+  coverage: { maintainers },
 })
 const ownerLines = (text: string) => text.split('\n').filter(l => l && !l.startsWith('#')).map(l => l.split(/\s+/))
 
@@ -19,10 +19,11 @@ describe('CODEOWNERS', () => {
     expect(read(CODEOWNERS_PATH)).toBe(generated)
   })
 
-  it('names, for each registered provider, exactly its declared maintainers', () => {
+  it('names, for each registered provider, its declared maintainers and the owners of `*`', () => {
     const lines = new Map(ownerLines(read(CODEOWNERS_PATH)).map(([path, ...owners]) => [path, owners]))
     for (const p of PROVIDERS) {
-      expect(lines.get(`/central/src/providers/${p.id}/`), p.id).toEqual(p.coverage.maintainers.map(h => `@${h}`))
+      const expected = [...new Set([...p.coverage.maintainers, ...lines.get('*')!.map(o => o.slice(1))])].map(h => `@${h}`)
+      expect(lines.get(`/central/src/providers/${p.id}/`), p.id).toEqual(expected)
     }
   })
 })
@@ -46,7 +47,7 @@ describe('renderCodeowners', () => {
     expect(lines.slice(5)).toEqual([
       ['/central/src/providers/lims/', '@wtadler'],
       ['/central/test/providers/lims/', '@wtadler'],
-      ['/central/src/providers/lis/', '@jo'],
+      ['/central/src/providers/lis/', '@jo', '@wtadler'],
       ['/central/src/providers/mga/', '@jo', '@wtadler'],
       ['/central/test/providers/mga/', '@jo', '@wtadler'],
     ])

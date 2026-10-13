@@ -4,7 +4,7 @@ description: "How to add a data provider to FloorVote: the provider model, the r
 
 # Adding a data provider
 
-LegiScan supplies FloorVote's bill data for every state. A **provider** is an adapter that reads a legislature's own feed instead, for a state where that feed is better: fresher, richer, or free of LegiScan's call budget. DC, Maryland, and Virginia have providers today. You can add one for your state by copying a template directory, following this page, and testing the way maintainers do. You won't touch tenant, web, or pipeline code.
+LegiScan supplies FloorVote's bill data for every state. A **provider** is an adapter that reads a legislature's own feed instead. DC, Maryland, and Virginia have providers today. You can add one for your state by copying a template directory, following this page, and testing the way maintainers do. You won't touch tenant, web, or pipeline code.
 
 The [State coverage](/contributing/state-coverage) page lists the providers that exist and who maintains them. It lists what the code supports, not which provider a given deployment uses.
 
@@ -29,7 +29,7 @@ A field only your feed publishes goes in **extras**: display-only values the bil
 
 ### Official feeds only
 
-Read the legislature's own API or its published data files. Don't scrape HTML pages. Use an undocumented endpoint only when an error, an unexpected shape, or an empty answer from it changes nothing. Check the feed's terms before you start. Virginia's LIS API has bill text and meeting schedules, for example, but its terms are non-commercial, so that provider reads the CSV files only.
+Read the legislature's own API or its published data files. Parsing HTML pages is a last resort: do it only when no API or data file has the data you need. Use an undocumented endpoint only when an error, an unexpected shape, or an empty answer from it changes nothing. Check the feed's terms before you start. Virginia's LIS API has bill text and meeting schedules, for example, but its terms are non-commercial, so that provider reads the CSV files only.
 
 ### Fail closed
 
@@ -170,7 +170,7 @@ A provider test mocks `rateLimitedFetch` with [`unpacedFetch`](https://github.co
 Each provider declares who maintains it, as GitHub handles in `coverage.maintainers` in its `index.ts`. Everything else follows from that one declaration:
 
 - The [State coverage](/contributing/state-coverage) page lists each provider's maintainers.
-- [`.github/CODEOWNERS`](https://github.com/floorvote/floorvote/blob/main/.github/CODEOWNERS) is generated from the declarations (`npm run gen:codeowners`), so GitHub asks a provider's maintainers to review changes to its source directory and its tests. Don't edit that file by hand. A test fails when it is out of date.
+- [`.github/CODEOWNERS`](https://github.com/floorvote/floorvote/blob/main/.github/CODEOWNERS) is generated from the declarations (`npm run gen:codeowners`), so GitHub asks a provider's maintainers, and the project maintainer, to review changes to its source directory and its tests. Don't edit that file by hand. A test fails when it is out of date.
 - A pull request from an outside contributor that changes a provider's directory gets one comment mentioning that provider's maintainers, other than the author and the project maintainers (the owners of the `*` line in CODEOWNERS), who merge everything and are never mentioned. A pull request opened by a project maintainer gets no comment. The comment is updated rather than repeated as the branch changes, and a draft waits until it is marked ready for review.
 
 Maintainers review changes to their provider. The project maintainer merges.

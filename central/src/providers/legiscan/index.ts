@@ -12,7 +12,7 @@ export const legiscan: Provider<'LEGISCAN_API_KEY'> = {
   displayName: 'LegiScan',
   // Shared with the tenant API, which shows it until central has answered.
   attribution: LEGISCAN_ATTRIBUTION,
-  coverage: { maintainers: ['wtadler'], status: 'stable', memberVotes: true, billText: true },
+  coverage: { maintainers: ['wtadler'] },
   envKeys: ['LEGISCAN_API_KEY'],
 
   listSessions: (state, ctx) =>

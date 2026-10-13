@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from 'vitest'
-import { getProvider } from '../../../src/providers'
 import bulkRaw from '../../fixtures/lims/bulk-records.json?raw'
 import details0400Raw from '../../fixtures/lims/details-B26-0400.json?raw'
 import detailsHnRaw from '../../fixtures/lims/details-HN26-0171.json?raw'
@@ -310,10 +309,6 @@ describe('buildLimsBill: B26-0400 (bill with full history, details and votes)', 
   it('records Councilmember votes with per-member rows', async () => {
     const b = await build('B26-0400', d0400)
     expect(b.votes.length).toBeGreaterThan(0)
-    // The declared capabilities (the State coverage page) match what the mapping produces.
-    expect(getProvider('lims').coverage).toMatchObject({
-      memberVotes: b.votes.some(v => v.member_votes?.length), billText: b.texts.length > 0,
-    })
     const v = b.votes[0]
     expect(v.member_votes!.length).toBe(v.total)
     expect(v.yea + v.nay + v.nv + v.absent).toBe(v.total)

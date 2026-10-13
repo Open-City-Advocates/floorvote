@@ -22,7 +22,7 @@ export const lis: Provider = {
     name: 'Virginia Legislative Information System',
     url: 'https://lis.virginia.gov',
   },
-  coverage: { maintainers: ['anotherpanacea-eng', 'wtadler'], status: 'experimental', memberVotes: true, billText: false },
+  coverage: { maintainers: ['anotherpanacea-eng'] },
   envKeys: [],
   states: [LIS_STATE],
   // A bill's record carries every vote (VOTE.CSV is read whole or the pass fails).

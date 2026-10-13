@@ -32,12 +32,14 @@ export function renderCodeowners(
   providers: readonly Pick<Provider, 'id' | 'coverage'>[],
   hasTestDir: (id: string) => boolean,
 ): string {
+  const starOwners = [PROJECT_OWNER]
   const lines: [path: string, owners: string[]][] = [
-    ['*', [PROJECT_OWNER]],
+    ['*', starOwners],
     ...CORE_BOUNDARY_PATHS.map((p): [string, string[]] => [p, [PROJECT_OWNER]]),
   ]
   for (const p of [...providers].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
-    const owners = [...p.coverage.maintainers]
+    // The owners of `*` stay owners here, since a later line replaces the earlier ones.
+    const owners = [...new Set([...p.coverage.maintainers, ...starOwners])]
     lines.push([`${PROVIDERS_ROOT}${p.id}/`, owners])
     if (hasTestDir(p.id)) lines.push([`${PROVIDER_TESTS_ROOT}${p.id}/`, owners])
   }
