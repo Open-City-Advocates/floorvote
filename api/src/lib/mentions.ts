@@ -418,6 +418,16 @@ export async function syncMentionsOnEdit(
   const newcomers = (await resolveMentionTargets(db, added, authorUserId, authorRole))
     .filter(t => !existingIds.has(t.userId))
   await recordAndEmail(db, newcomers, commentId, html, authorUserId, billId, env, waitUntil)
+  // A participant this edit mentions gets the mention instead of the reply they
+  // had for the comment, as on create (lib/replies.ts).
+  if (newcomers.length > 0) {
+    await db.delete(notifications).where(and(
+      eq(notifications.commentId, commentId),
+      eq(notifications.kind, 'reply'),
+      inArray(notifications.recipientId, db.select({ id: notifications.recipientId }).from(notifications)
+        .where(and(eq(notifications.commentId, commentId), eq(notifications.kind, 'mention')))),
+    ))
+  }
   return [...reached, ...newcomers.map(t => t.userId)]
 }
 

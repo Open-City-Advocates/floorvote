@@ -187,6 +187,20 @@ describe('replying to a bill notifies its other commenters', () => {
     expect(after.notifications.map(n => n.id).sort()).toEqual(before.notifications.map(n => n.id).sort())
   })
 
+  it('replaces a participant\'s reply with the mention when an edit mentions them', async () => {
+    await comment('ben', '<p>First</p>')
+    await comment('cara', '<p>Second</p>')
+    const commentId = await comment('ann', '<p>Third</p>')
+
+    const res = await request(`/api/comments/${commentId}`, 'PATCH', 'ann', { content: `<p>Third, ${mention(ids.ben, 'Ben')}</p>` })
+    expect(res.status).toBe(200)
+
+    const ben = (await inbox('ben')).notifications.filter(n => n.commentId === commentId)
+    expect(ben.map(n => n.kind)).toEqual(['mention'])
+    const cara = (await inbox('cara')).notifications.filter(n => n.commentId === commentId)
+    expect(cara.map(n => n.kind)).toEqual(['reply'])
+  })
+
   it('emails each participant once with threading headers keyed to the bill', async () => {
     await comment('ben', '<p>First</p>')
     await comment('cara', '<p>Second</p>')
