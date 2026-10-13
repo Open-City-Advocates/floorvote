@@ -468,7 +468,7 @@ export async function fireDeepWorker(env: Env, db: AppDb, opts: { manual?: boole
     headers['anthropic-beta'] = 'experimental-cc-routine-2026-04-01'
     headers['anthropic-version'] = '2023-06-01'
   }
-  const now = new Date().toISOString()
+  const now = new Date().toISOString() // ts-write-ok: config value read by Date.parse
   // Record the attempt first, so a failing endpoint is retried on the next interval, not every call.
   await db.insert(associationConfig).values({ key: LAST_FIRE_KEY, value: now })
     .onConflictDoUpdate({ target: associationConfig.key, set: { value: now } })
