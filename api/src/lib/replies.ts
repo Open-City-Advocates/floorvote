@@ -105,7 +105,7 @@ export interface ReplyEmailInput {
   bill: {
     id: string; billNumber: string; title: string
     isDraft?: boolean
-    state: string | null; session: string
+    state: string | null; session: string; sessionSlug?: string | null
     priority: 'high' | 'medium' | 'low' | null
     tenantSummary: string | null
   }
@@ -125,7 +125,7 @@ export function renderReplyEmail(input: ReplyEmailInput): string {
     billSessionSlug: null, billState: bill.state, billSummary: bill.tenantSummary ?? null,
     billPriority: bill.priority, billMatchType: null, billIsDraft: bill.isDraft ?? false, date: '', events: [],
   })
-  const billHref = `${appUrl}${billUrl({ id: bill.id, state: bill.state, session: bill.session, billNumber: bill.billNumber })}`
+  const billHref = `${appUrl}${billUrl({ id: bill.id, state: bill.state, session: bill.session, sessionSlug: bill.sessionSlug, billNumber: bill.billNumber })}`
   const commentRow = renderCommentRow({
     appUrl, name: author.name, subtitle: author.subtitle,
     dateText: formatEmailDateTime(comment.createdAt),
@@ -175,7 +175,7 @@ async function sendReplyEmails(
   const [bill] = await db
     .select({
       id: bills.id, billNumber: bills.billNumber, title: bills.title, isDraft: bills.isDraft,
-      state: bills.state, session: bills.session, priority: bills.priority, tenantSummary: bills.tenantSummary,
+      state: bills.state, session: bills.session, sessionSlug: bills.sessionSlug, priority: bills.priority, tenantSummary: bills.tenantSummary,
     })
     .from(bills).where(eq(bills.id, billId)).all()
   if (!author || !bill) return

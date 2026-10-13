@@ -218,6 +218,17 @@ describe('replying to a bill notifies its other commenters', () => {
     expect(first.headers!['List-Unsubscribe']).toBeUndefined()
   })
 
+  it('links the reply email to the bill by the session slug central stored', async () => {
+    const filed = await seedBill({ billNumber: 'HB 7', state: 'RI', session: '2026 Regular Session', sessionSlug: '2026-2' })
+    await comment('ben', '<p>First</p>', filed)
+    send.mockClear()
+    await comment('ann', '<p>Second</p>', filed)
+
+    const [toBen] = sent().filter(m => m.to[0] === 'ben@example.com')
+    expect(toBen.html).toContain('/RI/2026-2/HB 7')
+    expect(toBen.html).not.toContain('/RI/2026/HB 7')
+  })
+
   it('links reply emails to the member\'s Profile setting', async () => {
     await comment('ben', '<p>First</p>')
     send.mockClear()
