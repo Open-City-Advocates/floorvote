@@ -8,7 +8,7 @@ import { users, sessions, magicLinks, associationConfig, bills, comments, commen
 import { generateToken, hashToken } from '../lib/crypto'
 import { sendMagicLink } from '../lib/email'
 import { registerWithCentral } from '../cron/sync'
-import { matchesKeywords } from '../lib/keywords'
+import { matchesKeywords, billMatchText } from '../lib/keywords'
 import { centralFetch } from '../lib/centralFetch'
 import { parseHandle } from '../../../shared/billHandle'
 import { isWildcardKeyword } from '../../../shared/keywords'
@@ -866,13 +866,13 @@ adminApiRouter.post('/keyword-resync', async (c) => {
 
   // Find unprocessed bills that now match keywords — queue them for AI processing
   const unprocessed = await db
-    .select({ externalId: bills.externalId, title: bills.title, abstract: bills.abstract })
+    .select({ externalId: bills.externalId, title: bills.title, abstract: bills.abstract, billNumber: bills.billNumber })
     .from(bills)
     .where(and(isNull(bills.aiProcessedAt), isNotNull(bills.externalId)))
     .all()
 
   const matching = unprocessed.filter(b =>
-    matchesKeywords(`${b.title} ${b.abstract ?? ''}`, keywords)
+    matchesKeywords(billMatchText({ title: b.title, description: b.abstract, billNumber: b.billNumber }), keywords)
   )
 
   const BATCH_SIZE = 100
@@ -920,13 +920,13 @@ adminApiRouter.post('/keyword-resync', async (c) => {
 
   // ── Cleanup pass: demote or protect stale keyword matches ──
   const keywordBills = await db
-    .select({ id: bills.id, externalId: bills.externalId, title: bills.title, abstract: bills.abstract, priority: bills.priority })
+    .select({ id: bills.id, externalId: bills.externalId, title: bills.title, abstract: bills.abstract, billNumber: bills.billNumber, priority: bills.priority })
     .from(bills)
     .where(and(eq(bills.matchType, 'keyword'), isNotNull(bills.externalId)))
     .all()
 
   const staleBills = keywordBills.filter(b =>
-    !matchesKeywords(`${b.title} ${b.abstract ?? ''}`, keywords)
+    !matchesKeywords(billMatchText({ title: b.title, description: b.abstract, billNumber: b.billNumber }), keywords)
   )
 
   let demoted = 0
@@ -1006,7 +1006,7 @@ adminApiRouter.post('/keyword-resync-preview', async (c) => {
   // central holds and would promote cannot be counted here, which is why the UI says "~".
   const matchAll = keywords.length === 1 && isWildcardKeyword(keywords[0])
   const lightweightUnprocessed = await db
-    .select({ title: bills.title, abstract: bills.abstract })
+    .select({ title: bills.title, abstract: bills.abstract, billNumber: bills.billNumber })
     .from(bills)
     .where(and(
       isNull(bills.aiProcessedAt),
@@ -1015,17 +1015,17 @@ adminApiRouter.post('/keyword-resync-preview', async (c) => {
     ))
     .all()
   const wouldAdd = lightweightUnprocessed.filter(b =>
-    matchesKeywords(`${b.title} ${b.abstract ?? ''}`, keywords)
+    matchesKeywords(billMatchText({ title: b.title, description: b.abstract, billNumber: b.billNumber }), keywords)
   ).length
 
   // wouldDemote / wouldProtect: keyword bills that would no longer match
   const keywordBills = await db
-    .select({ id: bills.id, title: bills.title, abstract: bills.abstract, priority: bills.priority })
+    .select({ id: bills.id, title: bills.title, abstract: bills.abstract, billNumber: bills.billNumber, priority: bills.priority })
     .from(bills)
     .where(eq(bills.matchType, 'keyword'))
     .all()
   const staleBills = keywordBills.filter(b =>
-    !matchesKeywords(`${b.title} ${b.abstract ?? ''}`, keywords)
+    !matchesKeywords(billMatchText({ title: b.title, description: b.abstract, billNumber: b.billNumber }), keywords)
   )
 
   let wouldDemote = 0
