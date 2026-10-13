@@ -3,7 +3,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 
-vi.mock('../lib/api', () => ({
+vi.mock('../../lib/api', () => ({
   ApiError: class extends Error {},
   apiFetch: vi.fn(async () => ({
     committees: [{

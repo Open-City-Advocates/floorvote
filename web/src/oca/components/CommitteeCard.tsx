@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { color, fontSize, fontWeight, radius } from '../styles/tokens'
-import { SECTION_LABEL } from '../lib/textStyles'
-import { apiFetch } from '../lib/api'
+import { color, fontSize, fontWeight, radius } from '../../styles/tokens'
+import { SECTION_LABEL } from '../../lib/textStyles'
+import { apiFetch } from '../../lib/api'
 import { councilUrl, plainEmail } from '../pages/People'
-import { committeeKey as key } from '../../../shared/councilCommittees'
+import { committeeKey as key } from '../../../../shared/oca/councilCommittees'
 
 interface PersonRef { name: string; url: string | null }
 interface Staff { name: string; title: string | null; email: string | null; phone: string | null }

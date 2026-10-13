@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { resetDb, applyMigrations, seedUser, seedSession, seedBill } from '../helpers'
 import { app } from '../../src/index'
-import { councilmemberKey, isPersonKey, nameKey, staffKey } from '../../../shared/crmKeys'
+import { councilmemberKey, isPersonKey, nameKey, staffKey } from '../../../shared/oca/crmKeys'
 
 const call = (path: string, init?: RequestInit) => app.request(path, init, env)
 const json = (method: string, cookie: string, body?: unknown): RequestInit => ({

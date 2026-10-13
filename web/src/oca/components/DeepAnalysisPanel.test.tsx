@@ -1,16 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { apiFetch } from '../lib/api'
+import { apiFetch } from '../../lib/api'
 import { DeepAnalysisPanel } from './DeepAnalysisPanel'
 
-vi.mock('../lib/api', () => ({
+vi.mock('../../lib/api', () => ({
   apiFetch: vi.fn(),
   ApiError: class ApiError extends Error {
     constructor(public status: number, message: string) { super(message) }
   },
 }))
-vi.mock('../context/DemoContext', () => ({ useDemo: () => ({ demoMode: false, demoLocked: false }) }))
+vi.mock('../../context/DemoContext', () => ({ useDemo: () => ({ demoMode: false, demoLocked: false }) }))
 
 const DONE = {
   enabled: true, status: 'done', completedAt: '2026-09-29 14:00:00', model: 'claude-opus-5-5', stale: false,

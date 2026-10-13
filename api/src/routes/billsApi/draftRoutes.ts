@@ -7,8 +7,8 @@ import {
   bills, memberVotes, officialPositions, comments, notes, feedEvents, billTexts,
   billCustomFieldValues, calendarEventBills,
 } from '../../db/schema'
-import { teamLinks } from '../../db/schema-oca'
-import { requestDeepForPrioritized } from '../../lib/deepAnalysis'
+import { teamLinks } from '../../oca/schema'
+import { requestDeepForPrioritized } from '../../oca/deepAnalysis'
 import type { AppEnv } from '../../types'
 import { centralFetch } from '../../lib/centralFetch'
 import { backfillCalendar } from '../../lib/calendarBackfill'

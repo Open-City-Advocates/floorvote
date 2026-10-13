@@ -3,13 +3,13 @@ import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import { requireAuth, requireAdmin } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { bills, calendarEventBills, calendarEvents } from '../db/schema'
-import { deepAnalyses } from '../db/schema-oca'
+import { deepAnalyses } from './schema'
 import { nowDb } from '../lib/dbTime'
 import {
   buildDeepInput, deepEnabled, ensureDeepRequest, fetchBillText, fireDeepWorker, listOpenRequests, openRequest,
-} from '../lib/deepAnalysis'
+} from './deepAnalysis'
 import { billHtmlToText } from '../lib/billText'
-import { parseDeepContent, type DeepKind } from '../../../shared/deepAnalysis'
+import { parseDeepContent, type DeepKind } from '../../../shared/oca/deepAnalysis'
 import type { AppEnv } from '../types'
 
 /**

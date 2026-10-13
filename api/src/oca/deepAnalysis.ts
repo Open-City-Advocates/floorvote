@@ -1,24 +1,24 @@
 import { and, eq, gte, inArray, isNotNull, lt, lte, ne, or, sql, type SQL } from 'drizzle-orm'
 import type { BatchItem } from 'drizzle-orm/batch'
 import { associationConfig, bills, calendarEventBills, calendarEvents } from '../db/schema'
-import { deepAnalyses, teamLinks } from '../db/schema-oca'
+import { deepAnalyses, teamLinks } from './schema'
 
 /**
  * The Council's calendar rows: upstream's body events, and older #217 rows the
  * body-event mirror never took over (it only looks a month back).
  */
 const COUNCIL_SOURCES = ['body', 'council']
-import { centralFetch } from './centralFetch'
-import { readConfigString } from './configValue'
-import { nowDb } from './dbTime'
+import { centralFetch } from '../lib/centralFetch'
+import { readConfigString } from '../lib/configValue'
+import { nowDb } from '../lib/dbTime'
 import { ASSOCIATION_NAME_PLACEHOLDER, buildDefaultAiContext, isAiConfigDefault } from '../../../shared/aiDefaults'
-import { DEEP_PROMPT_VERSION, billInstructions, hearingInstructions, type DeepKind } from '../../../shared/deepAnalysis'
+import { DEEP_PROMPT_VERSION, billInstructions, hearingInstructions, type DeepKind } from '../../../shared/oca/deepAnalysis'
 import type { AppDb, Env } from '../types'
 
 /**
  * The deep-analysis queue (see migration 0071). FloorVote decides what needs a
  * deep analysis or a hearing brief and serves each request's input; an external
- * worker writes the result (routes/deepApi.ts). Off unless the operator sets
+ * worker writes the result (deepApi.ts). Off unless the operator sets
  * DEEP_ANALYSIS_ENABLED = "true".
  *
  * A request is `auto` (the hourly sweep or a priority change made it) or was

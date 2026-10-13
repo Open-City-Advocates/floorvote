@@ -589,7 +589,7 @@ export function Sidebar({ isOpen, onClose, containerRef }: SidebarProps) {
             </>
           )}
         </NavLink>
-        {/* DC teams: the Council's committees and staff, and the team's records of them (pages/People.tsx, the fork's own). */}
+        {/* DC teams: the Council's committees and staff, and the team's records of them (oca/pages/People.tsx, the fork's own). */}
         {config?.states.includes('DC') && (
           <NavLink
             to="/people"

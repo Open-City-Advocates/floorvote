@@ -4,9 +4,9 @@ import { eq } from 'drizzle-orm'
 import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedCalendarEvent } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { bills, calendarEventBills } from '../../src/db/schema'
-import { deepAnalyses } from '../../src/db/schema-oca'
+import { deepAnalyses } from '../../src/oca/schema'
 import { app } from '../../src/index'
-import { ensureDeepRequest, fireDeepWorker, reconcileDeepRequests } from '../../src/lib/deepAnalysis'
+import { ensureDeepRequest, fireDeepWorker, reconcileDeepRequests } from '../../src/oca/deepAnalysis'
 
 const TOKEN = 'worker-test-token'
 const deepEnv = { ...env, DEEP_ANALYSIS_ENABLED: 'true', DEEP_WORKER_TOKEN: TOKEN, CENTRAL_API_URL: 'https://central.test' }

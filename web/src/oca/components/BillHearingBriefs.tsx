@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { color, fontSize } from '../styles/tokens'
-import { apiFetch } from '../lib/api'
+import { color, fontSize } from '../../styles/tokens'
+import { apiFetch } from '../../lib/api'
 import { DeepAnalysisPanel } from './DeepAnalysisPanel'
 import { TeamLinks } from './TeamLinks'
 

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { color, fontSize, fontWeight, radius } from '../styles/tokens'
-import { SECTION_LABEL } from '../lib/textStyles'
-import { apiFetch, ApiError } from '../lib/api'
-import { useDemo } from '../context/DemoContext'
-import { HoverTooltip } from './HoverTooltip'
+import { color, fontSize, fontWeight, radius } from '../../styles/tokens'
+import { SECTION_LABEL } from '../../lib/textStyles'
+import { apiFetch, ApiError } from '../../lib/api'
+import { useDemo } from '../../context/DemoContext'
+import { HoverTooltip } from '../../components/HoverTooltip'
 
 interface TeamLink { id: string; title: string; url: string }
 

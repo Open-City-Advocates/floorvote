@@ -5,9 +5,9 @@ import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:
 import { and, eq } from 'drizzle-orm'
 import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedCalendarEvent } from '../helpers'
 import { getDb } from '../../src/db/client'
-import { deepAnalyses, teamLinks } from '../../src/db/schema-oca'
+import { deepAnalyses, teamLinks } from '../../src/oca/schema'
 import { app } from '../../src/index'
-import { ensureDeepRequest, listOpenRequests, reconcileDeepRequests } from '../../src/lib/deepAnalysis'
+import { ensureDeepRequest, listOpenRequests, reconcileDeepRequests } from '../../src/oca/deepAnalysis'
 import { bills } from '../../src/db/schema'
 
 const deepEnv = { ...env, DEEP_ANALYSIS_ENABLED: 'true', DEEP_WORKER_TOKEN: 't', CENTRAL_API_URL: 'https://central.test' }

@@ -7,7 +7,7 @@ import { sql } from 'drizzle-orm'
  */
 
 // Council CRM (migration 0074): the team's record of Councilmembers' offices and
-// Council staff, keyed by shared/crmKeys.ts. Kept out of deep analyses for now.
+// Council staff, keyed by shared/oca/crmKeys.ts. Kept out of deep analyses for now.
 export const crmPeople = sqliteTable('crm_people', {
   personKey: text('person_key').primaryKey(),
   name: text('name').notNull(),

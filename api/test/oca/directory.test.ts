@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { env } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession } from './helpers'
-import { app } from '../src/index'
+import { resetDb, applyMigrations, seedUser, seedSession } from '../helpers'
+import { app } from '../../src/index'
 
 const DIRECTORY = {
   committees: [{ slug: 'committee-on-youth-affairs', name: 'Committee on Youth Affairs', url: 'https://dccouncil.gov/committees/committee-on-youth-affairs/',

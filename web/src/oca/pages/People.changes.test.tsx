@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 
-vi.mock('../lib/api', () => ({
+vi.mock('../../lib/api', () => ({
   ApiError: class extends Error {},
   apiFetch: vi.fn(async () => ({
     committees: [], people: [], updatedAt: null,
@@ -15,7 +15,7 @@ vi.mock('../lib/api', () => ({
     ],
   })),
 }))
-vi.mock('../hooks/usePageTitle', () => ({ usePageTitle: () => {} }))
+vi.mock('../../hooks/usePageTitle', () => ({ usePageTitle: () => {} }))
 
 import { MemoryRouter } from 'react-router-dom'
 import { People, describeChange } from './People'

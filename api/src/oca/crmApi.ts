@@ -3,10 +3,10 @@ import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { requireAuth } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { bills, users } from '../db/schema'
-import { crmContacts, crmFollowups, crmPeople } from '../db/schema-oca'
+import { crmContacts, crmFollowups, crmPeople } from './schema'
 import { activeUser } from '../lib/accountDeletion'
 import { nowDb } from '../lib/dbTime'
-import { CONTACT_KINDS, isPersonKey, type ContactKind } from '../../../shared/crmKeys'
+import { CONTACT_KINDS, isPersonKey, type ContactKind } from '../../../shared/oca/crmKeys'
 import type { AppEnv } from '../types'
 
 /**

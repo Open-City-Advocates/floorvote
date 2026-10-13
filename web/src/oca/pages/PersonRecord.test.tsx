@@ -3,8 +3,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
 const demo = { demoLocked: false }
-vi.mock('../hooks/useAuth', () => ({ useAuth: () => ({ user: { id: 'u1', name: 'Alice', role: 'member' }, loading: false }) }))
-vi.mock('../context/DemoContext', () => ({ useDemo: () => demo }))
+vi.mock('../../hooks/useAuth', () => ({ useAuth: () => ({ user: { id: 'u1', name: 'Alice', role: 'member' }, loading: false }) }))
+vi.mock('../../context/DemoContext', () => ({ useDemo: () => demo }))
 
 const DIRECTORY = {
   committees: [{
@@ -26,7 +26,7 @@ const RECORD = {
 }
 
 const calls: { path: string; init?: RequestInit }[] = []
-vi.mock('../lib/api', () => ({
+vi.mock('../../lib/api', () => ({
   ApiError: class extends Error {},
   apiFetch: vi.fn(async (path: string, init?: RequestInit) => {
     calls.push({ path, init })

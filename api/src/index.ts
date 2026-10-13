@@ -1,9 +1,9 @@
 import { Hono } from 'hono'
-import { directoryRouter } from './routes/directoryApi'
-import { crmRouter } from './routes/crmApi'
-import { deepRouter } from './routes/deepApi'
-import { linksRouter } from './routes/linksApi'
-import { fireDeepWorker, reconcileDeepRequests } from './lib/deepAnalysis'
+import { directoryRouter } from './oca/directoryApi'
+import { crmRouter } from './oca/crmApi'
+import { deepRouter } from './oca/deepApi'
+import { linksRouter } from './oca/linksApi'
+import { fireDeepWorker, reconcileDeepRequests } from './oca/deepAnalysis'
 import { cors } from 'hono/cors'
 import { getCookie } from 'hono/cookie'
 import { bodyLimit } from 'hono/body-limit'
@@ -145,11 +145,11 @@ app.route('/api/stats', statsRouter)
 app.route('/api/feedback', feedbackRouter)
 app.route('/api/notifications', notificationsRouter)
 app.route('/api/calendar', calendarRouter)
-// The fork's DC Council directory (src/routes/directoryApi.ts), from central's /bills/council-directory.
+// The fork's DC Council directory (src/oca/directoryApi.ts), from central's /bills/council-directory.
 app.route('/api/directory', directoryRouter)
-// The fork's Council CRM (src/routes/crmApi.ts, tables in db/schema-oca.ts).
+// The fork's Council CRM (src/oca/crmApi.ts, tables in oca/schema.ts).
 app.route('/api/crm', crmRouter)
-// The fork's deep analyses, hearing briefs, and team links (lib/deepAnalysis.ts).
+// The fork's deep analyses, hearing briefs, and team links (oca/deepAnalysis.ts).
 app.route('/api/deep', deepRouter)
 app.route('/api/links', linksRouter)
 

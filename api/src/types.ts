@@ -10,7 +10,7 @@ export type AppEnv = {
 }
 
 export type Env = {
-  // The fork's deep-analysis queue (lib/deepAnalysis.ts).
+  // The fork's deep-analysis queue (oca/deepAnalysis.ts).
   DEEP_ANALYSIS_ENABLED?: string     // "true" turns on the deep-analysis queue
   DEEP_ANALYSIS_PRIORITIES?: string  // priorities analysed automatically, comma-separated. Unset = "high,medium"
   DEEP_WORKER_TOKEN?: string         // secret: bearer token the external deep-analysis worker presents

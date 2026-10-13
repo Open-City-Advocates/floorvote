@@ -3,8 +3,8 @@ import { and, eq, gte } from 'drizzle-orm'
 import { requireAuth, requireAdmin } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { bills, calendarEvents } from '../db/schema'
-import { deepAnalyses, teamLinks } from '../db/schema-oca'
-import { ensureDeepRequest, fireDeepWorker, requestDeepForPrioritized } from '../lib/deepAnalysis'
+import { deepAnalyses, teamLinks } from './schema'
+import { ensureDeepRequest, fireDeepWorker, requestDeepForPrioritized } from './deepAnalysis'
 import type { AppEnv } from '../types'
 
 /**
