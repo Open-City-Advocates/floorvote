@@ -37,7 +37,7 @@ export function Wordmark({ dark = false, size = fontSize.xxxl }: WordmarkProps) 
         style={{ height: `${LOGO_LOCKUP.markHeightEm}em`, width: 'auto', verticalAlign: 'baseline', marginRight: `${LOGO_LOCKUP.gapEm}em` }}
       />
       <span>
-        <span style={{ color: dark ? color.white : color.billBadgeNavy }}>{PRODUCT_NAME_WORDMARK.primary}</span>
+        <span style={{ color: dark ? color.textOnBrand : color.billBadgeNavy }}>{PRODUCT_NAME_WORDMARK.primary}</span>
         <span style={{ color: color.accentAmber }}>{PRODUCT_NAME_WORDMARK.accent}</span>
       </span>
     </span>

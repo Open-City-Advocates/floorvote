@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { eventSourceIcon } from '../../../shared/eventLineModel'
-import { color } from '../../../shared/tokens'
+import { color } from '../styles/tokens'
 
 describe('eventSourceIcon', () => {
   it('maps data-pulled hearings to gavel + navy', () => {

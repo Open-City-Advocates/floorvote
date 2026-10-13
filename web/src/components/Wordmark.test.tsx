@@ -22,7 +22,7 @@ describe('Wordmark', () => {
 
   it('renders Floor in white on dark surfaces', () => {
     render(<Wordmark dark />)
-    expect(screen.getByText('Floor')).toHaveStyle({ color: color.white })
+    expect(screen.getByText('Floor')).toHaveStyle({ color: color.textOnBrand })
   })
 
   it('renders the hemicycle mark to the left of the text', () => {

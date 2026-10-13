@@ -188,7 +188,7 @@ export function BillTextPanel({ billId, texts, externalOpen, requestedDocId }: B
     <div
       ref={panelRef}
       style={{
-        boxShadow: highlight ? '0 0 0 3px #fde68a' : 'none',
+        boxShadow: highlight ? `0 0 0 3px ${color.borderAmber}` : 'none',
         transition: 'box-shadow 0.4s ease',
         borderRadius: radius.md,
       }}
