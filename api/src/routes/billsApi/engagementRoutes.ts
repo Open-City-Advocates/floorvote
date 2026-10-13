@@ -7,7 +7,8 @@ import {
   bills, memberVotes, officialPositions, comments, notes, users, commentReactions, feedEvents,
   billCustomFieldValues,
 } from '../../db/schema'
-import { extractAndNotifyMentions, stripHtml } from '../../lib/mentions'
+import { extractAndNotifyMentions } from '../../lib/mentions'
+import { stripHtml } from '../../lib/stripHtml'
 import { COMMENT_PREVIEW_MAX, truncateWithEllipsis } from '../../../../shared/feedUtils'
 import { sanitizeCommentHtml } from '../../lib/sanitizeHtml'
 import type { AppEnv } from '../../types'
