@@ -14,6 +14,7 @@ export const users = sqliteTable('users', {
   canVote: integer('can_vote').notNull().default(1),
   emailDigestEnabled: integer('email_digest_enabled').notNull().default(1),
   emailWeekAheadEnabled: integer('email_week_ahead_enabled').notNull().default(1),
+  emailRepliesEnabled: integer('email_replies_enabled').notNull().default(1),
   lastSeenFeed: text('last_seen_feed'),
 })
 
@@ -404,16 +405,19 @@ export type MentionNotificationData = {
   sourceId: string
 }
 
+/** A reply notification carries no data of its own: the comment and its author say it all. */
+export type ReplyNotificationData = Record<string, never>
+
 /**
  * The notifications inbox: one row per event a member is notified about, of a
- * `kind` (only 'mention' so far). Rows are written when the event happens and
+ * `kind` ('mention' or 'reply'). Rows are written when the event happens and
  * never recomputed from comments. Rows for deleted comments are hidden at read
  * time, not deleted. Writers and renderers per kind live in lib/notifications.ts.
  */
 export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
   recipientId: text('recipient_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  kind: text('kind', { enum: ['mention'] }).notNull(),
+  kind: text('kind', { enum: ['mention', 'reply'] }).notNull(),
   billId: text('bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
   // Nullable for a future kind about a bill alone (no comment). Every kind so far has one.
   commentId: text('comment_id').references(() => comments.id, { onDelete: 'cascade' }),

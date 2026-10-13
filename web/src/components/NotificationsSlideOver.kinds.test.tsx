@@ -33,6 +33,10 @@ vi.mock('../lib/api', () => ({
         unreadCount: 2,
         notifications: [
           row({ kind: 'mention', id: 'n1', authorName: 'Alice Author' }),
+          row({
+            kind: 'reply', id: 'n3', commentId: 'c3', authorName: 'Rae Replier', isUnread: false,
+            billNumber: 'HB9', billTitle: 'The replied bill', commentHtml: '<p>I disagree with section two.</p>',
+          }),
           row({ kind: 'some_future_kind', id: 'n2', authorName: 'Zed Future' }),
         ],
       }
@@ -43,7 +47,7 @@ vi.mock('../lib/api', () => ({
 }))
 
 describe('NotificationsSlideOver kinds', () => {
-  it('renders a mention row and skips a kind it has no renderer for', async () => {
+  it('renders a mention row and a reply row, and skips a kind it has no renderer for', async () => {
     render(
       <MemoryRouter>
         <NotificationsProvider>
@@ -55,6 +59,35 @@ describe('NotificationsSlideOver kinds', () => {
     expect(await screen.findByText('Alice Author')).toBeInTheDocument()
     expect(screen.getByText('mentioned you')).toBeInTheDocument()
     expect(screen.queryByText('Zed Future')).not.toBeInTheDocument()
-    expect(screen.getAllByRole('link')).toHaveLength(1)
+    expect(screen.getAllByRole('link')).toHaveLength(2)
+  })
+
+  it('renders a reply as the author commenting on a bill the member commented on, linked to the comment', async () => {
+    render(
+      <MemoryRouter>
+        <NotificationsProvider>
+          <NotificationsSlideOver onClose={() => {}} />
+        </NotificationsProvider>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('Rae Replier')).toBeInTheDocument()
+    expect(screen.getByText("commented on a bill you've commented on")).toBeInTheDocument()
+    expect(screen.getByText('I disagree with section two.')).toBeInTheDocument()
+    expect(screen.getByText('HB9')).toBeInTheDocument()
+    const link = screen.getByText('Rae Replier').closest('a')!
+    expect(link.getAttribute('href')).toMatch(/#comment-c3$/)
+  })
+
+  it('titles the panel as notifications, not mentions', async () => {
+    render(
+      <MemoryRouter>
+        <NotificationsProvider>
+          <NotificationsSlideOver onClose={() => {}} />
+        </NotificationsProvider>
+      </MemoryRouter>,
+    )
+    await screen.findByText('Alice Author')
+    expect(screen.getByRole('dialog', { name: 'Notifications' })).toBeInTheDocument()
   })
 })

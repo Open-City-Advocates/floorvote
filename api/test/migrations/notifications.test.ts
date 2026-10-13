@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env, SELF } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedComment, seedRole } from '../helpers'
+import { resetDb, applyMigrations, seedSession, seedBill, seedComment, seedRole } from '../helpers'
 
 type NotificationRow = {
   id: string
@@ -23,6 +23,14 @@ describe('migration 0085_notifications', () => {
   let bobId: string
   let billId: string
   let roleId: string
+
+  // seedUser writes every users column, including ones added after 0085, so a
+  // member who predates this migration is inserted with the columns it had.
+  async function seedUser({ name, email }: { name: string; email: string }) {
+    const id = crypto.randomUUID()
+    await env.DB.prepare(`INSERT INTO users (id, email, name) VALUES (?, ?, ?)`).bind(id, email, name).run()
+    return id
+  }
 
   const oldMention = (id: string, commentId: string, userId: string, sourceType: string, sourceId: string, createdAt: string, readAt: string | null) =>
     env.DB.prepare(
