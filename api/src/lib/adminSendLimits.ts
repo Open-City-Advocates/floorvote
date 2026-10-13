@@ -37,7 +37,9 @@ export const ADMIN_SEND_LIMITS = {
   perMember: { max: 5, windowMinutes: 60 } satisfies SendLimit,
   // One inbox, whichever member it is attached to. Without this an admin can
   // rotate an address through several pending invites and stay under the
-  // per-member limit every time.
+  // per-member limit every time. Like the per-member limit, it counts only
+  // admin sends: the public sign-in form has its own cap, and its requests
+  // must not stop an admin resending to someone whose mail isn't arriving.
   perAddress: { max: 5, windowMinutes: 60 } satisfies SendLimit,
   // One admin, across all members. Leaves room for working through a long list
   // of pending invites in one sitting, while a stolen or runaway session stops
@@ -91,7 +93,7 @@ export function adminSendChecks(adminId: string, memberId: string, address: stri
   return [
     { column: 'actor_id', value: adminId, limit: ADMIN_SEND_LIMITS.perAdmin, message: ADMIN_SEND_LIMIT_MESSAGES.perAdmin },
     { column: 'user_id', value: memberId, limit: ADMIN_SEND_LIMITS.perMember, message: ADMIN_SEND_LIMIT_MESSAGES.perMember, byAdminsOnly: true },
-    { column: 'email', value: address.toLowerCase(), limit: ADMIN_SEND_LIMITS.perAddress, message: ADMIN_SEND_LIMIT_MESSAGES.perAddress },
+    { column: 'email', value: address.toLowerCase(), limit: ADMIN_SEND_LIMITS.perAddress, message: ADMIN_SEND_LIMIT_MESSAGES.perAddress, byAdminsOnly: true },
   ]
 }
 

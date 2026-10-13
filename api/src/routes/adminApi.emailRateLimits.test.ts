@@ -178,7 +178,7 @@ describe('admin email routes: rate limits', () => {
   })
 
   describe('per address', () => {
-    it('stops a flood to one inbox even when the address is rotated through different members', async () => {
+    it('refuses the sixth admin send to one inbox, even when the address is rotated through different members', async () => {
       const victim = 'victim@example.com'
       const limit = ADMIN_SEND_LIMITS.perAddress.max
       // Each member takes the victim's address, then moves off it for the next.
@@ -204,6 +204,20 @@ describe('admin email routes: rate limits', () => {
       const r = await ROUTES[0].send(target, adminCookie)
       expect(r.status).toBe(429)
       expect(r.body.error).toBe(ADMIN_SEND_LIMIT_MESSAGES.perAddress)
+    })
+  })
+
+  describe("a member's own sign-in requests", () => {
+    it('do not block an admin resending their sign-in link', async () => {
+      const address = 'not-getting-mail@example.com'
+      const target = await seedPending(address)
+      // The member presses "send link" on the public form until its own cap.
+      for (let i = 0; i < 5; i++) {
+        expect((await post('/api/auth/magic-link', '', { email: address })).status).toBe(200)
+      }
+
+      const r = await post(`/api/admin/members/${target}/resend-login`, adminCookie)
+      expect(r.status).toBe(200)
     })
   })
 

@@ -4,7 +4,7 @@ import { users, sessions, magicLinks, emailChanges } from '../db/schema'
 import { generateToken, hashToken } from './crypto'
 import { checkMemberAddresses, normalizeMemberAddress } from './memberAddress'
 import { isPreviouslyBounced } from './bouncedAddresses'
-import { isSuperadminEmailViaCentral } from './superadminCentral'
+import { superadminEmailStatus } from './superadminCentral'
 import { claimSend, releaseSend, adminSendChecks, type SendCheck, type SendLimit } from './adminSendLimits'
 import { recordAuthEvent } from './authEvents'
 import { sendBatch, resolveAssocName, type EmailMessage } from './email'
@@ -54,6 +54,7 @@ export const EMAIL_CHANGE_ERRORS = {
   limit: "You've asked to change your email three times in the past day. Please try again tomorrow.",
   adminPending: 'An admin has an email change pending for your account.',
   sendFailed: "We couldn't send the confirmation email. Please try again in a little while.",
+  centralUnavailable: "Can't check this address right now. Try again in a few minutes.",
   // Confirming
   invalidLink: 'This link is no longer valid. It may have been used already, or replaced by a newer request.',
   expiredLink: 'This link has expired. Request the change again from your Account page.',
@@ -101,12 +102,19 @@ function adminEmailChangeChecks(adminId: string, memberId: string, address: stri
   return adminSendChecks(adminId, memberId, address).map(ch => ({ ...ch, message: ADMIN_EMAIL_CHANGE_LIMIT_MESSAGES[ch.column] }))
 }
 
-export type Refusal = { ok: false; status: 400 | 403 | 404 | 409 | 410 | 429 | 502; error: string }
+export type Refusal = { ok: false; status: 400 | 403 | 404 | 409 | 410 | 429 | 502 | 503; error: string }
 
 /** Where a confirmation link leads: the page with the Confirm new email button. */
 export function confirmUrl(appUrl: string, rawToken: string): string {
   return `${appUrl}/auth/confirm-email?token=${encodeURIComponent(rawToken)}`
 }
+
+/**
+ * Central's superadmin list couldn't be read (a cold isolate during a central
+ * outage). The guards here refuse rather than assume "not a superadmin", and a
+ * pending change refused this way at commit stays pending for a retry.
+ */
+const CENTRAL_UNAVAILABLE: Refusal = { ok: false, status: 503, error: EMAIL_CHANGE_ERRORS.centralUnavailable }
 
 /**
  * The rules a new address must pass, at request and again at commit. Lowercased
@@ -125,7 +133,9 @@ export async function checkNewAddress(
   if (check.status === 'invalid') return { ok: false, status: 400, error: EMAIL_CHANGE_ERRORS.invalid }
   if (check.email === normalizeMemberAddress(member.email)) return { ok: false, status: 400, error: emailChangeError('unchanged', byAdmin) }
   if (check.status === 'taken') return { ok: false, status: 409, error: EMAIL_CHANGE_ERRORS.inUse }
-  if (await isSuperadminEmailViaCentral(env, check.email)) return { ok: false, status: 400, error: EMAIL_CHANGE_ERRORS.reserved }
+  const listed = await superadminEmailStatus(env, check.email)
+  if (listed === 'unknown') return CENTRAL_UNAVAILABLE
+  if (listed === 'yes') return { ok: false, status: 400, error: EMAIL_CHANGE_ERRORS.reserved }
   if (await isPreviouslyBounced(env, db, check.email)) return { ok: false, status: 400, error: EMAIL_CHANGE_ERRORS.bounced }
   return { ok: true, email: check.email }
 }
@@ -176,9 +186,9 @@ async function noticeToOldAddress(
  * change pending while the address joined central's list cannot commit.
  */
 export async function refuseSuperadmin(env: Env, currentEmail: string, byAdmin: boolean): Promise<Refusal | null> {
-  return (await isSuperadminEmailViaCentral(env, currentEmail))
-    ? { ok: false, status: 403, error: emailChangeError('superadmin', byAdmin) }
-    : null
+  const listed = await superadminEmailStatus(env, currentEmail)
+  if (listed === 'unknown') return CENTRAL_UNAVAILABLE
+  return listed === 'yes' ? { ok: false, status: 403, error: emailChangeError('superadmin', byAdmin) } : null
 }
 
 async function recordCancelled(
@@ -373,14 +383,14 @@ export async function confirmEmailChange(
   // A superadmin's address is central's to manage. It may have joined the list since.
   const superadmin = await refuseSuperadmin(env, memberRow.email, byAdmin)
   if (superadmin) {
-    await cancelPending(db, row, superadmin.error)
+    if (superadmin !== CENTRAL_UNAVAILABLE) await cancelPending(db, row, superadmin.error)
     return superadmin
   }
 
   // Every rule again: the address may have been taken, bounced, or listed since.
   const check = await checkNewAddress(env, db, memberRow, row.newEmail, byAdmin)
   if (!check.ok) {
-    await cancelPending(db, row, check.error)
+    if (check !== CENTRAL_UNAVAILABLE) await cancelPending(db, row, check.error)
     return check
   }
   const newEmail = check.email
