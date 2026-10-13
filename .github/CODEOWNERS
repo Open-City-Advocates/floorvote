@@ -6,18 +6,22 @@
 # the lint rule and check that hold the boundary stay with the project owner.
 # Each provider's directory and tests then name that provider's maintainers. A
 # later line wins for the paths it matches, so each provider's lines sit below
-# the providers/ line.
+# the providers/ line. The comment above each provider's lines names it.
 
 *                                            @wtadler
 /central/src/providers/                      @wtadler
 /central/eslint.config.mjs                   @wtadler
 /central/eslint-provider-boundary.mjs        @wtadler
 /central/scripts/check-provider-boundary.mjs @wtadler
+# legiscan: LegiScan (all states, the District of Columbia, and Congress)
 /central/src/providers/legiscan/             @wtadler
 /central/test/providers/legiscan/            @wtadler
+# lims: DC Council (District of Columbia)
 /central/src/providers/lims/                 @anotherpanacea-eng @wtadler
 /central/test/providers/lims/                @anotherpanacea-eng @wtadler
+# lis: Virginia General Assembly (Virginia)
 /central/src/providers/lis/                  @anotherpanacea-eng @wtadler
 /central/test/providers/lis/                 @anotherpanacea-eng @wtadler
+# mga: Maryland General Assembly (Maryland)
 /central/src/providers/mga/                  @anotherpanacea-eng @wtadler
 /central/test/providers/mga/                 @anotherpanacea-eng @wtadler

@@ -23,6 +23,12 @@ export const STATES: Readonly<Record<string, string>> = {
   WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming', US: 'United States (Congress)',
 }
 
+/** Where a provider's code lives, which is where its maintainers work. */
+export const providerSourceUrl = (id: string) => `https://github.com/floorvote/floorvote/tree/main/central/src/providers/${id}`
+
+/** What a provider with no `states` covers. */
+export const ALL_COVERAGE = 'All 50 states, the District of Columbia, and Congress'
+
 const handleLink = (handle: string) => `[@${handle}](https://github.com/${handle})`
 
 /** A provider's states as a row shows them: "Maryland (MD)". */
@@ -33,9 +39,9 @@ function statesOf(provider: Provider): string {
 /** The page's Markdown. */
 export function renderStateCoverage(providers: readonly Provider[]): string {
   const row = (p: Provider, states: string) =>
-    `| ${p.displayName} | ${states} | ${p.coverage.maintainers.map(handleLink).join(', ')} |`
+    `| ${p.displayName} | [\`${p.id}\`](${providerSourceUrl(p.id)}) | ${states} | ${p.coverage.maintainers.map(handleLink).join(', ')} |`
   const rows = [
-    ...providers.filter(p => !p.states).map(p => row(p, 'All 50 states, the District of Columbia, and Congress')),
+    ...providers.filter(p => !p.states).map(p => row(p, ALL_COVERAGE)),
     ...providers.filter(p => p.states).map(p => row(p, statesOf(p))),
   ]
 
@@ -53,8 +59,8 @@ This page lists the data providers that exist and the states each covers. It doe
 
 This page is generated from what each provider declares in code, so it can't drift from the providers themselves. Maintainers are the people CODEOWNERS asks to review changes to the provider, and who a pull request that changes it mentions.
 
-| Provider | States | Maintainers |
-| --- | --- | --- |
+| Provider | ID | States | Maintainers |
+| --- | --- | --- | --- |
 ${rows.join('\n')}
 `
 }

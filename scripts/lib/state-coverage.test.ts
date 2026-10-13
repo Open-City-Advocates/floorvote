@@ -15,6 +15,7 @@ describe('State coverage page', () => {
   it('lists LegiScan once, for every state, DC, and Congress', () => {
     const rows = read(PAGE_PATH).split('\n').filter(l => l.startsWith('| LegiScan |'))
     expect(rows).toHaveLength(1)
+    expect(rows[0]).toContain('[`legiscan`](https://github.com/floorvote/floorvote/tree/main/central/src/providers/legiscan)')
     expect(rows[0]).toContain('All 50 states, the District of Columbia, and Congress')
   })
 
@@ -23,6 +24,7 @@ describe('State coverage page', () => {
     for (const p of PROVIDERS.filter(p => p.states)) {
       const rows = page.split('\n').filter(l => l.startsWith(`| ${p.displayName} |`))
       expect(rows, p.id).toHaveLength(1)
+      expect(rows[0], `${p.id}: id`).toContain(`[\`${p.id}\`](https://github.com/floorvote/floorvote/tree/main/central/src/providers/${p.id})`)
       for (const code of p.states!) expect(rows[0], `${p.id}: ${code}`).toContain(`(${code})`)
       for (const h of p.coverage.maintainers) expect(rows[0], `${p.id}: ${h}`).toContain(`@${h}`)
     }

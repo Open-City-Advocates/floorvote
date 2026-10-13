@@ -7,8 +7,10 @@ import { CODEOWNERS_PATH, renderCodeowners } from './codeowners'
 const ROOT = resolve(__dirname, '../..')
 const read = (path: string) => readFileSync(resolve(ROOT, path), 'utf8')
 
-const provider = (id: string, maintainers: string[]): Parameters<typeof renderCodeowners>[0][number] => ({
+const provider = (id: string, maintainers: string[], states?: string[]): Parameters<typeof renderCodeowners>[0][number] => ({
   id,
+  displayName: id.toUpperCase(),
+  states,
   coverage: { maintainers },
 })
 const ownerLines = (text: string) => text.split('\n').filter(l => l && !l.startsWith('#')).map(l => l.split(/\s+/))
@@ -29,7 +31,7 @@ describe('CODEOWNERS', () => {
 })
 
 describe('renderCodeowners', () => {
-  const providers = [provider('mga', ['jo', 'wtadler']), provider('lims', ['wtadler']), provider('lis', ['jo'])]
+  const providers = [provider('mga', ['jo', 'wtadler']), provider('lims', ['wtadler'], ['DC']), provider('lis', ['jo'], ['VA', 'MD'])]
   const text = renderCodeowners(providers, id => id !== 'lis')
   const lines = ownerLines(text)
 
@@ -51,6 +53,16 @@ describe('renderCodeowners', () => {
       ['/central/src/providers/mga/', '@jo', '@wtadler'],
       ['/central/test/providers/mga/', '@jo', '@wtadler'],
     ])
+  })
+
+  it('names each provider in a comment above its lines', () => {
+    const rows = text.split('\n')
+    expect(rows.filter(l => /^# (lims|lis|mga): /.test(l))).toEqual([
+      '# lims: LIMS (District of Columbia)',
+      '# lis: LIS (Virginia, Maryland)',
+      '# mga: MGA (all states, the District of Columbia, and Congress)',
+    ])
+    expect(rows[rows.findIndex(l => l.startsWith('/central/src/providers/lims/')) - 1]).toBe('# lims: LIMS (District of Columbia)')
   })
 
   it('says it is generated, and from where', () => {

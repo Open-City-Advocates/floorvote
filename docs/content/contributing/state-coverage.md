@@ -12,9 +12,9 @@ This page lists the data providers that exist and the states each covers. It doe
 
 This page is generated from what each provider declares in code, so it can't drift from the providers themselves. Maintainers are the people CODEOWNERS asks to review changes to the provider, and who a pull request that changes it mentions.
 
-| Provider | States | Maintainers |
-| --- | --- | --- |
-| LegiScan | All 50 states, the District of Columbia, and Congress | [@wtadler](https://github.com/wtadler) |
-| DC Council | District of Columbia (DC) | [@anotherpanacea-eng](https://github.com/anotherpanacea-eng) |
-| Maryland General Assembly | Maryland (MD) | [@anotherpanacea-eng](https://github.com/anotherpanacea-eng) |
-| Virginia General Assembly | Virginia (VA) | [@anotherpanacea-eng](https://github.com/anotherpanacea-eng) |
+| Provider | ID | States | Maintainers |
+| --- | --- | --- | --- |
+| LegiScan | [`legiscan`](https://github.com/floorvote/floorvote/tree/main/central/src/providers/legiscan) | All 50 states, the District of Columbia, and Congress | [@wtadler](https://github.com/wtadler) |
+| DC Council | [`lims`](https://github.com/floorvote/floorvote/tree/main/central/src/providers/lims) | District of Columbia (DC) | [@anotherpanacea-eng](https://github.com/anotherpanacea-eng) |
+| Maryland General Assembly | [`mga`](https://github.com/floorvote/floorvote/tree/main/central/src/providers/mga) | Maryland (MD) | [@anotherpanacea-eng](https://github.com/anotherpanacea-eng) |
+| Virginia General Assembly | [`lis`](https://github.com/floorvote/floorvote/tree/main/central/src/providers/lis) | Virginia (VA) | [@anotherpanacea-eng](https://github.com/anotherpanacea-eng) |
