@@ -3,7 +3,7 @@ import { color, fontSize, fontWeight, radius } from '../styles/tokens'
 import { SECTION_LABEL } from '../lib/textStyles'
 import { apiFetch, ApiError } from '../lib/api'
 import { useDemo } from '../context/DemoContext'
-import { InfoTooltip } from './InfoTooltip'
+import { HoverTooltip } from './HoverTooltip'
 import { safeDate } from '../lib/dates'
 import type { BillDeepAnalysis, DeepKind, HearingBrief } from '../../../shared/deepAnalysis'
 
@@ -136,8 +136,7 @@ export function DeepAnalysisPanel({ kind, subjectId, isAdmin, onLoad }: { kind: 
   return (
     <section aria-label={LABEL[kind]} style={{ marginTop: 16, padding: 16, border: `1px solid ${color.borderDefault}`, borderRadius: radius.lg, background: color.white, fontSize: fontSize.sm, color: color.textSlate }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: content ? 10 : 0 }}>
-        <span style={SECTION_LABEL}>{LABEL[kind]}</span>
-        <InfoTooltip text={EXPLAINER[kind]} maxWidth={340} align="left" label={`About the ${LABEL[kind].toLowerCase()}`} />
+        <HoverTooltip text={EXPLAINER[kind]} describe><span style={SECTION_LABEL}>{LABEL[kind]}</span></HoverTooltip>
         {view.status === 'done' && view.completedAt && (
           <span style={{ color: color.textMuted, fontSize: fontSize.xs }}>
             {view.model ? `${view.model}, ` : ''}{safeDate(view.completedAt.slice(0, 10)) ?? view.completedAt.slice(0, 10)}

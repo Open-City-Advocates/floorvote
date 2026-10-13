@@ -3,7 +3,7 @@ import { color, fontSize, fontWeight, radius } from '../styles/tokens'
 import { SECTION_LABEL } from '../lib/textStyles'
 import { apiFetch, ApiError } from '../lib/api'
 import { useDemo } from '../context/DemoContext'
-import { InfoTooltip } from './InfoTooltip'
+import { HoverTooltip } from './HoverTooltip'
 
 interface TeamLink { id: string; title: string; url: string }
 
@@ -58,9 +58,10 @@ export function TeamLinks({ kind, subjectId, isAdmin }: { kind: 'bill' | 'event'
   return (
     <section aria-label="Team documents" style={{ marginTop: 16, padding: 14, border: `1px solid ${color.borderDefault}`, borderRadius: radius.lg, background: color.white, fontSize: fontSize.sm }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={SECTION_LABEL}>Team documents</span>
-        <InfoTooltip maxWidth={320} align="left" label="About team documents"
-          text="Links to our own letters, testimony, and redlines on this item, usually in Google Drive. They open with your own Drive access. The AI that writes deep analyses and hearing briefs reads them, so never link a document with client information." />
+        <HoverTooltip describe
+          text="Links to our own letters, testimony, and redlines on this item, usually in Google Drive. They open with your own Drive access. The AI that writes deep analyses and hearing briefs reads them, so never link a document with client information.">
+          <span style={SECTION_LABEL}>Team documents</span>
+        </HoverTooltip>
         <span style={{ flex: 1 }} />
         {isAdmin && !demoLocked && !adding && (
           <button type="button" onClick={() => setAdding(true)} className="blue-link" style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: fontSize.xs }}>Add a document</button>
