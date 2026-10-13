@@ -326,9 +326,9 @@ describe('demo write categorisation', () => {
   })
 
   it('pins the size of each category so a silent shift is visible', () => {
-    expect(DEMO_WRITE_ALLOWLIST.size).toBe(18)
+    expect(DEMO_WRITE_ALLOWLIST.size).toBe(19)
     expect(DENIED.size).toBe(51 + OCA_DEMO_DENIED.length)
-    expect(registered().length).toBe(75 + OCA_DEMO_DENIED.length)
+    expect(registered().length).toBe(76 + OCA_DEMO_DENIED.length)
   })
 
   it('refuses every denied route with the read-only message', async () => {
