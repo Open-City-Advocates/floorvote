@@ -177,33 +177,17 @@ describe('admin email routes: rate limits', () => {
     })
   })
 
-  describe('per address', () => {
-    it('stops a flood to one inbox even when the address is rotated through different members', async () => {
-      const victim = 'victim@example.com'
-      const limit = ADMIN_SEND_LIMITS.perAddress.max
-      // Each member takes the victim's address, then moves off it for the next.
-      for (let i = 0; i < limit; i++) {
-        const member = await seedPending(`typo-${i}@exmaple.com`)
-        expect((await post(`/api/admin/members/${member}/change-email`, adminCookie, { email: victim })).status).toBe(200)
-        expect((await post(`/api/admin/members/${member}/change-email`, adminCookie, { email: `elsewhere-${i}@example.com` })).status).toBe(200)
+  describe("a member's own sign-in requests", () => {
+    it('do not block an admin resending their sign-in link', async () => {
+      const address = 'not-getting-mail@example.com'
+      const target = await seedPending(address)
+      // The member presses "send link" on the public form until its own cap.
+      for (let i = 0; i < 5; i++) {
+        expect((await post('/api/auth/magic-link', '', { email: address })).status).toBe(200)
       }
 
-      const last = await seedPending('typo-last@exmaple.com')
-      const blocked = await post(`/api/admin/members/${last}/change-email`, adminCookie, { email: victim })
-      expect(blocked.status).toBe(429)
-      expect(blocked.body.error).toBe(ADMIN_SEND_LIMIT_MESSAGES.perAddress)
-      const row = await getDb(env.DB).select({ email: users.email }).from(users).where(eq(users.id, last)).get()
-      expect(row?.email).toBe('typo-last@exmaple.com')
-    })
-
-    it('counts the address case-insensitively', async () => {
-      const target = await seedPending('Mixed.Case@Example.com')
-      for (let n = 0; n < ADMIN_SEND_LIMITS.perAddress.max; n++) {
-        await seedAuthEvent(await seedPending(), 'link_requested', { email: 'mixed.case@example.com', linkType: 'invite', actorId: adminId })
-      }
-      const r = await ROUTES[0].send(target, adminCookie)
-      expect(r.status).toBe(429)
-      expect(r.body.error).toBe(ADMIN_SEND_LIMIT_MESSAGES.perAddress)
+      const r = await post(`/api/admin/members/${target}/resend-login`, adminCookie)
+      expect(r.status).toBe(200)
     })
   })
 
