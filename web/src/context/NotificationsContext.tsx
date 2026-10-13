@@ -46,12 +46,12 @@ export type ReplyNotification = AuthoredNotification & {
 
 /**
  * Someone reacted to the member's own comment. The server collapses a comment's
- * reactions into this one row. `id` is the newest of them, and `isUnread` is
- * true if any is. The comment shown is the member's.
+ * reactions into this one row, whose `id` stays the same as reactions arrive.
+ * `isUnread` is true if any is. The comment shown is the member's.
  */
 export type ReactionNotification = NotificationBase & {
   kind: 'reaction'
-  /** Each reactor once, newest first. */
+  /** The newest reactors (up to two), each once. */
   reactors: Array<{ id: string; name: string | null }>
   reactorCount: number
 }

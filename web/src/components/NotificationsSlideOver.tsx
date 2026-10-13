@@ -178,14 +178,17 @@ export function NotificationsSlideOver(
           if (prev === null) return prev
           const shown = new Set(prev.map(m => m.id))
           const missing = fresh.filter(m => !shown.has(m.id))
-          if (missing.length === 0) return prev
+          // A reaction row keeps its id as reactions arrive, so one already
+          // shown is swapped for its fresh version, new reactors and all.
+          const freshById = new Map(fresh.map(m => [m.id, m]))
+          const updated = prev.map(m => (m.kind === 'reaction' && freshById.get(m.id)) || m)
           // isUnread comes from this pre-POST fetch, so it is the server's
           // answer as of the moment we are about to clear it — accurate for a
           // row already read elsewhere (BillDetail's mark-read-by-bill) too.
           // Re-sorted rather than prepended: newest-first is the order
           // GET /notifications returns and the panel renders in, and a merged
           // row is not guaranteed to be newer than everything on screen.
-          return [...prev, ...missing].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+          return [...updated, ...missing].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
         })
         await apiFetch('/notifications/mark-read', { method: 'POST' })
         // Second refresh, to drop the badge the click just cleared. Both were

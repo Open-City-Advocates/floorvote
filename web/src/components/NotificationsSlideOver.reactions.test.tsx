@@ -26,12 +26,14 @@ const row = (over: Record<string, unknown>) => ({
   ...over,
 })
 
-const payload = vi.hoisted(() => ({ rows: [] as Record<string, unknown>[] }))
+// `later`, when set, is what every GET after the first returns.
+const payload = vi.hoisted(() => ({ rows: [] as Record<string, unknown>[], later: null as Record<string, unknown>[] | null, gets: 0 }))
 
 vi.mock('../lib/api', () => ({
   apiFetch: vi.fn(async (path: string) => {
     if (path === '/notifications') {
-      return { unreadCount: payload.rows.filter(r => r.isUnread).length, notifications: payload.rows }
+      const rows = payload.gets++ > 0 && payload.later ? payload.later : payload.rows
+      return { unreadCount: rows.filter(r => r.isUnread).length, notifications: rows }
     }
     if (path === '/roles') return []
     return {}
@@ -43,8 +45,10 @@ vi.mock('../lib/api', () => ({
 const sentence = (text: string) =>
   (_: string, el: Element | null) => el?.tagName === 'DIV' && el.textContent === text
 
-function renderPanel(rows: Record<string, unknown>[]) {
+function renderPanel(rows: Record<string, unknown>[], later: Record<string, unknown>[] | null = null) {
   payload.rows = rows
+  payload.later = later
+  payload.gets = 0
   return render(
     <MemoryRouter>
       <NotificationsProvider>
@@ -108,5 +112,17 @@ describe('NotificationsSlideOver reaction rows', () => {
     const read = screen.getByText(sentence('Sam reacted to your comment')).closest('a')!
     expect(unread.style.borderLeft).toMatch(/3px solid (?!transparent)/)
     expect(read.style.borderLeft).toMatch(/transparent/)
+  })
+
+  it('replaces a shown row with its fresh version when a reaction arrives as the panel opens', async () => {
+    const id = 'reaction:c1'
+    renderPanel(
+      [row({ id, isUnread: false, reactors: [reactor('u2', 'Sam')], reactorCount: 1 })],
+      [row({ id, isUnread: true, reactors: [reactor('u1', 'Jordan Lee'), reactor('u2', 'Sam')], reactorCount: 2 })],
+    )
+
+    const fresh = (await screen.findByText(sentence('Jordan Lee and Sam reacted to your comment'))).closest('a')!
+    expect(fresh.style.borderLeft).toMatch(/3px solid (?!transparent)/)
+    expect(screen.getAllByRole('link')).toHaveLength(1)
   })
 })
