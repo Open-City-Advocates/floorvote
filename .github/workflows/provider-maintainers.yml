@@ -1,7 +1,9 @@
 name: Provider maintainers
 
-# Mentions a data provider's maintainers on a pull request that changes the
-# provider. Maintainers are declared in each provider's `coverage` and written
+# Mentions a data provider's maintainers on a pull request from an outside
+# contributor that changes the provider. Project maintainers (the owners of the
+# `*` line in CODEOWNERS) merge everything, so they are never mentioned, and a
+# pull request they open gets no comment. Provider maintainers are declared in each provider's `coverage` and written
 # to .github/CODEOWNERS by `npm run gen:codeowners`; this reads that file from
 # the base branch.
 #
@@ -40,17 +42,24 @@ jobs:
             const { owner, repo } = context.repo
             const author = pr.user.login.toLowerCase()
 
-            // Each provider's maintainers, from the base branch's CODEOWNERS.
+            // The project maintainers and each provider's maintainers, from the
+            // base branch's CODEOWNERS.
             const { data: file } = await github.rest.repos.getContent({
               owner, repo, path: '.github/CODEOWNERS', ref: pr.base.ref,
             })
             const codeowners = Buffer.from(file.content, 'base64').toString('utf8')
+            const handles = owners => owners.filter(o => o.startsWith('@')).map(o => o.slice(1))
             const maintainers = new Map()
+            const projectMaintainers = new Set()
             for (const raw of codeowners.split('\n')) {
               const [path, ...owners] = raw.replace(/#.*/, '').trim().split(/\s+/)
+              if (path === '*') for (const h of handles(owners)) projectMaintainers.add(h.toLowerCase())
               const match = /^\/central\/src\/providers\/([^/]+)\/$/.exec(path)
-              if (match) maintainers.set(match[1], owners.filter(o => o.startsWith('@')).map(o => o.slice(1)))
+              if (match) maintainers.set(match[1], handles(owners))
             }
+
+            // A project maintainer's own pull request needs no ping.
+            if (projectMaintainers.has(author)) return
 
             // The providers this pull request changes, in source or tests.
             const files = await github.paginate(github.rest.pulls.listFiles, {
@@ -64,11 +73,11 @@ jobs:
               }
             }
 
-            // Mention each provider's maintainers other than the author.
+            // Mention each provider's maintainers other than the author and the project maintainers.
             const join = items => items.length < 3 ? items.join(' and ') : `${items.slice(0, -1).join(', ')}, and ${items.at(-1)}`
             const lines = []
             for (const id of [...changed].sort()) {
-              const who = maintainers.get(id).filter(h => h.toLowerCase() !== author).map(h => `@${h}`)
+              const who = maintainers.get(id).filter(h => h.toLowerCase() !== author && !projectMaintainers.has(h.toLowerCase())).map(h => `@${h}`)
               if (who.length > 0) lines.push(`${join(who)}, this pull request changes the \`${id}\` provider, which you maintain.`)
             }
             if (lines.length === 0) return
