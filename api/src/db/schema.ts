@@ -78,6 +78,23 @@ export const emailChanges = sqliteTable('email_changes', {
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
 })
 
+// The "This wasn't me" tokens of an email change's old-address notices
+// (migration 0090). Single use: pressing one deletes every row for its change.
+// See lib/emailChangeReport.ts.
+export const emailChangeReports = sqliteTable('email_change_reports', {
+  id: text('id').primaryKey(),
+  // The email_changes row the notice was about. That row may be gone by now.
+  changeId: text('change_id').notNull(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  oldEmail: text('old_email').notNull(),
+  newEmail: text('new_email').notNull(),
+  requestedBy: text('requested_by').notNull(),
+  requestedAt: text('requested_at').notNull(),
+  tokenHash: text('token_hash').notNull().unique(),
+  expiresAt: text('expires_at').notNull(),
+  createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
+})
+
 // Per-hour, per-provider send counters for the email-health job (migration 0073).
 // Covers every send, bulk included. `suppressed` holds recipient-specific
 // failures and is never counted in `failed`.

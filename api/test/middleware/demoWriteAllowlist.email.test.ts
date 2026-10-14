@@ -27,6 +27,7 @@ import { DEMO_WRITE_ALLOWLIST } from '../../src/middleware/auth'
 const EMAIL_SENDING_ROUTES = [
   'POST /api/admin/members/bulk-invite',
   'POST /api/auth/email-change/confirm',
+  'POST /api/auth/email-change/not-me',
   'POST /api/admin/members/:id/change-email',
   'POST /api/admin/members/:id/resend-invite',
   'POST /api/admin/members/:id/resend-login',

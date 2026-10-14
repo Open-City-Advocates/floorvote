@@ -20,6 +20,11 @@ describe('ownEmailChangeLabel (the member reading their own history)', () => {
     expect(ownEmailChangeLabel(step('email_change_cancelled', null), 'me')).toBe('Email change to jane@newjob.org cancelled')
   })
 
+  it('reports "This wasn\'t me" neutrally, since the one who pressed it was not signed in', () => {
+    expect(ownEmailChangeLabel(step('email_change_reported', null), 'me'))
+      .toBe('"This wasn\'t me" was pressed for the change of your email from jane@oldjob.org to jane@newjob.org, and every session was signed out')
+  })
+
   it('is null for any other event', () => {
     expect(ownEmailChangeLabel(step('verify_success', null), 'me')).toBeNull()
   })
@@ -34,6 +39,11 @@ describe('memberEmailChangeLabel (an admin reading a member history)', () => {
 
   it('names the admin who asked', () => {
     expect(memberEmailChangeLabel(step('email_change_requested', 'a1', 'Ada Admin'), 'm1')).toBe('Email change to jane@newjob.org requested by Ada Admin')
+  })
+
+  it('reports "This wasn\'t me" with both addresses', () => {
+    expect(memberEmailChangeLabel(step('email_change_reported', null), 'm1'))
+      .toBe('"This wasn\'t me" was pressed for the change from jane@oldjob.org to jane@newjob.org, and all of the member\'s sessions were signed out')
   })
 
   it('reads a cancel plainly, and is null for any other event', () => {

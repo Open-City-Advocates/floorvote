@@ -199,6 +199,7 @@ export const DEMO_WRITE_ALLOWLIST: ReadonlySet<string> = new Set([
 
   // A read, sent as a POST so the token stays out of the URL. Writes nothing.
   'POST /api/auth/email-change/status',
+  'POST /api/auth/email-change/not-me/status',
 ])
 
 // The guard runs before route matching (mounted on /api/*), so it cannot ask

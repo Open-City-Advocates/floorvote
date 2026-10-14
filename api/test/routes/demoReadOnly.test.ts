@@ -263,6 +263,8 @@ const DENIED = new Set([
   'POST /api/auth/accept-terms',
   // Email change: sends real mail and changes the shared demo account's address.
   'POST /api/auth/email-change/confirm',
+  // "This wasn't me" ends every session of the one shared demo account and emails admins.
+  'POST /api/auth/email-change/not-me',
   'POST /api/auth/logout',
   'POST /api/auth/magic-link',
   'POST /api/auth/verify',
@@ -327,9 +329,9 @@ describe('demo write categorisation', () => {
   })
 
   it('pins the size of each category so a silent shift is visible', () => {
-    expect(DEMO_WRITE_ALLOWLIST.size).toBe(20)
-    expect(DENIED.size).toBe(53)
-    expect(registered().length).toBe(79)
+    expect(DEMO_WRITE_ALLOWLIST.size).toBe(21)
+    expect(DENIED.size).toBe(54)
+    expect(registered().length).toBe(81)
   })
 
   it('refuses every denied route with the read-only message', async () => {

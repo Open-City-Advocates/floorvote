@@ -1,4 +1,4 @@
-import { color, fontSize } from '../../../shared/tokens'
+import { color, fontSize, radius } from '../../../shared/tokens'
 import { PRODUCT_NAME } from '../../../shared/brand'
 import { renderEmailShell, emailButton, emailFooterLink } from './emailShell'
 
@@ -86,5 +86,73 @@ export function renderEmailChangeNoticeEmail(input: {
     footerHtml: `${footer}<br>${emailFooterLink(esc(input.appUrl), PRODUCT_NAME)}`,
   })
   const text = `${lead(masked, atInstanceText(input.instanceName))}\n\n${advice}\n\nThis wasn't me: ${input.notMeUrl}\n\n${footer}`
+  return { subject, html, text }
+}
+
+/**
+ * To the instance's owners and admins, when a member presses "This wasn't me"
+ * in an old-address notice. Unlike the notices to the old address, it names
+ * both addresses in full: admins can already see every member's address, and
+ * they need the new one to judge whose it is.
+ */
+export function renderEmailChangeReportedEmail(input: {
+  appUrl: string
+  instanceName: string
+  memberName: string
+  memberEmail: string
+  oldEmail: string
+  newEmail: string
+  /** Who asked for the change: "the member", or the admin's name and address. */
+  requestedBy: string
+  /** When it was asked for, already formatted. */
+  requestedAt: string
+  /** Which address the member signed in with at the time of the report. */
+  current: 'old' | 'new' | 'other'
+  /** Their sign-in email then, named when it is neither the old nor the new address. */
+  currentEmail: string
+  /** Whether the change the notice described is known to have taken effect at some point. */
+  changeCommitted: boolean
+  /** The address a pending change was cancelled for, if pressing the button cancelled one. */
+  cancelledTo: string | null
+  /** The address of a pending change still waiting for confirmation, if one was left in place. */
+  stillPendingTo: string | null
+}): Rendered {
+  const subject = `${input.memberName} says they didn't change their sign-in email`
+  const href = `${input.appUrl}/admin/members?search=${encodeURIComponent(input.memberEmail)}`
+  const intro = `${input.memberName} pressed "This wasn't me" on a notice about a change to their sign-in email${atInstanceText(input.instanceName)}. Every session they had has been signed out.`
+  const status = [
+    input.current === 'new'
+      ? 'The change had already taken effect. The new address was their sign-in email.'
+      : input.current === 'other'
+        ? `The change had already taken effect, and their sign-in email has since changed again, to ${input.currentEmail}.`
+        : input.changeCommitted
+          ? 'The change had taken effect, and their sign-in email has since been restored to the old address.'
+          : 'Their sign-in email is still the old address.',
+    input.cancelledTo ? `The pending change to ${input.cancelledTo} was cancelled, so it can no longer be confirmed.` : '',
+    input.stillPendingTo ? `A pending change to ${input.stillPendingTo} was not cancelled and is still waiting for confirmation.` : '',
+  ].filter(Boolean).join(' ')
+  const rows: [string, string][] = [
+    ['Member', input.memberName],
+    ['Old address', input.oldEmail],
+    ['New address', input.newEmail],
+    ['Requested by', input.requestedBy],
+    ['Requested', input.requestedAt],
+  ]
+  const advice = `${PRODUCT_NAME} does not reverse a change that has taken effect, because the old mailbox may now belong to someone else. Reach the member another way, such as by phone, before you act. An admin can change their email back from Members.`
+  const footer = 'Sent to every active owner and admin as an account security alert.'
+
+  const table = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${color.white};border:1px solid ${color.borderDefault};border-radius:${radius.lg}px;margin:0 0 14px;"><tbody>${rows.map(([k, v], i) => `
+    <tr><td style="padding:10px 16px;${i > 0 ? `border-top:1px solid ${color.borderDefault};` : ''}font-size:${fontSize.sm}px;color:${color.textSecondary};width:110px;vertical-align:top;">${esc(k)}</td><td style="padding:10px 16px;${i > 0 ? `border-top:1px solid ${color.borderDefault};` : ''}font-size:${fontSize.base}px;color:${color.textPrimary};word-break:break-all;">${esc(v)}</td></tr>`).join('')}
+  </tbody></table>`
+
+  const html = renderEmailShell({
+    instanceName: input.instanceName,
+    appUrl: input.appUrl,
+    signalHtml: esc(subject),
+    bodyHtml: p(esc(intro)) + table + p(esc(status)) + p(esc(advice), true),
+    ctaHtml: emailButton(esc(href), 'Open Members'),
+    footerHtml: `${footer}<br>${emailFooterLink(esc(input.appUrl), PRODUCT_NAME)}`,
+  })
+  const text = `${intro}\n\n${rows.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\n${status}\n\n${advice}\n\nOpen Members: ${href}\n\n${footer}`
   return { subject, html, text }
 }

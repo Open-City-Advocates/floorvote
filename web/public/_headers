@@ -28,3 +28,8 @@
 # sets a referrer meta tag (web/src/pages/ConfirmEmailChange.tsx).
 /auth/confirm-email
   Referrer-Policy: no-referrer
+
+# The "This wasn't me" page (web/src/pages/ConfirmEmailChange.tsx) carries a
+# live token the same way.
+/auth/not-me
+  Referrer-Policy: no-referrer

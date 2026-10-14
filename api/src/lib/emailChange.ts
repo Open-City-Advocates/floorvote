@@ -9,6 +9,7 @@ import { claimSend, type SendLimit } from './adminSendLimits'
 import { recordAuthEvent } from './authEvents'
 import { sendBatch, resolveAssocName, type EmailMessage } from './email'
 import { renderEmailChangeConfirmEmail, renderEmailChangeNoticeEmail } from './emailChangeEmail'
+import { issueNotMeToken, notMeUrl } from './emailChangeReport'
 
 // Changing a member's sign-in email. The address is the member's identity, so
 // a change takes effect only when someone confirms it from the NEW address,
@@ -60,14 +61,6 @@ export function confirmUrl(appUrl: string, rawToken: string): string {
 }
 
 /**
- * Where "This wasn't me" in an old-address notice leads. For now a page that
- * tells the member to contact their admin.
- */
-export function notMeUrl(appUrl: string): string {
-  return `${appUrl}/auth/not-me`
-}
-
-/**
  * Central's superadmin list couldn't be read (a cold isolate during a central
  * outage). The guards here refuse rather than assume "not a superadmin", and a
  * pending change refused this way at commit stays pending for a retry.
@@ -110,16 +103,24 @@ async function send(env: Env, db: AppDb, message: EmailMessage, tag: string): Pr
 }
 
 /**
- * Tell the old address. Runs after the request or the commit has already
+ * Tell the old address, with a "This wasn't me" link of its own (see
+ * emailChangeReport.ts). Runs after the request or the commit has already
  * happened, so a failure here is logged and never turned into an error for a
  * change that took effect.
  */
-async function noticeToOldAddress(env: Env, db: AppDb, stage: 'requested' | 'changed', to: string, newEmail: string) {
+async function noticeToOldAddress(
+  env: Env,
+  db: AppDb,
+  stage: 'requested' | 'changed',
+  change: { id: string; userId: string; oldEmail: string; newEmail: string; requestedBy: string; requestedAt?: string },
+) {
   try {
+    const rawToken = await issueNotMeToken(db, change)
     const { subject, html, text } = renderEmailChangeNoticeEmail({
-      stage, appUrl: env.APP_URL, instanceName: (await resolveAssocName(env, db)) ?? '', newEmail, notMeUrl: notMeUrl(env.APP_URL),
+      stage, appUrl: env.APP_URL, instanceName: (await resolveAssocName(env, db)) ?? '', newEmail: change.newEmail,
+      notMeUrl: notMeUrl(env.APP_URL, rawToken),
     })
-    if (!(await send(env, db, { to: [to], subject, html, text }, `email-change-notice-${stage}`))) {
+    if (!(await send(env, db, { to: [change.oldEmail], subject, html, text }, `email-change-notice-${stage}`))) {
       console.error(`[email-change] the ${stage} notice to the old address did not go out`)
     }
   } catch (e) {
@@ -218,7 +219,9 @@ export async function requestEmailChange(
     return { ok: false, status: 502, error: EMAIL_CHANGE_ERRORS.sendFailed }
   }
 
-  await noticeToOldAddress(env, db, 'requested', member.email, newEmail)
+  await noticeToOldAddress(env, db, 'requested', {
+    id, userId: member.id, oldEmail: member.email, newEmail, requestedBy: input.requesterId,
+  })
   return { ok: true, email: newEmail }
 }
 
@@ -357,7 +360,9 @@ export async function confirmEmailChange(
     event: 'email_change_confirmed', userId: row.userId, email: newEmail, reason: row.oldEmail, actorId: row.requestedBy, ...ctx,
   })
   await recordCancelled(db, others.filter(o => o.userId !== row.userId), null)
-  await noticeToOldAddress(env, db, 'changed', row.oldEmail, newEmail)
+  await noticeToOldAddress(env, db, 'changed', {
+    id: row.id, userId: row.userId, oldEmail: row.oldEmail, newEmail, requestedBy: row.requestedBy, requestedAt: row.createdAt,
+  })
   return { ok: true, email: newEmail }
 }
 
