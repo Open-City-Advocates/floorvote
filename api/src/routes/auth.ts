@@ -14,6 +14,7 @@ import { findMemberByAddress, normalizeMemberAddress } from '../lib/memberAddres
 import { rememberInstance, forgetInstance } from '../lib/instanceHint'
 import { verifySuperadminJwt } from '../../../shared/superadminJwt'
 import { isSuperadminEmailViaCentral } from '../lib/superadminCentral'
+import { applyTokenProfile, isSuperadminUser, refreshProfileFromRequestToken } from '../lib/superadminProfile'
 import { checkRateLimit } from '../../../shared/rateLimit'
 import { verifyTurnstile } from '../../../shared/turnstile'
 import { countActiveOwners } from '../lib/owners'
@@ -380,6 +381,9 @@ authRoutes.get('/me', async (c) => {
             })
             localUser = await db.select().from(users).where(eq(users.id, id)).get()!
           }
+          // Central keeps the superadmin's name and title. Each dashboard sign-in
+          // refreshes this instance's copy.
+          localUser = await applyTokenProfile(db, localUser!, payload)
           const sessionToken = await generateToken()
           const sessionHash = await hashToken(sessionToken)
           const expiresInstant = new Date(Date.now() + SESSION_DURATION_MS)
@@ -409,6 +413,7 @@ authRoutes.get('/me', async (c) => {
             emailWeekAheadEnabled: localUser!.emailWeekAheadEnabled === 1,
             emailRepliesEnabled: localUser!.emailRepliesEnabled === 1,
             lastSeenFeed: localUser!.lastSeenFeed ?? null,
+            isSuperadmin: true,
             isLastOwner: localUser!.role === 'owner' && (await countActiveOwners(db)) <= 1,
             ...(await termsAcceptanceState(db, c.env, localUser!.id, localUser!.email)),
           })
@@ -450,6 +455,12 @@ authRoutes.get('/me', async (c) => {
     return c.json({ error: 'Session expired' }, 401)
   }
 
+  // A superadmin coming back from the dashboard with a live instance session still
+  // gets their central profile refreshed.
+  const profiled = await refreshProfileFromRequestToken(c, db, { ...sessionWithUser, id: sessionWithUser.userId })
+  sessionWithUser.name = profiled.name
+  sessionWithUser.subtitle = profiled.subtitle
+
   const newExpiryInstant = new Date(Date.now() + SESSION_DURATION_MS)
   await db
     .update(sessions)
@@ -488,6 +499,7 @@ authRoutes.get('/me', async (c) => {
     emailWeekAheadEnabled: sessionWithUser.emailWeekAheadEnabled === 1,
     emailRepliesEnabled: sessionWithUser.emailRepliesEnabled === 1,
     lastSeenFeed: sessionWithUser.lastSeenFeed ?? null,
+    isSuperadmin: await isSuperadminUser(c, sessionWithUser.email),
     isLastOwner: sessionWithUser.role === 'owner' && (await countActiveOwners(db)) <= 1,
     ...(await termsAcceptanceState(db, c.env, sessionWithUser.userId, sessionWithUser.email)),
   })
