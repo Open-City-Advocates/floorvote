@@ -5,7 +5,7 @@ import { requireAdmin } from '../../middleware/auth'
 import { getDb } from '../../db/client'
 import {
   bills, memberVotes, officialPositions, comments, notes, feedEvents, billTexts,
-  billCustomFieldValues, calendarEventBills,
+  billCustomFieldValues, calendarEventBills, notifications,
 } from '../../db/schema'
 import { ocaPriorityChanged } from '../../oca'
 import type { AppEnv } from '../../types'
@@ -167,6 +167,8 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     // Heterogeneous update/delete queries collected for db.batch(); type as the element array.
     const ops: Parameters<typeof db.batch>[0][number][] = []
     ops.push(db.update(comments).set({ billId: filedBillId }).where(eq(comments.billId, draftId)))
+    // Notifications name their bill and cascade-delete with it, so they follow their comments.
+    ops.push(db.update(notifications).set({ billId: filedBillId }).where(eq(notifications.billId, draftId)))
     if (filedHasPosition) {
       ops.push(db.delete(officialPositions).where(eq(officialPositions.billId, draftId)))
     } else {
