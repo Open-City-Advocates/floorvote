@@ -5,7 +5,7 @@ import { generateToken, hashToken } from './crypto'
 import { checkMemberAddresses, normalizeMemberAddress } from './memberAddress'
 import { isPreviouslyBounced } from './bouncedAddresses'
 import { superadminEmailStatus } from './superadminCentral'
-import { claimSend, type SendLimit } from './adminSendLimits'
+import { claimSend, releaseSend, adminSendChecks, type SendCheck, type SendLimit } from './adminSendLimits'
 import { recordAuthEvent } from './authEvents'
 import { sendBatch, resolveAssocName, type EmailMessage } from './email'
 import { renderEmailChangeConfirmEmail, renderEmailChangeNoticeEmail } from './emailChangeEmail'
@@ -27,14 +27,21 @@ import { issueNotMeToken, notMeUrl } from './emailChangeReport'
 // pending change (spending the token) along with any other member's pending
 // change to the same address. Each step is recorded in auth_events.
 //
-// Who may request is the caller's business: the self-service route asks for
-// the signed-in member's own address and keeps their session at commit. A
-// request with no `sessionId` ends every session at commit.
+// Who may request is the caller's business, except that the commit re-checks
+// an admin's standing (mayChangeEmail). The self-service route asks for the
+// signed-in member's own address and keeps their session at commit. An admin's
+// request (the requester is not the member, #416) goes through the same
+// functions: it has no session to keep, so every session ends at commit, it
+// counts against the admin send limits as well, and its refusals and link pages
+// say "they" and "an admin" where the member's own say "you".
 
 /** How long a confirmation link lasts. */
 export const EMAIL_CHANGE_TTL_HOURS = 24
 
-/** Requests per member, from anyone, in a rolling day. */
+/**
+ * Requests per member in a rolling day, counted apart for the member's own and
+ * for admins', so neither can use up the other's.
+ */
 export const EMAIL_CHANGE_LIMIT: SendLimit = { max: 3, windowMinutes: 24 * 60 }
 
 export const EMAIL_CHANGE_ERRORS = {
@@ -45,6 +52,7 @@ export const EMAIL_CHANGE_ERRORS = {
   reserved: "That address can't be used here.",
   superadmin: "Your address is managed centrally, so it can't be changed here.",
   limit: "You've asked to change your email three times in the past day. Please try again tomorrow.",
+  adminPending: 'An admin has an email change pending for your account.',
   sendFailed: "We couldn't send the confirmation email. Please try again in a little while.",
   centralUnavailable: "Can't check this address right now. Try again in a few minutes.",
   // Confirming
@@ -52,6 +60,47 @@ export const EMAIL_CHANGE_ERRORS = {
   expiredLink: 'This link has expired. Request the change again from your Account page.',
   stale: "This change can't be completed because the account changed after it was requested. Request it again from your Account page.",
 } as const
+
+/**
+ * The wording of the refusals and link pages that differs when an admin, not
+ * the member, asked for the change. Keys not listed read the same either way.
+ */
+export const ADMIN_EMAIL_CHANGE_ERRORS: Partial<Record<keyof typeof EMAIL_CHANGE_ERRORS, string>> = {
+  unchanged: "That's already their address. Check it for a typo.",
+  superadmin: "This account's address is managed centrally, so it can't be changed here.",
+  limit: "A change to this member's email was requested three times in the past day. Please try again tomorrow.",
+  expiredLink: 'This link has expired. Ask the admin who requested the change to request it again.',
+  stale: "This change can't be completed because the account changed after it was requested. Ask the admin who requested it to request it again.",
+}
+
+/** The message for `key`, in the admin's wording when an admin asked. */
+export function emailChangeError(key: keyof typeof EMAIL_CHANGE_ERRORS, byAdmin: boolean): string {
+  return (byAdmin && ADMIN_EMAIL_CHANGE_ERRORS[key]) || EMAIL_CHANGE_ERRORS[key]
+}
+
+/**
+ * Who may change whose address: owners anyone, admins Standard members, no one
+ * else. Superadmin accounts are out of reach of every path (see refuseSuperadmin).
+ */
+export function mayChangeEmail(actor: { role: string }, target: { role: string }): boolean {
+  return actor.role === 'owner' || (actor.role === 'admin' && target.role === 'member')
+}
+
+/**
+ * An admin's email-change requests also count against the admin send caps
+ * (#418), with the same numbers as invites and sign-in links but tallied apart
+ * from them: claimSend counts rows of its own event, here email_change_requested.
+ * So the refusals say what was limited, not "invites and sign-in links".
+ */
+const ADMIN_EMAIL_CHANGE_LIMIT_MESSAGES = {
+  actor_id: "You've asked to change a lot of members' email addresses in the past hour. Please wait a little while before asking again.",
+  user_id: "A change to this member's email was requested several times in the past hour. Please try again in a little while.",
+  email: 'That address was sent several email-change confirmations in the past hour. Ask the person to check their spam folder, or try again in a little while.',
+} as const
+
+function adminEmailChangeChecks(adminId: string, memberId: string, address: string): SendCheck[] {
+  return adminSendChecks(adminId, memberId, address).map(ch => ({ ...ch, message: ADMIN_EMAIL_CHANGE_LIMIT_MESSAGES[ch.column] }))
+}
 
 export type Refusal = { ok: false; status: 400 | 403 | 404 | 409 | 410 | 429 | 502 | 503; error: string }
 
@@ -78,10 +127,11 @@ export async function checkNewAddress(
   db: AppDb,
   member: { id: string; email: string },
   raw: unknown,
+  byAdmin = false,
 ): Promise<{ ok: true; email: string } | Refusal> {
   const [check] = await checkMemberAddresses(db, [typeof raw === 'string' ? raw : ''])
   if (check.status === 'invalid') return { ok: false, status: 400, error: EMAIL_CHANGE_ERRORS.invalid }
-  if (check.email === normalizeMemberAddress(member.email)) return { ok: false, status: 400, error: EMAIL_CHANGE_ERRORS.unchanged }
+  if (check.email === normalizeMemberAddress(member.email)) return { ok: false, status: 400, error: emailChangeError('unchanged', byAdmin) }
   if (check.status === 'taken') return { ok: false, status: 409, error: EMAIL_CHANGE_ERRORS.inUse }
   const listed = await superadminEmailStatus(env, check.email)
   if (listed === 'unknown') return CENTRAL_UNAVAILABLE
@@ -114,10 +164,11 @@ async function noticeToOldAddress(
   stage: 'requested' | 'changed',
   change: { id: string; userId: string; oldEmail: string; newEmail: string; requestedBy: string; requestedAt?: string },
 ) {
+  const byAdmin = change.requestedBy !== change.userId
   try {
     const rawToken = await issueNotMeToken(db, change)
     const { subject, html, text } = renderEmailChangeNoticeEmail({
-      stage, appUrl: env.APP_URL, instanceName: (await resolveAssocName(env, db)) ?? '', newEmail: change.newEmail,
+      stage, byAdmin, appUrl: env.APP_URL, instanceName: (await resolveAssocName(env, db)) ?? '', newEmail: change.newEmail,
       notMeUrl: notMeUrl(env.APP_URL, rawToken),
     })
     if (!(await send(env, db, { to: [change.oldEmail], subject, html, text }, `email-change-notice-${stage}`))) {
@@ -134,10 +185,10 @@ async function noticeToOldAddress(
  * commit, so no path in (the member's own, an admin's later) can skip it and a
  * change pending while the address joined central's list cannot commit.
  */
-async function refuseSuperadmin(env: Env, currentEmail: string): Promise<Refusal | null> {
+export async function refuseSuperadmin(env: Env, currentEmail: string, byAdmin: boolean): Promise<Refusal | null> {
   const listed = await superadminEmailStatus(env, currentEmail)
   if (listed === 'unknown') return CENTRAL_UNAVAILABLE
-  return listed === 'yes' ? { ok: false, status: 403, error: EMAIL_CHANGE_ERRORS.superadmin } : null
+  return listed === 'yes' ? { ok: false, status: 403, error: emailChangeError('superadmin', byAdmin) } : null
 }
 
 async function recordCancelled(
@@ -157,7 +208,8 @@ async function recordCancelled(
  * Start a change of `member`'s address to `rawNewEmail`, asked for by
  * `requesterId`. Validates, counts against the daily limit, replaces any
  * pending change (recording it cancelled), and sends the confirmation and the
- * notice to the current address.
+ * notice to the current address. The member's own request is refused while a
+ * change an admin started is live.
  */
 export async function requestEmailChange(
   env: Env,
@@ -165,16 +217,17 @@ export async function requestEmailChange(
   input: {
     member: { id: string; email: string }
     requesterId: string
-    /** The session to keep signed in at commit; null ends them all. */
+    /** The session to keep signed in at commit; null ends them all (an admin's request has none). */
     sessionId: string | null
     rawNewEmail: unknown
     ctx: RequestContext
   },
 ): Promise<{ ok: true; email: string } | Refusal> {
   const { member } = input
-  const superadmin = await refuseSuperadmin(env, member.email)
+  const byAdmin = input.requesterId !== member.id
+  const superadmin = await refuseSuperadmin(env, member.email, byAdmin)
   if (superadmin) return superadmin
-  const check = await checkNewAddress(env, db, member, input.rawNewEmail)
+  const check = await checkNewAddress(env, db, member, input.rawNewEmail, byAdmin)
   if (!check.ok) return check
   const newEmail = check.email
 
@@ -186,17 +239,34 @@ export async function requestEmailChange(
       event: 'email_change_requested', userId: member.id, email: newEmail, reason: member.email,
       linkType: null, actorId: input.requesterId, ...input.ctx,
     },
-    [{ column: 'user_id', value: member.id, limit: EMAIL_CHANGE_LIMIT, message: EMAIL_CHANGE_ERRORS.limit }],
+    [
+      {
+        column: 'user_id', value: member.id, limit: EMAIL_CHANGE_LIMIT, message: emailChangeError('limit', byAdmin),
+        requester: byAdmin ? 'others' : 'member',
+      },
+      // An admin's request also counts against the admin send limits (#418).
+      ...(byAdmin ? adminEmailChangeChecks(input.requesterId, member.id, newEmail) : []),
+    ],
   )
   if (!claim.ok) return { ok: false, status: 429, error: claim.message }
 
   const rawToken = await generateToken()
   const id = crypto.randomUUID()
   // One batch: the previous pending change goes as this one arrives, so there
-  // is never more than one and the latest request always wins.
-  const [replaced] = await db.batch([
-    db.delete(emailChanges).where(eq(emailChanges.userId, member.id))
-      .returning({ userId: emailChanges.userId, oldEmail: emailChanges.oldEmail, newEmail: emailChanges.newEmail }),
+  // is never more than one and the latest request wins. Except that the
+  // member's own request never replaces a live change an admin started: that
+  // change is how an admin moves a taken-over account back to its owner ("This
+  // wasn't me" leaves it pending for the same reason), and whoever holds the
+  // account must not cancel it by asking for their own. Such a change survives
+  // the delete, so the insert hits the one-per-member index and does nothing.
+  const [replaced, inserted] = await db.batch([
+    db.delete(emailChanges).where(and(
+      eq(emailChanges.userId, member.id),
+      byAdmin ? undefined : or(
+        eq(emailChanges.requestedBy, member.id),
+        sql`datetime(${emailChanges.expiresAt}) <= datetime('now')`,
+      ),
+    )).returning({ userId: emailChanges.userId, oldEmail: emailChanges.oldEmail, newEmail: emailChanges.newEmail }),
     db.insert(emailChanges).values({
       id,
       userId: member.id,
@@ -206,8 +276,13 @@ export async function requestEmailChange(
       requestingSessionId: input.sessionId,
       tokenHash: await hashToken(rawToken),
       expiresAt: sql`datetime('now', ${`+${EMAIL_CHANGE_TTL_HOURS} hours`})`,
-    }),
+    }).onConflictDoNothing({ target: emailChanges.userId }).returning({ id: emailChanges.id }),
   ])
+  if (inserted.length === 0) {
+    // Nothing was sent, so the request uses none of the allowance.
+    await releaseSend(env.DB, claim.id)
+    return { ok: false, status: 409, error: EMAIL_CHANGE_ERRORS.adminPending }
+  }
   await recordCancelled(db, replaced, input.requesterId, input.ctx)
 
   const instanceName = (await resolveAssocName(env, db)) ?? ''
@@ -243,12 +318,15 @@ async function pendingFor(db: AppDb, rawToken: string): Promise<{ row: PendingRo
  * the inbox it was sent to.
  */
 export async function emailChangeLinkStatus(db: AppDb, rawToken: string): Promise<
-  { status: 'valid'; email: string } | { status: 'expired' } | { status: 'invalid' }
+  { status: 'valid'; email: string; byAdmin?: true } | { status: 'expired'; byAdmin?: true } | { status: 'invalid' }
 > {
   const found = await pendingFor(db, rawToken)
   if (!found) return { status: 'invalid' }
-  if (!found.live) return { status: 'expired' }
-  return { status: 'valid', email: found.row.newEmail }
+  // `byAdmin` (only ever true) lets the page say an admin asked, and not to
+  // go to an Account page the member may not be able to sign in to.
+  const byAdmin = found.row.requestedBy !== found.row.userId ? { byAdmin: true as const } : {}
+  if (!found.live) return { status: 'expired', ...byAdmin }
+  return { status: 'valid', email: found.row.newEmail, ...byAdmin }
 }
 
 /** Drop a pending change that can no longer go through, recording why it went. */
@@ -272,30 +350,45 @@ export async function confirmEmailChange(
   db: AppDb,
   rawToken: string,
   ctx: RequestContext,
-): Promise<{ ok: true; email: string } | Refusal> {
+): Promise<{ ok: true; email: string; byAdmin?: true } | Refusal> {
   const found = await pendingFor(db, rawToken)
   if (!found) return { ok: false, status: 404, error: EMAIL_CHANGE_ERRORS.invalidLink }
   const { row } = found
-  if (!found.live) return { ok: false, status: 410, error: EMAIL_CHANGE_ERRORS.expiredLink }
+  const byAdmin = row.requestedBy !== row.userId
+  if (!found.live) return { ok: false, status: 410, error: emailChangeError('expiredLink', byAdmin) }
+  const stale: Refusal = { ok: false, status: 409, error: emailChangeError('stale', byAdmin) }
 
   // The member must still be active, at the address the change started from.
   const memberRow = await db
-    .select({ id: users.id, email: users.email, deactivatedAt: users.deactivatedAt })
+    .select({ id: users.id, email: users.email, role: users.role, deactivatedAt: users.deactivatedAt })
     .from(users).where(eq(users.id, row.userId)).get()
   if (!memberRow || memberRow.deactivatedAt || memberRow.email !== row.oldEmail) {
     await cancelPending(db, row, 'stale')
-    return { ok: false, status: 409, error: EMAIL_CHANGE_ERRORS.stale }
+    return stale
+  }
+
+  // An admin's change needs the admin to still hold the standing to ask for
+  // it: they may have been demoted, removed, or the member promoted since, and
+  // whoever holds the new inbox must not be moved on authority that is gone.
+  if (byAdmin) {
+    const requester = await db
+      .select({ role: users.role, deactivatedAt: users.deactivatedAt })
+      .from(users).where(eq(users.id, row.requestedBy)).get()
+    if (!requester || requester.deactivatedAt || !mayChangeEmail(requester, memberRow)) {
+      await cancelPending(db, row, 'requester no longer allowed')
+      return stale
+    }
   }
 
   // A superadmin's address is central's to manage. It may have joined the list since.
-  const superadmin = await refuseSuperadmin(env, memberRow.email)
+  const superadmin = await refuseSuperadmin(env, memberRow.email, byAdmin)
   if (superadmin) {
     if (superadmin !== CENTRAL_UNAVAILABLE) await cancelPending(db, row, superadmin.error)
     return superadmin
   }
 
   // Every rule again: the address may have been taken, bounced, or listed since.
-  const check = await checkNewAddress(env, db, memberRow, row.newEmail)
+  const check = await checkNewAddress(env, db, memberRow, row.newEmail, byAdmin)
   if (!check.ok) {
     if (check !== CENTRAL_UNAVAILABLE) await cancelPending(db, row, check.error)
     return check
@@ -317,6 +410,13 @@ export async function confirmEmailChange(
   const changed = sql`(SELECT email FROM users WHERE id = ${row.userId}) = ${newEmail}`
   const moved = sql`${changed} AND EXISTS (SELECT 1 FROM email_changes WHERE id = ${row.id})`
   const keep = row.requestingSessionId
+  // An admin's change also needs the admin to still hold the standing to ask
+  // for it at the moment of the write, not only when it was checked above: a
+  // role change landing in between must not slip through.
+  const requesterStanding = row.requestedBy === row.userId
+    ? sql`1`
+    : sql`EXISTS (SELECT 1 FROM users r WHERE r.id = ${row.requestedBy} AND r.deactivated_at IS NULL
+        AND (r.role = 'owner' OR (r.role = 'admin' AND (SELECT role FROM users WHERE id = ${row.userId}) = 'member')))`
   let updated: { id: string }[]
   let others: { userId: string; oldEmail: string; newEmail: string }[]
   try {
@@ -325,6 +425,7 @@ export async function confirmEmailChange(
         eq(users.id, row.userId),
         eq(users.email, row.oldEmail),
         isNull(users.deactivatedAt),
+        requesterStanding,
         sql`NOT EXISTS (SELECT 1 FROM users other WHERE lower(other.email) = ${newEmail} AND other.id != ${row.userId})`,
         sql`EXISTS (SELECT 1 FROM email_changes WHERE id = ${row.id} AND datetime(expires_at) > datetime('now'))`,
       )).returning({ id: users.id }),
@@ -350,10 +451,10 @@ export async function confirmEmailChange(
     // changed between the checks above and the batch.
     const still = await pendingFor(db, rawToken)
     if (!still) return { ok: false, status: 404, error: EMAIL_CHANGE_ERRORS.invalidLink }
-    if (!still.live) return { ok: false, status: 410, error: EMAIL_CHANGE_ERRORS.expiredLink }
-    const recheck = await checkNewAddress(env, db, { id: row.userId, email: row.oldEmail }, row.newEmail)
+    if (!still.live) return { ok: false, status: 410, error: emailChangeError('expiredLink', byAdmin) }
+    const recheck = await checkNewAddress(env, db, { id: row.userId, email: row.oldEmail }, row.newEmail, byAdmin)
     await cancelPending(db, row, recheck.ok ? 'stale' : recheck.error)
-    return recheck.ok ? { ok: false, status: 409, error: EMAIL_CHANGE_ERRORS.stale } : recheck
+    return recheck.ok ? stale : recheck
   }
 
   await recordAuthEvent(db, {
@@ -363,6 +464,6 @@ export async function confirmEmailChange(
   await noticeToOldAddress(env, db, 'changed', {
     id: row.id, userId: row.userId, oldEmail: row.oldEmail, newEmail, requestedBy: row.requestedBy, requestedAt: row.createdAt,
   })
-  return { ok: true, email: newEmail }
+  return { ok: true, email: newEmail, ...(byAdmin ? { byAdmin: true as const } : {}) }
 }
 

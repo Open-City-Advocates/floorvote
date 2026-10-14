@@ -56,6 +56,8 @@ export function renderEmailChangeConfirmEmail(input: { appUrl: string; instanceN
  */
 export function renderEmailChangeNoticeEmail(input: {
   stage: 'requested' | 'changed'
+  /** An admin asked for the change, not the member: no device keeps its sign-in, and the notice says an admin asked. */
+  byAdmin?: boolean
   appUrl: string
   instanceName: string
   newEmail: string
@@ -70,11 +72,13 @@ export function renderEmailChangeNoticeEmail(input: {
   const signal = requested ? 'A change to your sign-in email was requested' : 'Your sign-in email was changed'
 
   const lead = (m: string, at: string) => requested
-    ? `Someone signed in to ${account}${at} asked to change its sign-in email to ${m}. The change takes effect only if it's confirmed from that address within 24 hours. Until then, this address still signs you in.`
-    : `The sign-in email for ${account}${at} is now ${m}. This address no longer signs you in, sign-in links already sent here have stopped working, and the account was signed out everywhere except the device that asked for the change.`
-  const advice = requested
-    ? "If you asked for this, you don't need to do anything. If you didn't, use the link below."
-    : "If you made this change, you don't need to do anything. If you didn't, use the link below."
+    ? `${input.byAdmin ? 'An admin' : `Someone signed in to ${account}${at}`} asked to change ${input.byAdmin ? `the sign-in email for ${account}${at}` : 'its sign-in email'} to ${m}. The change takes effect only if it's confirmed from that address within 24 hours. Until then, this address still signs you in.`
+    : `The sign-in email for ${account}${at} is now ${m}. This address no longer signs you in, sign-in links already sent here have stopped working, and the account was signed out everywhere${input.byAdmin ? '' : ' except the device that asked for the change'}.`
+  const advice = input.byAdmin
+    ? "If you asked an admin to make this change, you don't need to do anything. If you didn't, use the link below."
+    : requested
+      ? "If you asked for this, you don't need to do anything. If you didn't, use the link below."
+      : "If you made this change, you don't need to do anything. If you didn't, use the link below."
   const footer = "This is an account security notice, so it's sent even if you've turned off other emails."
 
   const html = renderEmailShell({

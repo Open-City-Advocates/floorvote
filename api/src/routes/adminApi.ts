@@ -30,6 +30,7 @@ import { checkMemberAddresses, normalizeMemberAddress } from '../lib/memberAddre
 import { isPendingInvite, pendingInviteWhere } from '../lib/pendingInvite'
 import { isPreviouslyBounced, previouslyBouncedAddresses } from '../lib/bouncedAddresses'
 import { adminSendChecks, claimSend, releaseSend } from '../lib/adminSendLimits'
+import { mayChangeEmail, refuseSuperadmin, requestEmailChange } from '../lib/emailChange'
 import { centralEmail, type DeliveryStatus, type SuppressionStatus } from '../lib/centralEmail'
 
 export const adminApiRouter = new Hono<AppEnv>()
@@ -299,12 +300,17 @@ const CHANGE_EMAIL_ERRORS = {
   bounced: 'This address has bounced before. Check it for a typo.',
   invalid: 'Invalid email address',
   pendingOnly: "Only a pending invite's address can be changed",
+  adminsByOwners: "Only owners can change an admin's address",
 } as const
 
 // POST /admin/members/:id/change-email  { email }
-// Fixes a pending invite's address and sends a new invite in one step. Only a
-// pending invite: once a member has signed in, moving their login to another
-// inbox needs account-takeover safeguards this route doesn't have.
+// A pending invite: fixes the address and sends a new invite in one step.
+// An active member (#416): asks for the change the way the member would from
+// Profile (lib/emailChange.ts), so it takes effect only when confirmed from the
+// new address, with both notices to the old one, and ends all of the member's
+// sessions then. Admins may ask for Standard members, owners for anyone, and a
+// superadmin account is refused. Answers { ok, email, pending: true }, because
+// nothing has changed yet.
 adminApiRouter.post('/members/:id/change-email', async (c) => {
   const targetId = c.req.param('id')
   const currentUser = c.get('user')
@@ -326,9 +332,29 @@ adminApiRouter.post('/members/:id/change-email', async (c) => {
     return c.json({ error: "Only owners can change an owner's address" }, 403)
   }
   if (target.deactivatedAt) return c.json({ error: 'Cannot change the address of a deactivated member' }, 400)
-  if (!isPendingInvite(target)) return c.json({ error: CHANGE_EMAIL_ERRORS.pendingOnly }, 400)
+
+  // Nobody changes a superadmin account here, a pending invite included: a
+  // superadmin who only ever signs in through the dashboard never uses a
+  // sign-in link, so their row can still look like a pending invite.
+  const superadmin = await refuseSuperadmin(c.env, target.email, true)
+  if (superadmin) return c.json({ error: superadmin.error }, superadmin.status)
 
   const body = await c.req.json<{ email?: unknown }>().catch(() => ({} as { email?: unknown }))
+
+  if (!isPendingInvite(target)) {
+    if (!mayChangeEmail(currentUser, target)) return c.json({ error: CHANGE_EMAIL_ERRORS.adminsByOwners }, 403)
+    // No session is kept: the member's own devices all end at commit.
+    const result = await requestEmailChange(c.env, db, {
+      member: { id: target.id, email: target.email },
+      requesterId: currentUser.id,
+      sessionId: null,
+      rawNewEmail: body.email,
+      ctx: authReqContext(c),
+    })
+    if (!result.ok) return c.json({ error: result.error }, result.status)
+    return c.json({ ok: true, email: result.email, pending: true })
+  }
+
   const raw = typeof body.email === 'string' ? body.email : ''
   const [check] = await checkMemberAddresses(db, [raw])
   if (check.status === 'invalid') return c.json({ error: CHANGE_EMAIL_ERRORS.invalid }, 400)
