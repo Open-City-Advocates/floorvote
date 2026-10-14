@@ -2,7 +2,8 @@ import type { AuthEventType } from './authEvents'
 
 // Limits on the admin routes that email a member: resend invite, resend
 // sign-in link, and change a pending invite's address. The limits live here
-// and nowhere else.
+// and nowhere else. claimSend is also how email-change requests are counted
+// (lib/emailChange.ts, with its own event and limit).
 //
 // Counted from auth_events, not a Workers Rate Limiting binding. That binding
 // can only count over 10 or 60 seconds, which cannot say "a few resends an
@@ -71,7 +72,9 @@ export interface SendClaim {
   event: AuthEventType
   userId: string
   email: string
-  linkType: 'login' | 'invite'
+  /** Null for a send that isn't a sign-in link, such as an email-change confirmation. */
+  linkType: 'login' | 'invite' | null
+  reason?: string | null
   actorId?: string | null
   userAgent?: string | null
   ipCountry?: string | null
@@ -109,11 +112,11 @@ export async function claimSend(d1: D1Database, claim: SendClaim, checks: SendCh
   const room = checks.map(ch => `${countSql(ch)} < ?`).join(' AND ')
   const res = await d1
     .prepare(
-      `INSERT INTO auth_events (id, user_id, email, event, link_type, user_agent, ip_country, actor_id)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${room}`,
+      `INSERT INTO auth_events (id, user_id, email, event, link_type, reason, user_agent, ip_country, actor_id)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${room}`,
     )
     .bind(
-      id, claim.userId, address, claim.event, claim.linkType, claim.userAgent ?? null, claim.ipCountry ?? null, claim.actorId ?? null,
+      id, claim.userId, address, claim.event, claim.linkType, claim.reason ?? null, claim.userAgent ?? null, claim.ipCountry ?? null, claim.actorId ?? null,
       ...checks.flatMap(ch => [...countBinds(claim.event, ch), ch.limit.max]),
     )
     .run()
