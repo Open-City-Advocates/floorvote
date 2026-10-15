@@ -545,11 +545,11 @@ describe('HoverTooltip describe option', () => {
     expect(bubble('A bill that became law.')).toBeUndefined()
   })
 
-  it('marks the term with a dotted underline and the help cursor', () => {
+  it('marks the term with a dotted underline and keeps the default cursor', () => {
     render(<HoverTooltip text="A bill that became law." describe>Chapter</HoverTooltip>)
     const term = screen.getByText('Chapter')
     expect(term.style.borderBottom).toContain('dotted')
-    expect(term.style.cursor).toBe('help')
+    expect(term.style.cursor).toBe('')
   })
 
   it('renders plain text when there is no explainer', () => {
