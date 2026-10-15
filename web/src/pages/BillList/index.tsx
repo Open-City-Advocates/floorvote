@@ -13,6 +13,7 @@ import { FilterSheet } from '../../components/FilterSheet'
 import { HoverTooltip } from '../../components/HoverTooltip'
 import { useSidebarRefresh } from '../../context/SidebarRefreshContext'
 import { useDemo } from '../../context/DemoContext'
+import { useConfig } from '../../context/ConfigContext'
 import { CARD } from '../../lib/cardStyle'
 import { color, radius, fontSize, fontWeight } from '../../styles/tokens'
 import { billUrl } from '../../lib/sessionSlug'
@@ -46,6 +47,22 @@ export const knownStates: Set<string> = new Set()
 export const knownSessions: Set<string> = new Set()
 export const knownStatuses: Set<string> = new Set()
 export const knownTagsCache: Set<string> = new Set()
+
+/**
+ * The Subject filter's hover text. The caveat about legislatures that assign
+ * no subjects appears only when a covered state has none, and never names one.
+ * `*` coverage means the states the instance has bills in (`billStates`). A
+ * state has subjects if `subjectStates` lists it: every state with any subject,
+ * suppressed ones excluded, independent of the active filters, unlike the
+ * subject facet, which a state or search filter can empty of a state that does
+ * have subjects. Not known yet means no caveat.
+ */
+function subjectFilterTooltip(coverage: string[], subjectStates?: string[], billStates?: string[]): string {
+  const base = 'Filter by legislature-assigned subject.'
+  if (!subjectStates) return base
+  const covered = coverage.includes('*') ? (billStates ?? []) : coverage
+  return covered.some(s => !subjectStates.includes(s)) ? `${base} Not all legislatures assign subjects.` : base
+}
 
 /**
  * Read-only peek at the warmed first-page cache. The cache stays module-private
@@ -188,6 +205,7 @@ export function BillList() {
   // surfaces gate State (multi-state) and New matches (admin-only) through
   // this same context so they can't drift on which dimensions appear.
   const stageUseful = useStageFilterUseful()
+  const { config } = useConfig()
   const filterDimensionCtx = { uniqueStates: f.uniqueStates, isAdmin, isMultiState: f.isMultiState, hasDrafts: facetCounts.hasDrafts, draftsActive: f.drafts, stageUseful, stageActive: f.filterStages.length > 0 }
 
   // Relevance slider: track the thumb locally so it moves instantly while
@@ -971,7 +989,7 @@ export function BillList() {
           {f.subjectGroups.length > 0 && (
             <HoverTooltip
               maxWidth={280}
-              text="Filter by legislature-assigned subject. (Not all legislatures assign subjects, and those that do might assign them inconsistently.)"
+              text={subjectFilterTooltip(config?.states ?? [], facetCounts.subjectStates, facetCounts.billStates)}
             >
               <SubjectFilterDropdown
                 subjectGroups={f.subjectGroups}
