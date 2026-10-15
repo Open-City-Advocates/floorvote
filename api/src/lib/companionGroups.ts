@@ -92,6 +92,19 @@ export function myGroupVote(billId: SQLiteColumn, userId: string) {
 }
 
 /**
+ * The bills a member has voted on, and every bill in their groups: the bills the
+ * bill list's Unvoted filter leaves out, since a member's vote on a group is on
+ * all of it. Read once for the request, so the filter is one `NOT IN` over this
+ * list on a bill's id, with no probe of the bill's group.
+ */
+export async function loadVotedInGroups(db: AppDb, userId: string): Promise<string[]> {
+  const rows = await db.all(sql`SELECT bill_id AS id FROM member_votes WHERE user_id = ${userId}
+    UNION SELECT g.id FROM bills g WHERE g.group_key IN
+      (SELECT b.group_key FROM member_votes v JOIN bills b ON b.id = v.bill_id WHERE v.user_id = ${userId} AND b.group_key IS NOT NULL)`) as { id: string }[]
+  return rows.map(r => r.id)
+}
+
+/**
  * A member's private notes across `billId`'s group, `billId`'s first and the
  * rest by bill number. Notes with no text are left out. Only ever the one
  * member's: notes are private.
