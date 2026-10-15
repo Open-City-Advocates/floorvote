@@ -17,6 +17,7 @@ import { nowDb } from '../../lib/dbTime'
 import { activeUser } from '../../lib/accountDeletion'
 import { resolveCustomFieldValues } from '../../lib/customFieldValues'
 import { displayName } from '../../lib/displayName'
+import { inGroupOf, loadGroupBills, loadGroupNotes, mergeGroupNotes } from '../../lib/companionGroups'
 
 // Max live (non-deleted) comments one bill may hold on a DEMO_MODE tenant. The
 // per-IP limiter in demoReadOnly bounds the *rate* an anonymous visitor can
@@ -25,6 +26,9 @@ import { displayName } from '../../lib/displayName'
 // can see: the busiest seeded bill carries 8 comments, and the bill-detail
 // payload returns only the first 20.
 export const DEMO_BILL_COMMENT_CAP = 60
+
+// The most companion notes one note save may merge away.
+const MAX_NOTE_MERGES = 50
 
 export function registerEngagementRoutes(router: Hono<AppEnv>) {
   // POST /bills/:id/votes
@@ -52,10 +56,14 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
 
     const now = nowDb()
     if (existing) {
-      await db
-        .update(memberVotes)
-        .set({ position, updatedAt: now })
-        .where(eq(memberVotes.id, existing.id))
+      // Rewritten rather than updated in place, so its rowid follows this
+      // write. A companion group resolves a member's vote to the latest on any
+      // of its bills, and times are stored to the second, so rowid breaks the
+      // tie between votes cast in the same second.
+      await db.batch([
+        db.delete(memberVotes).where(eq(memberVotes.id, existing.id)),
+        db.insert(memberVotes).values({ ...existing, position, updatedAt: now }),
+      ])
     } else {
       await db.insert(memberVotes).values({
         id: crypto.randomUUID(),
@@ -78,9 +86,12 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
     if (!currentUser.canVote) {
       return c.json({ error: 'You are not eligible to vote' }, 403)
     }
+    // A member has one vote on a companion group, resolved from their votes on
+    // any of its bills, so retracting it removes them all. Leaving an older one
+    // on a companion would bring that vote back.
     await db
       .delete(memberVotes)
-      .where(and(eq(memberVotes.billId, id), eq(memberVotes.userId, currentUser.id)))
+      .where(and(inGroupOf(memberVotes.billId, id), eq(memberVotes.userId, currentUser.id)))
     return new Response(null, { status: 204 })
   })
 
@@ -145,6 +156,8 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
     const { id } = c.req.param()
     const currentUser = c.get('user')
 
+    // The whole companion group's conversation, as on the bill page.
+    const billNumberOf = new Map((await loadGroupBills(db, id)).map(b => [b.billId, b.billNumber]))
     const commentRows = await db
       .select({
         c: comments,
@@ -154,7 +167,7 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
       })
       .from(comments)
       .innerJoin(users, eq(comments.userId, users.id))
-      .where(and(eq(comments.billId, id), isNull(comments.deletedAt), activeUser))
+      .where(and(inGroupOf(comments.billId, id), isNull(comments.deletedAt), activeUser))
       // Same tiebreaker as the bill-detail comment block (billsApi/detail.ts):
       // created_at is truncated to seconds, so seeded comments sharing a daysAgo
       // — and a visitor's comment landing the same second — collide, and rowid
@@ -186,6 +199,8 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
     return c.json(
       commentRows.map(({ c: comment, userName, userEmail, userSubtitle }) => ({
         id: comment.id,
+        billId: comment.billId,
+        billNumber: billNumberOf.get(comment.billId) ?? null,
         userId: comment.userId,
         userName: userName || userEmail,
         userSubtitle: userSubtitle,
@@ -263,12 +278,10 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
     const db = getDb(c.env.DB)
     const { id } = c.req.param()
     const currentUser = c.get('user')
-    const note = await db
-      .select()
-      .from(notes)
-      .where(and(eq(notes.billId, id), eq(notes.userId, currentUser.id)))
-      .get()
-    return c.json({ content: note?.content ?? null })
+    // The member's notes across the companion group: each one, and the one
+    // note to edit that holds them all.
+    const groupNotes = await loadGroupNotes(db, id, currentUser.id)
+    return c.json({ content: mergeGroupNotes(groupNotes), notes: groupNotes })
   })
 
   // PUT /bills/:id/note
@@ -278,14 +291,19 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
     const currentUser = c.get('user')
     const bill = await db.select({ id: bills.id }).from(bills).where(eq(bills.id, id)).get()
     if (!bill) return c.json({ error: 'Not found' }, 404)
-    const body = await c.req.json<{ content?: string }>().catch(() => ({} as { content?: string }))
+    const body = await c.req.json<{ content?: string; merges?: unknown }>().catch(() => ({} as { content?: string; merges?: unknown }))
     const content = body.content ?? ''
+    // The companion bills whose notes the page showed with this one, and
+    // which this save therefore replaces. A group is a handful of bills, so
+    // more than MAX_NOTE_MERGES is not a page's request.
+    const merges = [...new Set(Array.isArray(body.merges) ? body.merges.filter((m): m is string => typeof m === 'string' && m !== id) : [])]
+    if (merges.length > MAX_NOTE_MERGES) return c.json({ error: `merges may name at most ${MAX_NOTE_MERGES} bills` }, 400)
     if (new TextEncoder().encode(content).length > 51_200) {
       return c.json({ error: 'Note too long (max 50 KB)' }, 400)
     }
     const now = nowDb()
 
-    await db.insert(notes)
+    const upsert = db.insert(notes)
       .values({
         id: crypto.randomUUID(),
         billId: id,
@@ -298,6 +316,21 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
         target: [notes.billId, notes.userId],
         set: { content, updatedAt: now },
       })
+    // One note per member per companion group: the page showed the member's
+    // notes from other bills with this one, and the edit replaces them. Only
+    // the ones it showed, so a page loaded before the bills were grouped never
+    // deletes a note its member didn't see. Only notes in this bill's group,
+    // and only this member's. One batch, so two pages saving at once leave
+    // the later save's note rather than neither.
+    if (merges.length === 0) {
+      await upsert
+    } else {
+      await db.batch([upsert, db.delete(notes).where(and(
+        eq(notes.userId, currentUser.id),
+        inGroupOf(notes.billId, id),
+        inArray(notes.billId, merges),
+      ))])
+    }
 
     return c.json({ content })
   })
