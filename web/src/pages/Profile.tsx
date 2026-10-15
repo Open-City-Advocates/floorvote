@@ -427,7 +427,7 @@ export function Profile() {
                     cursor: demoLocked ? 'not-allowed' : 'pointer',
                   }}
                 >
-                  Change email
+                  Change email…
                 </button>
               )}
             </div>
