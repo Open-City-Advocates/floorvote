@@ -150,6 +150,7 @@ export async function buildBillDetail(
     actorName: e.actorName ?? null,
     with: (JSON.parse(e.metadata) as GroupingEventMetadata).with,
     replaced: (JSON.parse(e.metadata) as GroupingEventMetadata).replaced ?? [],
+    ...((JSON.parse(e.metadata) as GroupingEventMetadata).undoneSplits?.length ? { undoneSplits: (JSON.parse(e.metadata) as GroupingEventMetadata).undoneSplits } : {}),
   }))
 
   const voteCounts = { support: 0, oppose: 0, neutral: 0, total: 0 }
@@ -312,6 +313,8 @@ export async function buildBillDetail(
     comments: formattedComments,
     commentsTotal: commentCountRow?.count ?? 0,
     groupingEvents,
+    // The bills in its companion group, this one first: just this one in no group.
+    groupBills,
     texts: textRows.map(t => ({
       docId: t.docId,
       type: t.type,
