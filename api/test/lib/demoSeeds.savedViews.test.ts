@@ -5,6 +5,7 @@ import { resetDb, applyMigrations, seedBill, seedSession } from '../helpers'
 import { runDemoReset } from '../../src/lib/demoReset'
 import { DEMO_SEEDS, type DemoSeed } from '../../src/lib/demoSeeds'
 import { LM_BILLS } from '../../src/lib/demoSeeds/lakeMichigan/bills'
+import { OCA_SAVED_VIEW_CASES } from '../oca' // OCA fork hook: DC demo seed views
 
 /**
  * The view switcher renders nothing for an instance with no saved views, so a
@@ -33,6 +34,7 @@ const CASES: Array<{ slug: string; fixtures: BillFixture[]; expectedTotals: Reco
       'high-priority-in-michigan-and-wisconsin': 5,
     },
   },
+  ...OCA_SAVED_VIEW_CASES,
 ]
 
 type ViewDto = { id: string; name: string; query: string; slug: string }

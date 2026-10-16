@@ -1,6 +1,7 @@
 import { stripHtml, truncateWithEllipsis, COMMENT_PREVIEW_MAX } from '../../../../../shared/feedUtils'
 import { parseHandle } from '../../../../../shared/billHandle'
 import type { DemoSeed, DemoSeedFeedEvent } from '../../../lib/demoSeeds/types'
+import { viewQuery } from '../../../lib/demoSeeds/viewQuery'
 import { DCYJ_ORG } from './org'
 import { DCYJ_CUSTOM_FIELDS, DCYJ_ROLES, DCYJ_USER_ROLES, DCYJ_USERS } from './roster'
 import {
@@ -92,4 +93,28 @@ export const DC_YOUTH_JUSTICE_SEED: DemoSeed = {
   ],
   customFieldValues: DCYJ_CUSTOM_FIELD_VALUES, notes: DCYJ_NOTES,
   calendarEvents: DCYJ_CALENDAR_EVENTS,
+  // Written for a youth-justice coalition. The first is the one OR view: the
+  // DYRS and detention tags, or anything Youth Affairs leads. The tags are the
+  // ones copied from OCA's analysis, so its count can drift when OCA's tags do;
+  // the other two lean only on what this seed writes. Counts are for the 20 bills
+  // in bills.ts, with the tags api/test/oca/index.ts records.
+  savedViews: [
+    {
+      // 11 bills: 6 tagged DYRS, 4 tagged Pretrial & Detention, and B26-0479, which Youth Affairs leads.
+      id: 'dcyj-view-dyrs-detention', name: 'DYRS, detention, or Youth Affairs', slug: 'dyrs-detention-or-youth-affairs',
+      query: viewQuery([
+        ['match', 'any'], ['tag', 'DYRS'], ['tag', 'Pretrial & Detention'], ['cf_lead-committee', 'Youth Affairs'],
+      ]),
+    },
+    {
+      // 6 bills: the two curfew emergencies, B26-0461, B26-0671, B26-0401, and B26-0402.
+      id: 'dcyj-view-pushing-back', name: 'Amend or oppose, high or medium priority', slug: 'amend-or-oppose-high-or-medium',
+      query: viewQuery([['position', 'Amend'], ['position', 'Oppose'], ['priority', 'high'], ['priority', 'medium']]),
+    },
+    {
+      // 2 bills: the hearing notices HN26-0083 (Youth Services Center overcrowding) and HN26-0163 (DYRS placement rules).
+      id: 'dcyj-view-high-open', name: 'High priority, no position yet', slug: 'high-priority-no-position',
+      query: viewQuery([['priority', 'high'], ['position', 'none']]),
+    },
+  ],
 }

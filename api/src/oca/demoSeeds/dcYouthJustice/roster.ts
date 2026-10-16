@@ -19,18 +19,18 @@ import type { DemoSeedCustomField, DemoSeedRole, DemoSeedUser } from '../../../l
 // lastActiveDaysAgo is staggered for a realistic active curve: eight members
 // active within 7 days, the rest within 30.
 export const DCYJ_USERS: DemoSeedUser[] = [
-  { id: 'demo-user',        email: 'demo@example.com',     name: 'Jordan Ellery',       role: 'admin',  subtitle: 'Policy Director',           createdDaysAgo: 480, canVote: true,  lastActiveDaysAgo: 0 },
-  { id: 'dcyj-user-ed',     email: 'simone@demo.example',  name: 'Simone Talbert',      role: 'admin',  subtitle: 'Executive Director',        createdDaysAgo: 480, canVote: true,  lastActiveDaysAgo: 0 },
-  { id: 'dcyj-user-atty',   email: 'owen@demo.example',    name: 'Owen Haldane',        role: 'admin',  subtitle: 'Staff Attorney',            createdDaysAgo: 470, canVote: true,  lastActiveDaysAgo: 1 },
-  { id: 'dcyj-user-la',     email: 'priya@demo.example',   name: 'Priya Venkataraman',  role: 'member', subtitle: 'Legislative Analyst',       createdDaysAgo: 475, canVote: true,  lastActiveDaysAgo: 1 },
-  { id: 'dcyj-user-org',    email: 'tasha@demo.example',   name: 'Tasha Greenfield',    role: 'member', subtitle: 'Youth Organizer',           createdDaysAgo: 370,  canVote: true,  lastActiveDaysAgo: 2 },
-  { id: 'dcyj-user-parent', email: 'denise@demo.example',  name: 'Denise Okoro',        role: 'member', subtitle: 'Parent Advocate',           createdDaysAgo: 360,  canVote: true,  lastActiveDaysAgo: 3 },
-  { id: 'dcyj-user-fellow', email: 'malik@demo.example',   name: 'Malik Brennan',       role: 'member', subtitle: 'Youth Leadership Fellow',   createdDaysAgo: 300,  canVote: true,  lastActiveDaysAgo: 4 },
-  { id: 'dcyj-user-reentry', email: 'curtis@demo.example', name: 'Curtis Ambrose',      role: 'member', subtitle: 'Reentry Coordinator',       createdDaysAgo: 280,  canVote: true,  lastActiveDaysAgo: 6 },
-  { id: 'dcyj-user-comms',  email: 'rafael@demo.example',  name: 'Rafael Quintero',     role: 'member', subtitle: 'Communications Manager',    createdDaysAgo: 260,  canVote: true,  lastActiveDaysAgo: 9 },
-  { id: 'dcyj-user-data',   email: 'grace@demo.example',   name: 'Grace Whitfield',     role: 'member', subtitle: 'Research Analyst',          createdDaysAgo: 250,  canVote: true,  lastActiveDaysAgo: 12 },
-  { id: 'dcyj-user-clinic', email: 'hannah@demo.example',  name: 'Hannah Lindqvist',    role: 'member', subtitle: 'Law Clinic Student',        createdDaysAgo: 45,  canVote: false, lastActiveDaysAgo: 18 },
-  { id: 'dcyj-user-intern', email: 'lena@demo.example',    name: 'Lena Park',           role: 'member', subtitle: 'Policy Intern',             createdDaysAgo: 30,  canVote: false, lastActiveDaysAgo: 25 },
+  { id: 'demo-user',        email: 'demo@example.com',     name: 'Jordan Ellery',       role: 'admin',  title:    'Policy Director',           createdDaysAgo: 480, canVote: true,  lastActiveDaysAgo: 0 },
+  { id: 'dcyj-user-ed',     email: 'simone@demo.example',  name: 'Simone Talbert',      role: 'admin',  title:    'Executive Director',        createdDaysAgo: 480, canVote: true,  lastActiveDaysAgo: 0 },
+  { id: 'dcyj-user-atty',   email: 'owen@demo.example',    name: 'Owen Haldane',        role: 'admin',  title:    'Staff Attorney',            createdDaysAgo: 470, canVote: true,  lastActiveDaysAgo: 1 },
+  { id: 'dcyj-user-la',     email: 'priya@demo.example',   name: 'Priya Venkataraman',  role: 'member', title:    'Legislative Analyst',       createdDaysAgo: 475, canVote: true,  lastActiveDaysAgo: 1 },
+  { id: 'dcyj-user-org',    email: 'tasha@demo.example',   name: 'Tasha Greenfield',    role: 'member', title:    'Youth Organizer',           createdDaysAgo: 370,  canVote: true,  lastActiveDaysAgo: 2 },
+  { id: 'dcyj-user-parent', email: 'denise@demo.example',  name: 'Denise Okoro',        role: 'member', title:    'Parent Advocate',           createdDaysAgo: 360,  canVote: true,  lastActiveDaysAgo: 3 },
+  { id: 'dcyj-user-fellow', email: 'malik@demo.example',   name: 'Malik Brennan',       role: 'member', title:    'Youth Leadership Fellow',   createdDaysAgo: 300,  canVote: true,  lastActiveDaysAgo: 4 },
+  { id: 'dcyj-user-reentry', email: 'curtis@demo.example', name: 'Curtis Ambrose',      role: 'member', title:    'Reentry Coordinator',       createdDaysAgo: 280,  canVote: true,  lastActiveDaysAgo: 6 },
+  { id: 'dcyj-user-comms',  email: 'rafael@demo.example',  name: 'Rafael Quintero',     role: 'member', title:    'Communications Manager',    createdDaysAgo: 260,  canVote: true,  lastActiveDaysAgo: 9 },
+  { id: 'dcyj-user-data',   email: 'grace@demo.example',   name: 'Grace Whitfield',     role: 'member', title:    'Research Analyst',          createdDaysAgo: 250,  canVote: true,  lastActiveDaysAgo: 12 },
+  { id: 'dcyj-user-clinic', email: 'hannah@demo.example',  name: 'Hannah Lindqvist',    role: 'member', title:    'Law Clinic Student',        createdDaysAgo: 45,  canVote: false, lastActiveDaysAgo: 18 },
+  { id: 'dcyj-user-intern', email: 'lena@demo.example',    name: 'Lena Park',           role: 'member', title:    'Policy Intern',             createdDaysAgo: 30,  canVote: false, lastActiveDaysAgo: 25 },
 ]
 
 // Three committee watch teams, matching the Council committees the coalition

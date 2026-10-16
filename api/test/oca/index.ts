@@ -1,3 +1,5 @@
+import { DCYJ_BILLS } from '../../src/oca/demoSeeds/dcYouthJustice/bills'
+
 // OCA's hooks into upstream's api test files, each used from one line there
 // (docs/internal/fork-upgrade.md, "Keep Fork Features Separate").
 
@@ -36,3 +38,41 @@ export const OCA_DEMO_EXPECTED_OFFSETS: Record<string, Record<string, number>> =
     'dcyj-event-past-1': -12, 'dcyj-event-past-2': -31,
   },
 }
+
+/**
+ * OCA's demo seeds for test/lib/demoSeeds.savedViews.test.ts's CASES. Each bill
+ * carries the tags OCA's analysis gave it on 2026-10-16, which the demo copies at
+ * standup; the seed writes the priorities, positions, and Lead Committee values.
+ */
+const DCYJ_TAGS: Record<string, string[]> = {
+  'HN26-0083': ['Juvenile Justice', 'DYRS', 'Conditions of Confinement', 'Oversight & Nominations'],
+  'HN26-0163': ['Juvenile Justice', 'DYRS', 'Oversight & Nominations'],
+  'B26-0286': ['Juvenile Justice', 'Policing'],
+  'B26-0355': ['Juvenile Justice', 'Policing'],
+  'B26-0404': ['DYRS', 'Conditions of Confinement', 'Behavioral Health'],
+  'B26-0526': ['Conditions of Confinement', 'Education & Truancy', 'Youth Charged as Adults', 'Juvenile Justice'],
+  'B26-0671': ['Pretrial & Detention', 'Sentencing'],
+  'B26-0188': ['Pretrial & Detention', 'Youth Charged as Adults'],
+  'B26-0479': ['Juvenile Justice', 'Child Welfare', 'Reentry & Records'],
+  'PR26-0764': ['Education & Truancy', 'Conditions of Confinement'],
+  'HN26-0088': ['Behavioral Health', 'Oversight & Nominations'],
+  'B26-0461': ['Juvenile Justice', 'Policing'],
+  'B26-0636': ['Juvenile Justice', 'Policing'],
+  'B26-0186': ['Juvenile Justice', 'Pretrial & Detention', 'Education & Truancy', 'Behavioral Health'],
+  'B26-0413': ['Juvenile Justice', 'DYRS', 'Budget & Reprogramming'],
+  'B26-0038': ['Reentry & Records'],
+  'B26-0401': ['Juvenile Justice', 'DYRS', 'Child Welfare', 'Oversight & Nominations'],
+  'B26-0402': ['Juvenile Justice', 'Education & Truancy', 'Child Welfare'],
+  'REPROG26-0153': ['DYRS', 'Budget & Reprogramming', 'Conditions of Confinement'],
+  'B26-0835': ['Policing', 'Pretrial & Detention', 'Violence Prevention'],
+}
+
+export const OCA_SAVED_VIEW_CASES = [
+  {
+    slug: 'dc-youth-justice',
+    fixtures: DCYJ_BILLS.map(b => ({ externalId: b.externalId, state: 'DC', tags: DCYJ_TAGS[b.number] })),
+    expectedTotals: {
+      'dyrs-detention-or-youth-affairs': 11, 'amend-or-oppose-high-or-medium': 6, 'high-priority-no-position': 2,
+    },
+  },
+]

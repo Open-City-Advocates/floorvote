@@ -6,6 +6,7 @@ import { calendarEvents, calendarEventBills, associationConfig, users, sessions,
 import { runDemoReset } from '../../src/lib/demoReset'
 import { demoResetAndSeed } from '../../src/lib/demoResetAndSeed'
 import { DEMO_SEEDS, DEFAULT_DEMO_SEED, resolveDemoSeed, type DemoSeed } from '../../src/lib/demoSeeds'
+import { OCA_DEMO_SEEDS } from '../../src/oca/demoSeeds' // OCA fork hook: DC demo seeds
 import { SINGLE_STATE_SEED } from '../fixtures/singleStateDemoSeed'
 import { eq, count, exists, and, isNull, isNotNull } from 'drizzle-orm'
 
@@ -206,7 +207,7 @@ describe('runDemoReset with the default seed', () => {
 
   it('is the only registered seed', () => {
     expect(seed.slug).toBe('lake-michigan')
-    expect(Object.keys(DEMO_SEEDS)).toEqual(['lake-michigan'])
+    expect(Object.keys(DEMO_SEEDS)).toEqual(['lake-michigan', ...Object.keys(OCA_DEMO_SEEDS)]) // OCA fork hook: the fork's own seeds follow upstream's
   })
 
   it('defaults to lake-michigan when DEMO_SEED is unset', () => {
