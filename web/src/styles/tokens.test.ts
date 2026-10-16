@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { color as lightColor, radius, fontSize, fontWeight } from '../../../shared/tokens'
 import { color } from './tokens'
 import { darkColor, colorVariablesCss } from './colorModes'
+import { contrast, relLuminance } from '../test/colorTokens'
 
 describe('tokens', () => {
   it('exposes expected primitive values', () => {
@@ -41,6 +42,26 @@ describe('tokens', () => {
   })
 })
 
+// --- Brand colors in dark mode ----------------------------------------------
+// Honey is the brand accent and the logo mark's fill, so it never changes with
+// the mode (the mark is never recolored). It already reads on the dark surfaces.
+// The legacy amber #f59e0b is being retired toward Honey and may not come back
+// in either palette.
+describe('brand colors in both modes', () => {
+  it('keeps Honey (accentAmber) at #e8a33d in dark mode, as in light', () => {
+    expect(lightColor.accentAmber).toBe('#e8a33d')
+    expect(darkColor.accentAmber).toBe('#e8a33d')
+  })
+
+  it('uses the legacy amber #f59e0b nowhere, in either palette', () => {
+    for (const [mode, palette] of [['light', lightColor], ['dark', darkColor]] as const) {
+      for (const [token, value] of Object.entries(palette)) {
+        expect(value.toLowerCase(), `${mode} ${token}`).not.toBe('#f59e0b')
+      }
+    }
+  })
+})
+
 // --- WCAG AA contrast guard -------------------------------------------------
 // Regression guard from the 2026-06-24 contrast audit, run against both color
 // modes. Every gray text tier must clear WCAG 2.2 AA (4.5:1 for normal text) on
@@ -50,25 +71,6 @@ describe('tokens', () => {
 // line, this fails in CI before it can ship. (textMuted on bgLoginPage/bgInfo is
 // intentionally not asserted — muted text there sits on a white card, not the
 // tinted page fill.)
-
-function relLuminance(hex: string): number {
-  let h = hex.replace('#', '')
-  if (h.length === 3)
-    h = h
-      .split('')
-      .map((c) => c + c)
-      .join('')
-  const [r, g, b] = [0, 2, 4]
-    .map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
-    .map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)))
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b
-}
-
-function contrast(fg: string, bg: string): number {
-  const a = relLuminance(fg)
-  const b = relLuminance(bg)
-  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
-}
 
 const AA_NORMAL = 4.5
 const AA_GRAPHICS = 3
@@ -110,6 +112,9 @@ for (const [mode, c] of MODES) {
       ['brand strip', c.textOnBrand, c.brandNavy],
       ['blue button', c.textOnFill, c.linkBlue],
       ['high priority chip', c.textOnFill, c.priorityHigh],
+      ['amend icon on the card', c.textAmberHearing, c.white],
+      ['wordmark Floor on the card', c.wordmarkFloor, c.white],
+      ['wordmark Floor on the login page', c.wordmarkFloor, c.bgLoginPage],
     )
 
     for (const [label, fg, bg, min = AA_NORMAL] of PAIRS) {

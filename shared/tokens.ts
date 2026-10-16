@@ -49,6 +49,7 @@ export const color = {
   accentAmber:       '#e8a33d', // Honey — brand accent: wordmark "Vote", relevance slider, settings-nav active line
   voteSupport:       '#22c55e', // support vote bar / cast-pill fill
   billBadgeNavy:     '#1e3a5f', // bill number badge background
+  wordmarkFloor:     '#1e3a5f', // "Floor" in the wordmark on the page. White in dark mode, the brand's on-dark lockup (as on brandNavy)
   brandNavy:         '#1e3a5f', // brand chrome: sidebar brand strip, mobile top bar, skip link. Stays navy in dark mode, unlike billBadgeNavy
   // Keyboard focus ring. Navy on light surfaces; the sidebar overrides
   // --fv-focus-ring to white. Distinct from accentBlue (chip "selected") and

@@ -504,7 +504,7 @@ export function Profile() {
                 type="submit"
                 disabled={!changeEmailReady}
                 style={{
-                  background: color.accentBlue, color: color.white, border: 'none', borderRadius: radius.md,
+                  background: color.accentBlue, color: color.textOnFill, border: 'none', borderRadius: radius.md,
                   padding: '8px 20px', fontSize: fontSize.base, fontWeight: fontWeight.medium,
                   cursor: changeEmailReady ? 'pointer' : 'not-allowed', opacity: changeEmailReady ? 1 : 0.5,
                 }}

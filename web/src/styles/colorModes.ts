@@ -34,7 +34,7 @@ export const darkColor: Record<ColorToken, string> = {
   priorityMedium:    '#f59aab',
   priorityLow:       '#b98a91',
   textAmberDark:     '#fbbf72',
-  textAmberHearing:  '#f59e0b',
+  textAmberHearing:  '#e8a33d', // Honey; the legacy #f59e0b is retired
   textAmberWarning:  '#fcd34d',
   textVioletChip:    '#c4b5fd',
   textTealSenate:    '#5eead4',
@@ -48,9 +48,10 @@ export const darkColor: Record<ColorToken, string> = {
   accentBlue:        '#60a5fa',
   accentBlueMuted:   '#35537d',
   brandViolet:       '#a78bfa',
-  accentAmber:       '#f0b459',
+  accentAmber:       '#e8a33d', // Honey, unchanged: it fills the logo mark, which is never recolored
   voteSupport:       '#3fcf73',
   billBadgeNavy:     '#9dbbe6',
+  wordmarkFloor:     '#fff',   // the brand's on-dark lockup: white "Floor"
   brandNavy:         '#1a2d47',
   focusRing:         '#9dbbe6',
   tagTextBlue:       '#93c5fd',
