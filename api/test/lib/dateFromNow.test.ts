@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest'
 import { dateFromNow } from '../../src/lib/demoReset'
 import { DEMO_SEEDS } from '../../src/lib/demoSeeds'
+import { OCA_DEMO_EXPECTED_OFFSETS } from '../oca' // OCA fork hook: DC demo seed offsets
 
 const DAY = 86400_000
 const dayOf = (iso: string) => new Date(iso + 'T00:00:00Z').getUTCDay()
@@ -97,6 +98,7 @@ const EXPECTED_OFFSETS: Record<string, Record<string, number>> = {
     'lm-event-past-1': -29, 'lm-event-past-2': -18,
     'lm-event-past-3': -33, 'lm-event-past-4': -47,
   },
+  ...OCA_DEMO_EXPECTED_OFFSETS,
 }
 
 describe('calendar offsets are pinned', () => {

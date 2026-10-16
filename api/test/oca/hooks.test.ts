@@ -4,7 +4,10 @@ import { env, createExecutionContext, createScheduledController, waitOnExecution
 // The fork's hourly hook in src/index.ts (runOcaHourly). An upstream merge that
 // drops it would stop deep-analysis and hearing-brief requests with no error
 // anywhere. The route hook is covered by every test that calls /api/deep,
-// /api/links, /api/crm, or /api/directory.
+// /api/links, /api/crm, or /api/directory. The demo seed hook in
+// src/lib/demoSeeds/index.ts is covered by demoSeeds.dcYouthJustice.test.ts,
+// which resolves the seed through upstream's registry, and its offsets hook in
+// test/lib/dateFromNow.test.ts by that file's "covers every registered seed".
 vi.mock('../../src/lib/healStalledAi', () => ({ healStalledAiBills: vi.fn(async () => ({ queued: 0, cappedOut: 0, remaining: 0 })), HEAL_MAX_ATTEMPTS: 5 }))
 vi.mock('../../src/cron/sync', () => ({ registerWithCentral: vi.fn(async () => true) }))
 vi.mock('../../src/lib/emailHealthJob', () => ({ runEmailHealth: vi.fn(async () => 'none') }))
