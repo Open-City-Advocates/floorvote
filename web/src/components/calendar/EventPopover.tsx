@@ -1,4 +1,5 @@
 import type { CSSProperties, Ref, RefObject } from 'react'
+import { Link } from 'react-router-dom'
 import { OcaEventBriefLink } from '../../oca'
 import { color, fontSize, radius } from '../../styles/tokens'
 import type { CalendarEvent } from '../../lib/calendarGrid'
@@ -7,7 +8,9 @@ import { DateLabel } from '../ui/DateLabel'
 import { eventDateLabel } from '../../lib/calendarDate'
 import { EventLines } from './EventLines'
 import { EventSourceIcon } from './EventSourceIcon'
-import { eventSourceIcon } from '../../../../shared/eventLineModel'
+import { eventSourceIcon, EVENT_META_STYLE } from '../../../../shared/eventLineModel'
+import { canEditEventSource, dateFieldNote } from '../../../../shared/eventSource'
+import { billUrl } from '../../lib/sessionSlug'
 import { HoverTooltip } from '../HoverTooltip'
 import type { Box } from './expandTarget'
 import { useDemo } from '../../context/DemoContext'
@@ -62,7 +65,9 @@ export function EventPopoverContent({ event, isAdmin, expanded = false, onEdit, 
   onRestore: (e: CalendarEvent) => void
 }) {
   const { demoLocked } = useDemo()
-  const canManage = isAdmin && event.source === 'custom'
+  const canManage = isAdmin && canEditEventSource(event.source)
+  // A date-field event can't be edited here: the popover says where its date is set instead.
+  const setFrom = event.source === 'field' && event.fieldName && event.bills[0] ? { bill: event.bills[0], text: dateFieldNote(event.fieldName, event.bills[0].billNumber) } : null
   const iconBtn = {
     background: 'none', border: 'none', color: color.textMuted, cursor: 'pointer',
     padding: 2, display: 'inline-flex', alignItems: 'center',
@@ -78,6 +83,11 @@ export function EventPopoverContent({ event, isAdmin, expanded = false, onEdit, 
         <div style={{ flex: 1, minWidth: 0 }}>
           {dateBlock && <div style={{ marginBottom: 6 }}>{dateBlock}</div>}
           <EventLines event={event} linkChips />
+          {setFrom && (
+            <div style={{ ...EVENT_META_STYLE, marginTop: 6 }}>
+              <Link to={billUrl(setFrom.bill)} style={{ color: color.accentBlue, textDecoration: 'underline' }}>{setFrom.text}</Link>
+            </div>
+          )}
           <OcaEventBriefLink event={event} />
         </div>
         {canManage && (
@@ -137,7 +147,7 @@ export function EventPopover({ event, isAdmin, onEdit, onDelete, onRestore, onCl
   ref?: Ref<PopPanelHandle>
 }) {
   const expanded = !!(expandFrom && computeTarget)
-  const tint = event.source === 'custom' ? color.bgInfo : color.bgInfo
+  const { tint } = eventSourceIcon(event)
   return (
     <PopPanel
       ref={ref}

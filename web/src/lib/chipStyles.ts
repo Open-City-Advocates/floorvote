@@ -34,7 +34,7 @@ export const BILL_BADGE_BASE = {
   display: 'inline-flex' as const,
   alignItems: 'center' as const,
   background: color.billBadgeNavy,
-  color: color.white,
+  color: color.textOnFill,
   fontWeight: fontWeight.bold,
   fontSize: fontSize.sm,
   padding: '3px 10px',
@@ -92,6 +92,13 @@ export const COUNT_BADGE = {
   padding: '1px 6px',
   borderRadius: radius.lg,
   fontWeight: fontWeight.normal,
+}
+
+// The bill number on a comment posted on a companion in the bill's group: the
+// gray count pill, in the heavier weight a bill number reads at.
+export const COMPANION_TAG: React.CSSProperties = {
+  ...COUNT_BADGE,
+  fontWeight: fontWeight.semibold,
 }
 
 // COUNT_BADGE with an active/hover state. When `active`, the gray fill drops to

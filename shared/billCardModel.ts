@@ -39,7 +39,7 @@ export type BillCardModel = {
 }
 export const CARD_STYLE = {
   headerBg: color.surfaceSubtle, border: color.borderDefault,
-  badgeBg: color.billBadgeNavy, badgeColor: color.white,
+  badgeBg: color.billBadgeNavy, badgeColor: color.textOnFill,
   titleFontFamily: "'Source Serif 4', Georgia, serif", titleSize: fontSize.base,
   titleWeight: fontWeight.bold, titleColor: color.textPrimary,
   summaryFontFamily: "'Source Serif 4', Georgia, serif", summarySize: fontSize.sm,
@@ -185,6 +185,13 @@ export function buildActivityRowModel(event: FeedEvent): ActivityRowModel {
       ...base, iconName: 'thumbs_up_down', iconFill: 1,
       iconColor: (position && POSITION_FEED_ICON[position]) || USER_EVENT_ICONS.position_set.color,
       text: position === null ? `${who} cleared the position${onBills}` : `${who} set position to ${position}${onBills}`,
+    }
+  }
+  if (type === 'new_matches') {
+    // The day's routine new keyword matches, written by the system, so no author to name.
+    return {
+      ...base, iconName: 'new_releases', iconFill: 0, iconColor: color.accentBlue,
+      text: `${count ?? 0} new ${count === 1 ? 'bill' : 'bills'} matched your keywords`,
     }
   }
   return { ...base, iconName: 'circle', iconFill: 0, iconColor: color.textMuted, text: 'Activity' }

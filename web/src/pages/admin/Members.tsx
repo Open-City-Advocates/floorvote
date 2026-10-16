@@ -28,7 +28,7 @@ type Member = {
   email: string
   name: string
   role: 'admin' | 'member' | 'owner'
-  subtitle: string | null
+  title: string | null
   createdAt: string
   lastActive: string
   deactivatedAt: string | null
@@ -584,7 +584,7 @@ export function Members() {
     if (!q) return true
     // Name, email, any Role name, or the permission label as displayed. An
     // Owner is an Admin with extra powers, so Owners also match queries inside
-    // "admin"; "owner" still matches only Owners. Subtitle deliberately never
+    // "admin"; "owner" still matches only Owners. Title deliberately never
     // matches, to keep Role searches from pulling in Members outside the Role.
     const fields = [displayName(m), m.email, accountRoleLabel(m.role), ...m.roles.map(r => r.name)]
     if (fields.some(f => f.toLowerCase().includes(q))) return true
@@ -685,7 +685,7 @@ export function Members() {
   }
   const btnPrimary: React.CSSProperties = {
     background: color.accentBlue,
-    color: color.white,
+    color: color.textOnFill,
     border: 'none',
     borderRadius: radius.md,
     padding: '8px 20px',
@@ -922,7 +922,7 @@ export function Members() {
             />
             <button
               {...addRoleGate.buttonProps(handleAddRole)}
-              style={{ fontSize: fontSize.sm, padding: '5px 14px', borderRadius: radius.md, border: 'none', background: !addRoleGate.disabled ? color.accentBlue : color.borderDefault, color: !addRoleGate.disabled ? color.white : color.textMuted, cursor: !addRoleGate.disabled ? 'pointer' : 'not-allowed', fontWeight: fontWeight.medium }}
+              style={{ fontSize: fontSize.sm, padding: '5px 14px', borderRadius: radius.md, border: 'none', background: !addRoleGate.disabled ? color.accentBlue : color.borderDefault, color: !addRoleGate.disabled ? color.textOnFill : color.textMuted, cursor: !addRoleGate.disabled ? 'pointer' : 'not-allowed', fontWeight: fontWeight.medium }}
             >
               {addingRole ? 'Adding…' : 'Add'}
             </button>
@@ -973,7 +973,7 @@ export function Members() {
                   borderRadius: radius.md,
                   border: `1px solid ${color.textAmberDark}`,
                   background: troubleFilter ? color.textAmberDark : color.bgWarnSoft,
-                  color: troubleFilter ? color.white : color.textAmberDark,
+                  color: troubleFilter ? color.textOnFill : color.textAmberDark,
                   fontSize: fontSize.sm,
                   fontWeight: fontWeight.semibold,
                   cursor: 'pointer',
@@ -1057,7 +1057,7 @@ export function Members() {
                       <MemberNameCell
                         name={member.name}
                         email={member.email}
-                        subtitle={member.subtitle}
+                        title={member.title}
                         isSelf={isSelf}
                       />
                     </td>
@@ -1454,7 +1454,7 @@ export function Members() {
                   Login activity
                 </div>
                 <div style={{ fontSize: fontSize.sm, color: color.textMuted, marginTop: 2 }}>
-                  {displayName(activityMember)} · {activityMember.email}
+                  {activityMember.name?.trim() ? `${activityMember.name.trim()} · ${activityMember.email}` : activityMember.email}
                 </div>
               </div>
               <button
@@ -1585,7 +1585,7 @@ export function Members() {
           position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
           zIndex: 300,
           background: color.textSlate,
-          color: color.white,
+          color: color.textOnFill,
           padding: '10px 20px',
           borderRadius: radius.md,
           fontSize: fontSize.sm,

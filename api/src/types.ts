@@ -46,7 +46,7 @@ export type Env = OcaEnv & {
   INSTANCE_DOMAINS?: string
   CALENDAR_DEFAULT_TZ?: string
   DEMO_MODE?: string
-  DEMO_SEED?: string  // demoSeeds registry key; defaults to nj-county-clerks
+  DEMO_SEED?: string  // demoSeeds registry key; defaults to lake-michigan
   LIST_CACHE_TTL?: string  // GET /bills page-query cache TTL (seconds); default 0 (off), set per-tenant to enable
   EMAIL_PROVIDER?: string
   EMAIL?: import('./lib/email').CloudflareEmailBinding
@@ -72,6 +72,15 @@ export type Env = OcaEnv & {
 
 export type AppDb = DrizzleD1Database<typeof schema>
 
+/**
+ * Where a keyword match came from (central's MatchProvenance). Routine: the
+ * regular sync found a bill new to central for this instance. Bulk: a session
+ * seed, a keyword re-run, an operator import, and any match with no
+ * declaration. Only routine matches reach the digest and the feed; the triage
+ * list and the "N new" chip show both.
+ */
+export type MatchProvenance = 'routine' | 'bulk'
+
 export type TenantQueueMessage = {
   tenantId: string
   billId: string // the bill handle, "legiscan:{bill_id}" (older data and tests may hold legacy "ocd-bill/{uuid}" ids)
@@ -79,8 +88,14 @@ export type TenantQueueMessage = {
   forceAI?: boolean // Skip text-hash dedup AND keyword gate; always run the model (Gemini)
   interactive?: true     // Set ONLY by promote-bill and reprocess-bill routes; never inferred
   stubOnly?: boolean // Update stub metadata only; skip full bill fetch and AI
+  probe?: string // A delivery check from scripts/verify-instance.sh: record arrival under this nonce and touch no bill
+  /** Sent only by lib/companionAnalysis.ts: analyze a bill that didn't match, because its companion group has a tracked bill. */
+  groupAnalysis?: true
   metadataOnly?: boolean // Refresh metadata from central; skip text fetch + AI.
   matchType?: 'keyword' | 'manual' | null // Bill's match classification for this tenant
+  // Set when the message brings this instance a new keyword match. Missing
+  // (from an older central, or a message that brings no new match) is bulk.
+  matchProvenance?: MatchProvenance
   changes?: {
     changeType: string
     oldValue: string | null

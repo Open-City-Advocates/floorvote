@@ -16,8 +16,15 @@ import { digestCadenceDescription, weekAheadCadenceDescription, isModuleEnabled 
 import type { ModulesConfig } from '../lib/modules'
 import { DEFAULT_ORG_NOUN } from '../lib/orgNoun'
 import { emailChangedLabel, ownEmailChangeLabel, type EmailChangeStepFields } from '../lib/emailChangedLabel'
+import { getColorMode, setColorMode, type ColorMode } from '../lib/colorMode'
 
 const SECTION_CARD: React.CSSProperties = { ...CARD, padding: 24, marginBottom: 20 }
+
+const COLOR_MODES: { value: ColorMode; label: string }[] = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+]
 
 type AccountAuthEvent = EmailChangeStepFields & {
   id: string
@@ -61,7 +68,7 @@ function accountEventLabel(e: AccountAuthEvent, selfId: string): string {
 
 export function Profile() {
   usePageTitle('Account')
-  const { user, setSubtitle, setName, setEmailDigestEnabled, setEmailRepliesEnabled } = useAuth()
+  const { user, setTitle, setName, setEmailDigestEnabled, setEmailDigestMatchesEnabled, setEmailRepliesEnabled } = useAuth()
   const { demoLocked } = useDemo()
   const { config } = useConfig()
   const orgNoun = config?.orgNoun ?? DEFAULT_ORG_NOUN
@@ -72,6 +79,7 @@ export function Profile() {
   // pattern BillDetail uses for #section-* / #comment- anchors.
   const location = useLocation()
   const [flashedSetting, setFlashedSetting] = useState<string | null>(null)
+  const [colorMode, setColorModeState] = useState<ColorMode>(getColorMode)
   useEffect(() => {
     const id = location.hash.slice(1)
     if (id !== 'setting-email-replies' && id !== 'setting-email-digest' && id !== 'setting-week-ahead') return
@@ -90,8 +98,8 @@ export function Profile() {
     setNameInput(user?.name ?? '')
   }, [user?.name])
 
-  // Subtitle editing
-  const [subtitleInput, setSubtitleInput] = useState(user?.subtitle ?? '')
+  // Title editing
+  const [titleInput, setTitleInput] = useState(user?.title ?? '')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -99,8 +107,8 @@ export function Profile() {
 
   // Sync input if user changes externally
   useEffect(() => {
-    setSubtitleInput(user?.subtitle ?? '')
-  }, [user?.subtitle])
+    setTitleInput(user?.title ?? '')
+  }, [user?.title])
 
   // Clean up timer on unmount
   useEffect(() => {
@@ -127,6 +135,16 @@ export function Profile() {
   useEffect(() => {
     setDigestEnabled(user?.emailDigestEnabled ?? true)
   }, [user?.emailDigestEnabled])
+
+  // "Include newly matched bills", nested under the digest switch. Admins always
+  // get the new-match section, so only members are offered it.
+  const isMember = user?.role === 'member'
+  const [digestMatchesEnabled, setDigestMatchesEnabled] = useState<boolean>(() => user?.emailDigestMatchesEnabled ?? true)
+  const [digestMatchesSaving, setDigestMatchesSaving] = useState(false)
+
+  useEffect(() => {
+    setDigestMatchesEnabled(user?.emailDigestMatchesEnabled ?? true)
+  }, [user?.emailDigestMatchesEnabled])
 
   // Reply emails are a per-member switch only: the instance's "Conversation
   // emails" switch lives on the admin page, and the in-app replies stay on
@@ -161,6 +179,24 @@ export function Profile() {
       setDigestEnabled(!next)
     } finally {
       setDigestSaving(false)
+    }
+  }
+
+  async function toggleDigestMatches() {
+    if (demoLocked || digestAdminOff || !digestEnabled || digestMatchesSaving) return
+    const next = !digestMatchesEnabled
+    setDigestMatchesEnabled(next)
+    setDigestMatchesSaving(true)
+    try {
+      await apiFetch('/users/me', {
+        method: 'PATCH',
+        body: JSON.stringify({ emailDigestMatchesEnabled: next }),
+      })
+      setEmailDigestMatchesEnabled(next)
+    } catch {
+      setDigestMatchesEnabled(!next)
+    } finally {
+      setDigestMatchesSaving(false)
     }
   }
 
@@ -203,7 +239,7 @@ export function Profile() {
     try {
       const payload = {
         name: nameInput.trim(),
-        subtitle: subtitleInput.trim() === '' ? null : subtitleInput.trim(),
+        title: titleInput.trim() === '' ? null : titleInput.trim(),
       }
       await apiFetch('/users/me', {
         method: 'PATCH',
@@ -213,7 +249,7 @@ export function Profile() {
       // would appear. The field shows what was saved (trimmed, or blank).
       setName(payload.name)
       setNameInput(payload.name)
-      setSubtitle(payload.subtitle)
+      setTitle(payload.title)
       setSaved(true)
       setSaveError(null)
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
@@ -367,6 +403,31 @@ export function Profile() {
       {/* Profile card */}
       <div style={SECTION_CARD}>
         <h1 style={CARD_TITLE}>Profile</h1>
+        {user?.isSuperadmin ? (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
+              <div>
+                <span style={FORM_LABEL}>Name</span>
+                <div style={{ fontSize: fontSize.base, fontWeight: fontWeight.semibold, color: color.textPrimary }}>{user.name || '—'}</div>
+              </div>
+              <div>
+                <span style={FORM_LABEL}>Email</span>
+                <div style={{ fontSize: fontSize.base, color: color.textPrimary }}>{user.email}</div>
+              </div>
+            </div>
+            <div>
+              <span style={FORM_LABEL}>Title</span>
+              <div style={{ fontSize: fontSize.base, color: color.textPrimary }}>{user.title || '—'}</div>
+              <div style={{ ...HELPER_TEXT, marginTop: 4 }}>
+                Your name and title are managed in the{' '}
+                {config?.centralDashboardUrl
+                  ? <a href={`${config.centralDashboardUrl}/profile`} target="_blank" rel="noopener noreferrer" style={{ color: color.linkBlue }}>admin dashboard</a>
+                  : 'admin dashboard'}. They update here when you sign in from the admin dashboard.
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
           <div>
             <label style={FORM_LABEL} htmlFor="name-input">Name</label>
@@ -405,7 +466,7 @@ export function Profile() {
                     cursor: demoLocked ? 'not-allowed' : 'pointer',
                   }}
                 >
-                  Change email
+                  Change email…
                 </button>
               )}
             </div>
@@ -443,7 +504,7 @@ export function Profile() {
                 type="submit"
                 disabled={!changeEmailReady}
                 style={{
-                  background: color.accentBlue, color: color.white, border: 'none', borderRadius: radius.md,
+                  background: color.accentBlue, color: color.textOnFill, border: 'none', borderRadius: radius.md,
                   padding: '8px 20px', fontSize: fontSize.base, fontWeight: fontWeight.medium,
                   cursor: changeEmailReady ? 'pointer' : 'not-allowed', opacity: changeEmailReady ? 1 : 0.5,
                 }}
@@ -472,12 +533,12 @@ export function Profile() {
         )}
 
         <div style={{ marginBottom: 20 }}>
-          <label style={FORM_LABEL} htmlFor="subtitle-input">Subtitle</label>
+          <label style={FORM_LABEL} htmlFor="title-input">Title</label>
           <input
-            id="subtitle-input"
+            id="title-input"
             type="text"
-            value={subtitleInput}
-            onChange={(e) => setSubtitleInput(e.target.value)}
+            value={titleInput}
+            onChange={(e) => setTitleInput(e.target.value)}
             placeholder="e.g. County Clerk, Greene County"
             style={{
               display: 'block',
@@ -503,7 +564,7 @@ export function Profile() {
             disabled={saving || demoLocked}
             style={{
               background: color.accentBlue,
-              color: color.white,
+              color: color.textOnFill,
               border: 'none',
               borderRadius: radius.md,
               padding: '8px 20px',
@@ -522,13 +583,15 @@ export function Profile() {
             <span style={{ fontSize: fontSize.sm, color: color.textErrorRed, fontWeight: fontWeight.medium }}>{saveError}</span>
           )}
         </div>
+          </>
+        )}
       </div>
 
       {/* Email card: one section for every email a member can control, plus the always-sent line */}
       <div style={SECTION_CARD}>
         <h2 style={CARD_TITLE}>Your Email</h2>
         <p style={{ ...HELPER_TEXT, marginTop: 0, marginBottom: 12 }}>
-          You'll always get an email when someone mentions you, your role, or @everyone.
+          You'll always get an email when someone mentions you, your role, @admins, or @everyone.
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div
@@ -656,6 +719,62 @@ export function Profile() {
                 />
               </label>
             </div>
+            {isMember && (
+              <div
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+                  marginTop: 10, paddingTop: 10, borderTop: `1px solid ${color.borderDefault}`,
+                  opacity: digestEnabled ? 1 : 0.55,
+                }}
+              >
+                <div style={{ fontSize: fontSize.sm, color: color.textSlate, lineHeight: 1.5 }}>
+                  <div style={{ fontWeight: fontWeight.bold, color: color.textPrimary }}>Include newly matched bills</div>
+                  <div>Also list bills your keywords newly matched, and send the digest on days with only those.</div>
+                </div>
+                <label
+                  style={{
+                    position: 'relative',
+                    display: 'inline-block',
+                    width: 38,
+                    height: 22,
+                    flexShrink: 0,
+                    cursor: demoLocked || digestAdminOff || !digestEnabled ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    aria-label="Include newly matched bills"
+                    checked={digestMatchesEnabled}
+                    disabled={digestMatchesSaving || demoLocked || digestAdminOff || !digestEnabled}
+                    onChange={toggleDigestMatches}
+                    style={{ opacity: 0, width: 0, height: 0, position: 'absolute' }}
+                  />
+                  <span
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      background: digestMatchesEnabled ? color.accentBlue : color.borderStrong,
+                      borderRadius: radius.pill,
+                      transition: 'background 0.18s ease',
+                    }}
+                  />
+                  <span
+                    style={{
+                      position: 'absolute',
+                      top: 2,
+                      left: digestMatchesEnabled ? 18 : 2,
+                      width: 18,
+                      height: 18,
+                      background: color.white,
+                      borderRadius: '50%',
+                      transition: 'left 0.18s ease',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
+                    }}
+                  />
+                </label>
+              </div>
+            )}
           </div>
 
           <div
@@ -720,6 +839,49 @@ export function Profile() {
                   }}
                 />
               </label>
+            </div>
+          </div>
+
+          <div
+            id="setting-color-mode"
+            style={{
+              padding: '12px 14px',
+              border: `1px solid ${color.borderDefault}`,
+              borderRadius: radius.lg,
+              background: color.white,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
+              <div style={{ fontSize: fontSize.sm, color: color.textSlate, lineHeight: 1.5 }}>
+                <div id="color-mode-label" style={{ fontWeight: fontWeight.bold, color: color.textPrimary }}>Appearance</div>
+                <div>System follows your device. Saved in this browser.</div>
+              </div>
+              <div
+                role="group"
+                aria-labelledby="color-mode-label"
+                style={{ display: 'inline-flex', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, overflow: 'hidden', flexShrink: 0 }}
+              >
+                {COLOR_MODES.map(({ value, label }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={colorMode === value}
+                    onClick={() => { setColorMode(value); setColorModeState(value) }}
+                    style={{
+                      padding: '5px 12px',
+                      fontSize: fontSize.sm,
+                      cursor: 'pointer',
+                      border: 'none',
+                      background: colorMode === value ? color.bgAmberPriority : color.white,
+                      color: colorMode === value ? color.billBadgeNavy : color.textSlate,
+                      fontWeight: colorMode === value ? fontWeight.semibold : fontWeight.normal,
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>

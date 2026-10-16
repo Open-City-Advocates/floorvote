@@ -1,15 +1,5 @@
 // OCA's hooks into upstream's api test files, each used from one line there
 // (docs/internal/fork-upgrade.md, "Keep Fork Features Separate").
-import migrationSql71 from '../../migrations/0071_deep_analyses.sql?raw'
-import migrationSql72 from '../../migrations/0072_team_links.sql?raw'
-import migrationSql74 from '../../migrations/0074_council_crm.sql?raw'
-
-/** The fork's own tenant migrations, as [sql, name] for test/helpers.ts's applyMigrations. */
-export const OCA_MIGRATIONS: [string, string][] = [
-  [migrationSql71, '0071_deep_analyses'],
-  [migrationSql72, '0072_team_links'],
-  [migrationSql74, '0074_council_crm'],
-]
 
 /** The fork's write routes a demo tenant refuses, for test/routes/demoReadOnly.test.ts. */
 export const OCA_DEMO_DENIED = [

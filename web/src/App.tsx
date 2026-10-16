@@ -1,4 +1,4 @@
-import { createBrowserRouter, createRoutesFromElements, RouterProvider, Route, Navigate, Outlet } from 'react-router-dom'
+import { createBrowserRouter, createRoutesFromElements, RouterProvider, Route, Navigate, Outlet, useMatches } from 'react-router-dom'
 import { color, fontSize } from './styles/tokens'
 import { AuthProvider } from './context/AuthContext'
 import { DemoProvider, useDemo } from './context/DemoContext'
@@ -9,11 +9,14 @@ import { Sidebar } from './components/Sidebar'
 import { MobileTopBar } from './components/MobileTopBar'
 import { Login } from './pages/Login'
 import { AuthVerify } from './pages/AuthVerify'
+import { MuteBillLink } from './pages/MuteBillLink'
 import { ConfirmEmailChange, EmailChangeNotMe } from './pages/ConfirmEmailChange'
 import { FeedPane, feedLoader } from './pages/Feed'
 import { BillList, billListLoader } from './pages/BillList'
 import { BillDetail, billDetailLoader } from './pages/BillDetail'
 import { BillDetailError } from './pages/BillDetailError'
+import { BillListPane, BILL_SPLIT_MIN_WIDTH } from './pages/BillList/BillListPane'
+import { useIsBreakpoint } from './hooks/use-is-breakpoint'
 import { RootErrorBoundary } from './components/RootErrorBoundary'
 import { Profile } from './pages/Profile'
 import { Members } from './pages/admin/Members'
@@ -44,8 +47,8 @@ export function DemoBanner() {
 
   const text = config?.demoBanner
   // Render nothing (not fallback copy) until config resolves — otherwise a
-  // non-NJ tenant would flash New Jersey's banner text while GET /config is
-  // still in flight.
+  // tenant would flash the wrong banner text while GET /config is still in
+  // flight.
   if (!demoMode || dismissed || !text) return null
 
   function dismiss() {
@@ -86,6 +89,11 @@ function AppLayout() {
   // mobile hamburger, demo banner) — see the wrapping div below.
   const topRef = useRef<HTMLDivElement>(null)
   useNavPendingCursor()
+  // Bill routes carry `handle.billListPane`. On a wide viewport they get the
+  // Bills list beside them, rendered here rather than in the route so it stays
+  // mounted (and keeps its scroll) as the reader moves from bill to bill.
+  const onBillRoute = useMatches().some(m => (m.handle as { billListPane?: boolean } | undefined)?.billListPane)
+  const wide = useIsBreakpoint('min', BILL_SPLIT_MIN_WIDTH)
   // Trap focus in the mobile drawer while it's open (sidebarOpen is only ever
   // toggled true on mobile — the desktop sidebar is always visible, so this is
   // a no-op there and the desktop sidebar stays fully tabbable). The drawer
@@ -132,6 +140,7 @@ function AppLayout() {
                     <div className="sidebar-overlay" role="presentation" onClick={() => setSidebarOpen(false)} />
                   )}
                   <Sidebar containerRef={sidebarRef} isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+                  {onBillRoute && wide && <BillListPane />}
                   {/* overflowX: 'hidden' — the scroll container is never meant to
                       pan horizontally. Decorative full-bleed elements (e.g. the
                       agenda/feed DateDivider shadow, which intentionally extends
@@ -168,6 +177,9 @@ function RootHydrateFallback() {
   return <LoadingState variant="full" progress={{ current: null }} />
 }
 
+// Marks the bill detail routes for AppLayout's split pane (BillListPane).
+const BILL_ROUTE_HANDLE = { billListPane: true }
+
 // Route tree shared by the live browser router and tests (which build a
 // createMemoryRouter from these same route objects). Same tree as the prior
 // <Routes>; the v6→v7 data-router swap is intentionally behavior-neutral here —
@@ -176,6 +188,8 @@ export const routes = createRoutesFromElements(
   <Route HydrateFallback={RootHydrateFallback}>
     <Route path="/login" element={<Login />} />
     <Route path="/auth/verify" element={<AuthVerify />} />
+    {/* No session: a reply email's signed mute link (#355). */}
+    <Route path="/mute-bill" element={<MuteBillLink />} />
     <Route path="/auth/confirm-email" element={<ConfirmEmailChange />} />
     <Route path="/auth/not-me" element={<EmailChangeNotMe />} />
     {hasTerms && (
@@ -192,7 +206,7 @@ export const routes = createRoutesFromElements(
       <Route element={<AppLayout />}>
         <Route index element={<FeedPane />} loader={feedLoader} />
         <Route path="bills" element={<BillList />} loader={billListLoader} />
-        <Route path="bills/:billId" element={<BillDetail />} loader={billDetailLoader} errorElement={<BillDetailError />} />
+        <Route path="bills/:billId" element={<BillDetail />} loader={billDetailLoader} errorElement={<BillDetailError />} handle={BILL_ROUTE_HANDLE} />
         <Route path="calendar" element={<Calendar />} loader={calendarLoader} />
         {ocaRoutes}
         <Route path="profile" element={<Profile />} />
@@ -206,8 +220,8 @@ export const routes = createRoutesFromElements(
         </Route>
         {/* Canonical + legacy bill URLs — greedy param routes; React Router
             ranks static segments above these, so order vs. /admin etc. is safe. */}
-        <Route path=":state/:sessionSlug/:billNumber" element={<BillDetail />} loader={billDetailLoader} errorElement={<BillDetailError />} />
-        <Route path=":sessionSlug/:billNumber" element={<BillDetail />} loader={billDetailLoader} errorElement={<BillDetailError />} />
+        <Route path=":state/:sessionSlug/:billNumber" element={<BillDetail />} loader={billDetailLoader} errorElement={<BillDetailError />} handle={BILL_ROUTE_HANDLE} />
+        <Route path=":sessionSlug/:billNumber" element={<BillDetail />} loader={billDetailLoader} errorElement={<BillDetailError />} handle={BILL_ROUTE_HANDLE} />
       </Route>
     </Route>
     <Route path="*" element={<Navigate to="/" replace />} />

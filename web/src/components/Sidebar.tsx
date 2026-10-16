@@ -362,7 +362,7 @@ export function Sidebar({ isOpen, onClose, containerRef }: SidebarProps) {
 
       {/* Pinned top: brand + nav (does not scroll) */}
       <div style={{ flexShrink: 0 }}>
-      <div className="sidebar-brand" style={{ background: color.billBadgeNavy, padding: '16px 20px' }}>
+      <div className="sidebar-brand" style={{ background: color.brandNavy, padding: '16px 20px' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             {/* The lockup navigates home, per the near-universal convention. onClose
@@ -395,7 +395,7 @@ export function Sidebar({ isOpen, onClose, containerRef }: SidebarProps) {
                   top: -3,
                   right: -3,
                   background: color.textErrorRed,
-                  color: color.white,
+                  color: color.textOnFill,
                   fontSize: fontSize.xs,
                   fontWeight: fontWeight.bold,
                   borderRadius: radius.pill,
@@ -430,7 +430,7 @@ export function Sidebar({ isOpen, onClose, containerRef }: SidebarProps) {
           </div>
         </div>
         {config?.associationName && (
-          <div style={{ fontSize: fontSize.sm, color: color.accentBlueMuted, marginTop: 5, lineHeight: 1.3 }}>
+          <div style={{ fontSize: fontSize.sm, color: color.textOnBrandMuted, marginTop: 5, lineHeight: 1.3 }}>
             {config.associationName}
           </div>
         )}
@@ -942,7 +942,7 @@ export function Sidebar({ isOpen, onClose, containerRef }: SidebarProps) {
 
       {/* Pinned bottom: user section (does not scroll) */}
       <div style={{ flexShrink: 0, borderTop: `1px solid ${color.borderDefault}`, padding: '10px 8px' }}>
-        <UserCard user={user ? { name: user.name, email: user.email, subtitle: user.subtitle ?? undefined } : null} isActive={isOnProfile} />
+        <UserCard user={user ? { name: user.name, email: user.email, title: user.title ?? undefined } : null} isActive={isOnProfile} />
         <div ref={membersButtonRef} style={{ position: 'relative', padding: '6px 4px 2px 12px' }}>
           <button
             onClick={handleMembersClick}
@@ -969,7 +969,7 @@ export function Sidebar({ isOpen, onClose, containerRef }: SidebarProps) {
               onClick={() => setShowFeedback(true)}
               style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: fontSize.sm, color: color.textSecondary, padding: 0 }}
             >
-              Feedback
+              Feedback…
             </button>
           )}
           <button

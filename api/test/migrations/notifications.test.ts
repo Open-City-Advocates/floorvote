@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env, SELF } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedSession, seedBill, seedComment, seedRole } from '../helpers'
+import { resetDb, applyMigrations, seedSession, seedComment, seedRole } from '../helpers'
 
 type NotificationRow = {
   id: string
@@ -32,6 +32,14 @@ describe('migration 0085_notifications', () => {
     return id
   }
 
+  // seedBill writes every bills column too, so the same goes for a bill.
+  async function seedBill({ billNumber, state, session }: { billNumber: string; state: string; session: string }) {
+    const id = crypto.randomUUID()
+    await env.DB.prepare(`INSERT INTO bills (id, bill_number, title, state, session) VALUES (?, ?, ?, ?, ?)`)
+      .bind(id, billNumber, 'Test Bill', state, session).run()
+    return id
+  }
+
   const oldMention = (id: string, commentId: string, userId: string, sourceType: string, sourceId: string, createdAt: string, readAt: string | null) =>
     env.DB.prepare(
       `INSERT INTO comment_mentions (id, comment_id, user_id, source_type, source_id, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -49,7 +57,10 @@ describe('migration 0085_notifications', () => {
     janeId = await seedUser({ name: 'Jane', email: 'jane@example.com' })
     janeCookie = `session=${await seedSession(janeId)}`
     bobId = await seedUser({ name: 'Bob', email: 'bob@example.com' })
-    billId = await seedBill({ billNumber: 'HB 1', state: 'RI', session: '2026 Regular Session' })
+    // Raw SQL: seedBill writes every column the app's schema names, and later
+    // migrations add bills columns a pre-0085 database doesn't have.
+    billId = crypto.randomUUID()
+    await env.DB.prepare("INSERT INTO bills (id, bill_number, title, state, session) VALUES (?, 'HB 1', 'Test Bill', 'RI', '2026 Regular Session')").bind(billId).run()
     roleId = await seedRole('Elections Committee')
   })
 

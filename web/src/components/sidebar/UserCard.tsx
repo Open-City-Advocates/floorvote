@@ -25,18 +25,17 @@ export function UserCard({ user, isActive }: { user: User; isActive?: boolean })
       }}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: fontSize.sm, fontWeight: fontWeight.bold, color: color.billBadgeNavy, lineHeight: 1.2, marginBottom: user?.subtitle ? 2 : 0 }}>
+        <div style={{ fontSize: fontSize.sm, fontWeight: fontWeight.bold, color: color.billBadgeNavy, lineHeight: 1.2, marginBottom: user?.title ? 2 : 0 }}>
           {userDisplayName}
         </div>
-        {user?.subtitle && (
-          <div style={{ fontSize: fontSize.sm, color: color.textSecondary, lineHeight: 1.3 }}>{user.subtitle}</div>
+        {user?.title && (
+          <div style={{ fontSize: fontSize.sm, color: color.textSecondary, lineHeight: 1.3 }}>{user.title}</div>
         )}
       </div>
       <svg
         width="14" height="14" viewBox="0 0 24 24" fill="none"
-        stroke={highlighted ? color.billBadgeNavy : color.textMuted}
         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-        style={{ flexShrink: 0, marginLeft: 8, transition: 'stroke 0.1s' }}
+        style={{ stroke: highlighted ? color.billBadgeNavy : color.textMuted, flexShrink: 0, marginLeft: 8, transition: 'stroke 0.1s' }}
         aria-hidden="true"
       >
         <circle cx="12" cy="12" r="3"/>

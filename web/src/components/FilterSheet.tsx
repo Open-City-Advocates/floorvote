@@ -130,7 +130,7 @@ function SheetChip({ label, active, onClick, count }: { label: string; active: b
         border: '1px solid',
         cursor: 'pointer',
         background: active ? color.linkBlue : color.white,
-        color: active ? color.white : color.textSlate,
+        color: active ? color.textOnFill : color.textSlate,
         borderColor: active ? color.linkBlue : color.borderDefault,
         fontWeight: active ? fontWeight.semibold : fontWeight.normal,
         display: 'inline-flex',
@@ -142,8 +142,8 @@ function SheetChip({ label, active, onClick, count }: { label: string; active: b
       {count !== undefined && (
         <span style={{
           fontSize: fontSize.sm,
-          color: active ? 'rgba(255,255,255,0.7)' : color.textMuted,
-          background: active ? 'rgba(255,255,255,0.15)' : color.surfaceMuted,
+          color: active ? `color-mix(in srgb, ${color.textOnFill} 70%, transparent)` : color.textMuted,
+          background: active ? `color-mix(in srgb, ${color.textOnFill} 15%, transparent)` : color.surfaceMuted,
           padding: '1px 6px',
           borderRadius: radius.lg,
         }}>
@@ -185,7 +185,7 @@ function DimensionRow({ label, selectedCount, onClick, buttonRef }: { label: str
           <span style={COUNT_BADGE}>{selectedCount.toLocaleString()}</span>
         )}
         <svg width="8" height="14" viewBox="0 0 8 14" fill="none" aria-hidden="true">
-          <path d="M1 1l6 6-6 6" stroke={color.textMuted} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M1 1l6 6-6 6" style={{ stroke: color.textMuted }} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </span>
     </button>
@@ -203,7 +203,7 @@ function BackButton({ onClick }: { onClick: () => void }) {
       }}
     >
       <svg width="8" height="14" viewBox="0 0 8 14" fill="none" aria-hidden="true">
-        <path d="M7 1L1 7l6 6" stroke={color.linkBlue} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M7 1L1 7l6 6" style={{ stroke: color.linkBlue }} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     </button>
   )
@@ -287,7 +287,7 @@ export function FilterSheet({
 
   if (!isOpen) return null
 
-  const filterDimensionCtx: FilterDimensionContext = { uniqueStates, isAdmin, isMultiState, hasDrafts: hasDrafts ?? false, draftsActive: drafts, stageUseful, stageActive: stages.length > 0 }
+  const filterDimensionCtx: FilterDimensionContext = { uniqueStates, isAdmin, isMultiState, hasDrafts: hasDrafts ?? false, draftsActive: drafts, newMatchesActive: newMatches, stageUseful, stageActive: stages.length > 0 }
   const stageVisible = isFilterDimensionVisible('stage', filterDimensionCtx)
   const stateVisible = isFilterDimensionVisible('state', filterDimensionCtx)
   const newMatchesVisible = isFilterDimensionVisible('newMatches', filterDimensionCtx)
@@ -445,7 +445,7 @@ export function FilterSheet({
                 />
               </div>
 
-              {/* Admin-only, same gate as desktop's "New matches" toggle
+              {/* Admin-only unless its filter is on, same gate as desktop's "New matches" toggle
                   (see lib/filterDimensions.ts) — a toggle, not a list of
                   options, so it stays a direct control here too rather than
                   becoming a drill-down target. */}
@@ -455,7 +455,7 @@ export function FilterSheet({
                   <SheetChip
                     label={filterDimensionLabel('newMatches')}
                     active={newMatches}
-                    count={newMatchesCount ?? 0}
+                    count={isAdmin ? (newMatchesCount ?? 0) : undefined}
                     onClick={() => onNewMatchesChange(!newMatches)}
                   />
                 </div>

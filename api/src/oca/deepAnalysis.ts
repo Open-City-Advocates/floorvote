@@ -7,7 +7,7 @@ import { deepAnalyses, teamLinks } from './schema'
  * The Council's calendar rows: upstream's body events, and older #217 rows the
  * body-event mirror never took over (it only looks a month back).
  */
-const COUNCIL_SOURCES = ['body', 'council']
+const COUNCIL_SOURCES = ['body', 'council'] as const
 import { centralFetch } from '../lib/centralFetch'
 import { readConfigString } from '../lib/configValue'
 import { nowDb } from '../lib/dbTime'
@@ -253,7 +253,7 @@ export async function ensureDeepRequest(
   } else {
     const e = await db.select({ id: calendarEvents.id, eventHash: calendarEvents.eventHash, date: calendarEvents.date, description: calendarEvents.description, source: calendarEvents.source })
       .from(calendarEvents).where(eq(calendarEvents.id, subjectId)).get()
-    if (!e || !COUNCIL_SOURCES.includes(e.source)) return null
+    if (!e || !(COUNCIL_SOURCES as readonly string[]).includes(e.source)) return null
     inputHash = await hearingHash(db, e)
   }
   const row = (await rowsFor(db, kind, [subjectId]))[0]
