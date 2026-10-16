@@ -1,13 +1,15 @@
-import { eq } from 'drizzle-orm'
-import { associationConfig } from '../db/schema'
+import { and, eq, isNotNull, sql, type SQL } from 'drizzle-orm'
+import { associationConfig, bills } from '../db/schema'
+import { groupUntriaged, type BillsTable } from './teamFields'
 import type { AppDb } from '../types'
 
 /**
- * Minimum relevance score for a keyword match to surface in the "New matches"
- * worklist and the digest's new-bills section. Stored in association_config as
- * `new_match_min_relevance`. Default 0 — every keyword match surfaces. Invalid or
- * negative values are treated as 0. The feed `bill_matched` event is NOT gated by
- * this threshold (the analyzed-scope feed is the comprehensive match record).
+ * Minimum relevance score for a keyword match to surface as a new match: in the
+ * "New matches" worklist, the "N new" chip, and the digest's new-match section.
+ * Stored in association_config as `new_match_min_relevance`. Default 0 — every
+ * keyword match surfaces. Invalid or negative values are treated as 0. The feed
+ * `bill_matched` event is NOT gated by this threshold (the analyzed-scope feed is
+ * the comprehensive match record).
  */
 export async function getNewMatchMinRelevance(db: AppDb): Promise<number> {
   const row = await db.select().from(associationConfig)
@@ -20,4 +22,31 @@ export async function getNewMatchMinRelevance(db: AppDb): Promise<number> {
   } catch { /* plain string */ }
   const n = parseInt(raw, 10)
   return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/**
+ * The one definition of a new match: an un-triaged, fully-analyzed keyword match
+ * at or above the instance's minimum relevance. Shared by the triage list
+ * (GET /bills?newMatches=1), its facet count, the "N new" chip, and the digest,
+ * so they can't drift. COALESCE(relevance,0) means with the default threshold 0 a
+ * match with no relevance score still qualifies; a positive threshold excludes it
+ * until scored. Triaging any bill in a companion group triages the group, so a
+ * bill whose companion was triaged is no longer new. Bulk and routine matches
+ * alike: the triage list shows both. `t` is the bills table or an alias of it.
+ */
+export function newMatchWhere(minRelevance: number, t: BillsTable = bills): SQL {
+  return and(
+    eq(t.matchType, 'keyword'),
+    isNotNull(t.newMatchAt),
+    groupUntriaged(t),
+    sql`COALESCE(${t.relevanceScore}, 0) >= ${minRelevance}`,
+  )!
+}
+
+/**
+ * A new match that is routine (MatchProvenance in types.ts): the ones the digest
+ * lists, and the feed shows. A bulk match, or one with no provenance, is left out.
+ */
+export function routineNewMatchWhere(minRelevance: number, t: BillsTable = bills): SQL {
+  return and(newMatchWhere(minRelevance, t), eq(t.matchProvenance, 'routine'))!
 }

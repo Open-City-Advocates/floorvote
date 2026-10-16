@@ -3,13 +3,12 @@ import { feedEvents, bills, users, sessions, associationConfig } from '../db/sch
 import { renderDigestEmail, type DigestEvent, type NewMatchDigestItem } from './digestEmail'
 import { sendBatch, unsubscribeHeaders } from './email'
 import { nowDb } from './dbTime'
-import { getNewMatchMinRelevance } from './newMatch'
+import { getNewMatchMinRelevance, routineNewMatchWhere } from './newMatch'
 import { activeUser } from './accountDeletion'
 import type { AppDb, Env } from '../types'
 import { isModuleEnabled, getModuleSetting, type ModulesConfig } from '../../../shared/modules'
 import { PRODUCT_NAME } from '../../../shared/brand'
 import { userDisplayNameSql } from './displayName'
-import { groupUntriaged } from './teamFields'
 
 const DIGEST_CATEGORIES = ['bill_updated', 'hearing_added', 'hearing_changed', 'hearing_cancelled', 'position_set', 'comment_added', 'priority_set']
 
@@ -66,9 +65,11 @@ export async function runDigest(
     .all()
 
   // New keyword matches awaiting triage — admin/owner section only. Bill-based
-  // (not feed events) and NOT priority-gated; scoped to the digest window, still
-  // untriaged, and above the configured relevance threshold. All of them are passed
-  // on: renderDigestEmail counts the lot, then ranks and caps what it lists.
+  // (not feed events) and NOT priority-gated; scoped to the digest window. Only
+  // routine matches, under the same new-match definition (and threshold) as the
+  // triage list and chip: a seed's or keyword re-run's matches stay in the
+  // triage list and out of the digest. All of them are passed on:
+  // renderDigestEmail counts the lot, then ranks and caps what it lists.
   const threshold = await getNewMatchMinRelevance(db)
   const newMatches: NewMatchDigestItem[] = await db.select({
       billId: bills.id, billNumber: bills.billNumber, billTitle: bills.title,
@@ -76,13 +77,10 @@ export async function runDigest(
     })
     .from(bills)
     .where(and(
-      eq(bills.matchType, 'keyword'),
-      isNotNull(bills.newMatchAt),
-      // Triaging any bill in a companion group triages the group.
-      groupUntriaged(),
+      // Triaging any bill in a companion group triages the group (newMatchWhere).
+      routineNewMatchWhere(threshold),
       sql`datetime(${bills.newMatchAt}) > datetime(${since})`,
       sql`datetime(${bills.newMatchAt}) <= datetime(${now})`,
-      sql`COALESCE(${bills.relevanceScore}, 0) >= ${threshold}`,
     ))
     .all()
 
