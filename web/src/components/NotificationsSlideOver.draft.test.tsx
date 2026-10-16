@@ -16,7 +16,7 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { NotificationsSlideOver } from './NotificationsSlideOver'
 import { NotificationsProvider } from '../context/NotificationsContext'
-import type { Mention } from '../context/NotificationsContext'
+import type { MentionNotification } from '../context/NotificationsContext'
 
 const state = vi.hoisted(() => ({ billIsDraft: false, billTitle: 'A test bill' }))
 
@@ -27,17 +27,18 @@ vi.mock('../context/DemoContext', () => ({
 vi.mock('../lib/api', () => ({
   apiFetch: vi.fn(async (path: string) => {
     if (path === '/notifications') {
-      const mention: Mention = {
+      const mention: MentionNotification = {
+        kind: 'mention',
         id: 'm1', commentId: 'c1', billId: 'b1',
         billNumber: 'SB123', billTitle: state.billTitle, billState: 'NJ',
         billIsDraft: state.billIsDraft,
         sessionSlug: 'session-1',
-        authorName: 'Alice Author', authorSubtitle: null,
+        authorName: 'Alice Author', authorTitle: null,
         commentPreview: 'preview', commentHtml: '<p>Please review.</p>',
         sourceType: 'user', sourceLabel: null,
         createdAt: new Date().toISOString(), isUnread: true,
       }
-      return { unreadCount: 1, mentions: [mention] }
+      return { unreadCount: 1, notifications: [mention] }
     }
     if (path === '/roles') return []
     return {}

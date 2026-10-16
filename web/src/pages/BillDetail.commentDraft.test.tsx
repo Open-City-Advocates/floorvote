@@ -37,13 +37,13 @@ vi.mock('../components/RichTextEditor', () => ({
 
 vi.mock('../hooks/useAuth', () => ({
   useAuth: () => ({
-    user: { id: 'u1', email: 'a@b.c', name: 'Alice', role: 'member', subtitle: null },
+    user: { id: 'u1', email: 'a@b.c', name: 'Alice', role: 'member', title: null },
     loading: false,
   }),
 }))
 vi.mock('../context/DemoContext', () => ({ useDemo: () => ({ demoLocked: false }) }))
 vi.mock('../context/SidebarRefreshContext', () => ({ useSidebarRefresh: () => vi.fn() }))
-vi.mock('../context/NotificationsContext', () => ({ useNotifications: () => ({ unreadCount: 0, mentions: [], refresh: vi.fn() }) }))
+vi.mock('../context/NotificationsContext', () => ({ useNotifications: () => ({ unreadCount: 0, notifications: [], refresh: vi.fn() }) }))
 vi.mock('../hooks/usePolling', () => ({ usePolling: () => {} }))
 vi.mock('../hooks/usePageTitle', () => ({ usePageTitle: () => {} }))
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
-import { extractMentions, stripHtml, mentionEmailsEnabled } from '../../src/lib/mentions'
+import { extractMentions, mentionEmailsEnabled } from '../../src/lib/mentions'
+import { stripHtml } from '../../src/lib/stripHtml'
 import { resetDb, applyMigrations } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { associationConfig } from '../../src/db/schema'
@@ -52,6 +53,11 @@ describe('extractMentions', () => {
   it('deduplicates repeated mentions of the same user', () => {
     const html = '<p><span data-type="mention" data-id="user:abc" data-label="Jane">@Jane</span> and again <span data-type="mention" data-id="user:abc" data-label="Jane">@Jane</span></p>'
     expect(extractMentions(html)).toHaveLength(1)
+  })
+
+  it('extracts an admins mention', () => {
+    const html = '<p>Flagging <span data-type="mention" data-id="admins:all" data-label="admins">@admins</span></p>'
+    expect(extractMentions(html)).toEqual([{ type: 'admins', id: 'all', label: 'admins' }])
   })
 
   it('extracts an everyone mention', () => {

@@ -1,20 +1,18 @@
 import { and, eq, lt, sql } from 'drizzle-orm'
 import { processBill } from '../lib/llm'
-import { DEFAULT_TAXONOMY, parseTaxonomyItems, filterTagsToTaxonomy } from '../lib/taxonomy'
+import { filterTagsToTaxonomy } from '../lib/taxonomy'
 import { centralFetch } from '../lib/centralFetch'
+import { recordDeliveryProbe } from '../lib/deliveryProbe'
+import { loadAnalysisInputs, loadBillTextForAi } from '../lib/analysisInputs'
 import { hearingUid } from '../lib/hearingUid'
-import { billHtmlToText } from '../lib/billText'
-import { matchesKeywords } from '../lib/keywords'
+import { matchesKeywords, billMatchText } from '../lib/keywords'
 import { bills, associationConfig, feedEvents, billTexts, calendarEvents } from '../db/schema'
 import { syncBillSubjects } from '../lib/billSubjects'
+import { syncIdenticalCompanions } from '../lib/companionGroups'
+import { pullCompanions } from '../lib/companionAnalysis'
+import { loadGroupTeamValues, recordFieldChanges, recordGroupTagChanges, snapshotGroupTags } from '../lib/teamFields'
 import { nowDb } from '../lib/dbTime'
-import { readConfigString } from '../lib/configValue'
-import {
-  ASSOCIATION_NAME_PLACEHOLDER,
-  buildDefaultAiContext,
-  buildDefaultRelevanceQuestion,
-  isAiConfigDefault,
-} from '../../../shared/aiDefaults'
+import { addToNewMatchesRow } from '../lib/newMatch'
 import { LEGACY_STATUS_ORDER, LEGISCAN_CODE_WORDS } from '../../../shared/legacyStatusOrder'
 import { httpUrl } from '../../../shared/httpUrl'
 import type { AppDb, Env, TenantQueueMessage } from '../types'
@@ -162,10 +160,10 @@ function classifyAiError(err: unknown): AiSkipReason | null {
 function pickLatestTextDocId(centralBill: { texts?: Array<{ docId: string; date: string }> }): string | null {
   const texts = centralBill.texts
   if (!texts || texts.length === 0) return null
-  const sorted = [...texts].sort((a, b) => {
-    if (a.date !== b.date) return a.date < b.date ? 1 : -1
-    return a.docId < b.docId ? 1 : -1
-  })
+  // Doc ids are numeric strings and rise in issue order, so a same-day tie goes
+  // to the higher one: compared as numbers, since "9" sorts above "10" as text.
+  const sorted = [...texts].sort((a, b) =>
+    b.date.localeCompare(a.date) || Number(b.docId) - Number(a.docId) || b.docId.localeCompare(a.docId))
   return sorted[0]?.docId ?? null
 }
 
@@ -230,7 +228,8 @@ type CentralBill = {
   actions: Array<{ description: string; date: string; chamber: string | null; classification: string[]; order: number; videoUrl?: string | null }>
   sponsors: Array<{ name: string; party: string | null; role: string | null; primary: boolean; personId: string | null; url: string | null }>
   votes: Array<unknown>
-  relatedBills: Array<{ identifier: string; session: string; relationType: string }>
+  /** `sastBillId` is central's id for the other bill, and `kind` what the provider's vocabulary makes of the relationship. Both absent from an older central. */
+  relatedBills: Array<{ identifier: string; session: string; relationType: string; sastBillId?: number | null; kind?: string }>
   subjects?: string[]
 }
 
@@ -274,6 +273,10 @@ export async function processCentralNotification(
 ): Promise<void> {
   if (msg.tenantId !== env.TENANT_ID) return
 
+  // A delivery check (scripts/verify-instance.sh): record that it arrived and
+  // stop. It must reach no bill write, no feed event, and no analysis.
+  if (msg.probe !== undefined) return recordDeliveryProbe(msg, env, db)
+
   // When this copy of the bill was read: texts stored later come from a newer one.
   const fetchedAt = nowDb()
   const res = await centralFetch(env, `/bills/${msg.billId}`)
@@ -281,6 +284,22 @@ export async function processCentralNotification(
 
   const centralBill = await res.json() as CentralBill
 
+  await applyCentralBill(msg, env, db, centralBill, fetchedAt)
+  // After every path above, including the ones that skip an unchanged bill:
+  // a bill's identical companions can change without its provider data
+  // changing (a vocabulary edit), and this is cheap when nothing did.
+  await syncIdenticalCompanions(db, msg.billId, centralBill.relatedBills)
+  await pullCompanions(env, db, msg)
+}
+
+/** Store what central sent for the bill, and analyze it when it should be. */
+async function applyCentralBill(
+  msg: TenantQueueMessage,
+  env: Env,
+  db: AppDb,
+  centralBill: CentralBill,
+  fetchedAt: string,
+): Promise<void> {
   const existing = await db.select({
     id: bills.id,
     providerUpdatedAt: bills.providerUpdatedAt,
@@ -290,9 +309,11 @@ export async function processCentralNotification(
     aiProcessedAt: bills.aiProcessedAt,
     aiSkipReason: bills.aiSkipReason,
     matchType: bills.matchType,
+    groupKey: bills.groupKey,
     priority: bills.priority,
     textR2Key: bills.textR2Key,
     newMatchAt: bills.newMatchAt,
+    matchProvenance: bills.matchProvenance,
   }).from(bills).where(eq(bills.externalId, msg.billId)).get()
 
   // Stub-only path: upsert metadata, mark as stub, skip text fetch + AI entirely
@@ -302,7 +323,14 @@ export async function processCentralNotification(
     //   - a stub message arriving after a promote (race) that would otherwise
     //     hide a fully-tracked bill from members
     //   - a manually-added bill being downgraded to a stub
-    if (existing?.aiProcessedAt || existing?.matchType === 'manual') {
+    //
+    // A bill that didn't match, in a companion group, and was analyzed through
+    // it (lib/companionAnalysis.ts) is not that: it holds its analysis without
+    // being tracked, and takes stub updates like any bill that didn't match.
+    // Skipping them would freeze its status and history at the day it was
+    // analyzed.
+    const analyzedThroughGroup = existing?.matchType === null && existing.groupKey !== null
+    if ((existing?.aiProcessedAt && !analyzedThroughGroup) || existing?.matchType === 'manual') {
       console.log(`[processor] skipping stub upsert for ${msg.billId}: already tracked or manual`)
       // Recording subjects is not a downgrade — only the stub metadata upsert
       // (and its matchType write) is what the guard above exists to prevent.
@@ -370,7 +398,7 @@ export async function processCentralNotification(
       subjects: centralBill.subjects?.length ? JSON.stringify(centralBill.subjects) : null,
     }
 
-    const { id: stubInternalId } = await upsertBill(db, msg.billId, { ...stubData, updatedAt: nowStub })
+    const { id: stubInternalId } = await upsertBill(db, msg.billId, { ...stubData, updatedAt: nowStub }, existing)
     await syncBillSubjects(db, stubInternalId, centralBill.state, centralBill.subjects ?? [])
     return
   }
@@ -424,7 +452,7 @@ export async function processCentralNotification(
       subjects: centralBill.subjects?.length ? JSON.stringify(centralBill.subjects) : null,
     }
 
-    const { id: metadataInternalId } = await upsertBill(db, msg.billId, { ...metadataData, updatedAt: nowMd })
+    const { id: metadataInternalId } = await upsertBill(db, msg.billId, { ...metadataData, updatedAt: nowMd }, existing)
     await syncBillSubjects(db, metadataInternalId, centralBill.state, centralBill.subjects ?? [])
     return
   }
@@ -439,7 +467,11 @@ export async function processCentralNotification(
   // (i.e. text content actually changed) also bypasses, which re-attempts AI and
   // either succeeds (clearing the reason) or hits the same skip.
   const centralHasNewR2Key = !!centralBill.textR2Key && !existing?.textR2Key
-  if (!msg.forceMetadata && !msg.forceAI && !msg.stubOnly && !msg.metadataOnly && !centralHasNewR2Key && existing?.providerUpdatedAt === centralBill.updatedAt && (existing?.aiProcessedAt != null || existing?.aiSkipReason != null)) {
+  // A bill that didn't match and now does (a companion analyzed through its group, say, whose title changed)
+  // is news even when its provider data hasn't: central says so with the match type alone, and nothing here
+  // stored it.
+  const newlyMatched = !!msg.matchType && !existing?.matchType
+  if (!msg.forceMetadata && !msg.forceAI && !msg.stubOnly && !msg.metadataOnly && !centralHasNewR2Key && !newlyMatched && existing?.providerUpdatedAt === centralBill.updatedAt && (existing?.aiProcessedAt != null || existing?.aiSkipReason != null)) {
     // Calendar reconciliation must still run even when the bill itself hasn't changed,
     // since hearings are updated independently of bill metadata.
     if (msg.calendar && existing && (existing.matchType !== null || existing.priority !== null)) {
@@ -510,18 +542,22 @@ export async function processCentralNotification(
   // match-everything here would stamp match_type='keyword' on a keyword-less tenant
   // during a forceAI re-queue, and empty keywords are now the documented default.
   const keywordMatch = keywords.length > 0
-    && matchesKeywords(`${centralBill.title} ${centralBill.abstract ?? ''}`, keywords)
+    && matchesKeywords(billMatchText({ title: centralBill.title, description: centralBill.abstract, billNumber: centralBill.number }), keywords)
   // If message carries an explicit matchType (from central), use it.
   // If not (e.g. forceAI re-queue from tenant), preserve whatever is already on the row.
   // Only derive from keyword matching for brand-new bills with no classification yet.
+  // A group analysis (lib/companionAnalysis.ts) is for a bill that didn't
+  // match, pulled in by its companion group: its keywords never decide its
+  // match type, so it stays what it was.
   const derivedMatchType: 'keyword' | 'manual' | null =
     msg.matchType !== undefined ? msg.matchType
+    : msg.groupAnalysis ? (existing?.matchType ?? null)
     : (existing?.matchType ?? (keywordMatch ? 'keyword' : null))
   // F5+B5: gate AI on canonical match_type rather than recomputed keywordMatch.
   // This fixes the case where a manually-promoted bill (match_type='manual')
-  // whose title+abstract doesn't satisfy the tenant's current keywords would
+  // whose match text (title, abstract, bill number) doesn't satisfy the tenant's current keywords would
   // never re-run AI on text changes, freezing its summary at promote-time.
-  let shouldRunAi = msg.forceAI || derivedMatchType !== null
+  let shouldRunAi = msg.forceAI || msg.groupAnalysis || derivedMatchType !== null
   if (shouldRunAi && !hasFullText) {
     const textCount = centralBill.texts?.length ?? 0
     const why = textCount === 0
@@ -567,43 +603,8 @@ export async function processCentralNotification(
   // from one never attempted. Truncated — this is a diagnostic breadcrumb, not a log.
   let aiError: string | null = null
   if (shouldRunAi && !aiDedup) {
-    const [aiContextRow, taxonomyRow, relevanceQuestionRow, nameRow] = await Promise.all([
-      db.select().from(associationConfig).where(eq(associationConfig.key, 'ai_context')).get(),
-      db.select().from(associationConfig).where(eq(associationConfig.key, 'tag_taxonomy')).get(),
-      db.select().from(associationConfig).where(eq(associationConfig.key, 'relevance_question')).get(),
-      db.select().from(associationConfig).where(eq(associationConfig.key, 'association_name')).get(),
-    ])
-    // Resolve here rather than relying on downstream `??` fallbacks: the fields are
-    // empty by default, and the defaults interpolate the association name so a
-    // rename is reflected on the next prompt with no stored state to migrate.
-    const associationName = readConfigString(nameRow) ?? ASSOCIATION_NAME_PLACEHOLDER
-    const storedAiContext = readConfigString(aiContextRow)
-    const storedRelevanceQuestion = readConfigString(relevanceQuestionRow)
-    const aiContext = isAiConfigDefault(storedAiContext)
-      ? buildDefaultAiContext(associationName)
-      : storedAiContext
-    const relevanceQuestion = isAiConfigDefault(storedRelevanceQuestion)
-      ? buildDefaultRelevanceQuestion(associationName)
-      : storedRelevanceQuestion
-    const dbTaxonomy = taxonomyRow ? parseTaxonomyItems(JSON.parse(taxonomyRow.value)) : []
-    const taxonomy = dbTaxonomy.length > 0 ? dbTaxonomy : DEFAULT_TAXONOMY
-
-    let billText = `${centralBill.title}. ${centralBill.abstract ?? ''}`
-    let billPdfBase64: string | undefined
-    let hasFullText = false
-    try {
-      const textRes = await centralFetch(env, `/bills/${msg.billId}/text`)
-      if (textRes.ok) {
-        const textData = await textRes.json() as { type: 'html' | 'pdf'; content: string }
-        if (textData.type === 'pdf') billPdfBase64 = textData.content
-        else billText = billHtmlToText(textData.content)
-        hasFullText = true
-      } else if (textRes.status !== 404) {
-        console.error(`[processor] central text returned ${textRes.status} for ${centralBill.number}`)
-      }
-    } catch (err) {
-      console.error(`[processor] failed to fetch text for ${centralBill.number}:`, err)
-    }
+    const { aiContext, relevanceQuestion, taxonomy } = await loadAnalysisInputs(db)
+    const { billText, billPdfBase64, hasFullText } = await loadBillTextForAi(env, msg.billId, centralBill)
     if (!hasFullText) console.log(`[processor] No full text for ${centralBill.number}, AI ran on title+abstract only`)
 
     const tier: 'flex' | 'priority' = msg.interactive ? 'priority' : 'flex'
@@ -671,11 +672,29 @@ export async function processCentralNotification(
   // New-match signal: the first time a bill becomes a fully-analyzed KEYWORD match
   // (manual adds are excluded — the adding admin already knows). Set once; later
   // re-analysis / status changes / keyword-resync re-promotes won't re-surface it.
-  const isFirstKeywordMatch = !!aiResult && derivedMatchType === 'keyword' && !existing?.newMatchAt
+  //
+  // A bill analyzed before it matched (a companion pulled in through its group) matches with no new
+  // analysis when its text hasn't changed, so the model doesn't run again. It is still the first
+  // time it matches, unless it matched before: the feed event is written once per bill, and a
+  // dismissed match that lost its keywords and regained them is not news twice.
+  const priorMatchEvent = !aiResult && derivedMatchType === 'keyword' && !existing?.newMatchAt && existing?.matchType === null && existing.aiProcessedAt != null
+    ? !!(await db.select({ id: feedEvents.id }).from(feedEvents).where(and(eq(feedEvents.billId, existing.id), eq(feedEvents.type, 'bill_matched'))).get())
+    : null
+  const isFirstKeywordMatch = derivedMatchType === 'keyword' && !existing?.newMatchAt
+    && (!!aiResult || priorMatchEvent === false)
+
+  // Where the match came from, as central declared it. The declaration rides
+  // only on the message that brings the match, which may arrive before the
+  // bill has text to analyse, so it is kept on the bill until the match is
+  // recorded and goes on the bill_matched event from there. Once the match
+  // is recorded it never changes. With no declaration it stays NULL: bulk.
+  const declaredProvenance = !existing?.newMatchAt && msg.matchProvenance ? msg.matchProvenance : undefined
+  const matchProvenance = declaredProvenance ?? existing?.matchProvenance ?? null
 
   const upsertData = {
     ...billData,
     matchType: derivedMatchType,
+    ...(declaredProvenance ? { matchProvenance: declaredProvenance } : {}),
     ...(aiResult ? {
       aiProcessedAt: now,
       lastAiTextHash: centralBill.textHash ?? null,
@@ -695,7 +714,6 @@ export async function processCentralNotification(
       // …and any heal attempts. A bill that recovers starts clean, so a failure
       // months from now is not poisoned by an old, unrelated outage.
       aiHealAttempts: 0,
-      ...(isFirstKeywordMatch ? { newMatchAt: now } : {}),
     } : aiSkipReason ? {
       // Permanent AI failure on this text. Recording lastAiTextHash here serves the
       // same dedup role as on success: if the text actually changes later, AI re-runs.
@@ -730,10 +748,23 @@ export async function processCentralNotification(
       // have simply never been analyzed look stalled.
       aiAttemptedAt: now,
     } : {}),
+    ...(isFirstKeywordMatch ? { newMatchAt: now } : {}),
     ...(queueChanges.length > 0 ? { updatedAt: now } : {}),
   }
 
-  const { id: billInternalId, isNew } = await upsertBill(db, msg.billId, upsertData)
+  // Tags are a team field (lib/teamFields.ts), set only by the analysis. The
+  // group's tags before this one, for the team event recording a change.
+  const tagsBefore = aiResult && existing ? (await loadGroupTeamValues(db, existing.id)).analysis?.tags ?? [] : []
+  // An analysis records the tags it leaves the group with, including the effect of the match type it
+  // arrives with, so the upsert records a match type's effect only when no analysis runs.
+  const { id: billInternalId, isNew } = await upsertBill(db, msg.billId, upsertData, aiResult ? undefined : existing)
+  if (aiResult) {
+    // The group's tags after this analysis: its own when the bill is tracked or
+    // the group has no tracked analysis, the tracked bill's otherwise, so a
+    // pulled companion's analysis records no change to them.
+    const tagsAfter = (await loadGroupTeamValues(db, billInternalId)).analysis?.tags ?? []
+    await recordFieldChanges(db, [{ billId: billInternalId, field: 'tags', label: 'tags', old: tagsBefore, new: tagsAfter }], null)
+  }
   await syncBillSubjects(db, billInternalId, centralBill.state, centralBill.subjects ?? [])
 
   // bill_texts: upsert from normalized versions
@@ -804,8 +835,11 @@ export async function processCentralNotification(
         type:     'bill_matched',
         billId:   billInternalId,
         userId:   'system',
-        metadata: '{}',
+        metadata: JSON.stringify(matchProvenance ? { matchProvenance } : {}),
       })
+      // The feed's one row for the day's routine new matches. Judged by the same
+      // definition as the digest and the triage list, on the match just recorded.
+      await addToNewMatchesRow(db, billInternalId)
     }
   }
 
@@ -910,11 +944,25 @@ function resolveSessionLabel(sessionId: string | null | undefined): string {
   return sessionId
 }
 
+/**
+ * Upsert a bill from central. Pass the bill as it was just read (`existing`) to
+ * record the tags event for a match type that starts the bill matching: since
+ * #554 a group's tags come from a tracked member first, so a bill that starts
+ * matching can move them with no analysis to record it. A match type never
+ * goes back to null here, so only null to matching can change a group's tags.
+ */
 async function upsertBill(
   db: AppDb,
   externalId: string,
   data: Record<string, unknown>,
+  existing?: { id: string; matchType: 'keyword' | 'manual' | null; groupKey: string | null } | undefined,
 ): Promise<{ id: string; isNew: boolean }> {
+  const startsMatching = existing?.matchType === null && data.matchType != null && existing.groupKey !== null
+  // The event is advisory history: failing to read or write it is logged and never fails the delivery.
+  const tagsBefore = startsMatching ? await snapshotGroupTags(db, [existing]).catch(err => {
+    console.error(`[processor] reading group tags before the match type change failed for ${externalId}:`, err)
+    return null
+  }) : null
   const id = crypto.randomUUID()
   const now = nowDb()
   // Exclude externalId from the update set (it's the conflict target) and handle matchType separately
@@ -935,5 +983,10 @@ async function upsertBill(
     })
     .returning({ id: bills.id })
     .get()
+  if (tagsBefore) {
+    await recordGroupTagChanges(db, tagsBefore).catch(err => {
+      console.error(`[processor] recording group tag changes failed for ${externalId}:`, err)
+    })
+  }
   return { id: returned.id, isNew: returned.id === id }
 }

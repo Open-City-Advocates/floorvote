@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { env, SELF } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedComment, seedCommentMention } from '../helpers'
+import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedComment, seedCommentMention, stubFetch } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { associationConfig, billCustomFieldValues, commentReactions, customFieldDefinitions, feedEvents, memberVotes, officialPositions } from '../../src/db/schema'
 import { runDigest } from '../../src/lib/digest'
 import { extractAndNotifyMentions } from '../../src/lib/mentions'
+
+// Central's superadmin allowlist is fetched in the background on a first
+// authenticated request; answer it so the network guard stays quiet.
+beforeEach(() => { stubFetch() })
 
 // A user can clear their name (#233). Everywhere the server hands a person's
 // name to a reader, a blank name falls back to the email address, the same way
@@ -44,9 +48,9 @@ describe('a cleared name falls back to the email', () => {
   it('in mention notifications (authorName)', async () => {
     const commentId = await seedComment(billId, clearedId, '<p>Hello</p>')
     await seedCommentMention(commentId, viewerId, { sourceType: 'user', sourceId: viewerId })
-    const body = await (await get('/notifications')).json() as { mentions: Array<{ authorName: string }> }
-    expect(body.mentions).toHaveLength(1)
-    expect(body.mentions[0].authorName).toBe(CLEARED_EMAIL)
+    const body = await (await get('/notifications')).json() as { notifications: Array<{ authorName: string }> }
+    expect(body.notifications).toHaveLength(1)
+    expect(body.notifications[0].authorName).toBe(CLEARED_EMAIL)
   })
 
   it('in comment authors on bill detail and the comments list', async () => {
@@ -62,9 +66,9 @@ describe('a cleared name falls back to the email', () => {
     await getDb(env.DB).insert(commentReactions).values({ id: crypto.randomUUID(), commentId, userId: clearedId, emoji: '👍' })
     type R = { reactions: Array<{ reactors: { name: string }[] }> }
     const detail = await (await get(`/bills/${billId}`)).json() as { comments: R[] }
-    expect(detail.comments[0].reactions[0].reactors).toEqual([{ name: CLEARED_EMAIL, subtitle: null }])
+    expect(detail.comments[0].reactions[0].reactors).toEqual([{ name: CLEARED_EMAIL, title: null, subtitle: null }])
     const list = await (await get(`/bills/${billId}/comments`)).json() as R[]
-    expect(list[0].reactions[0].reactors).toEqual([{ name: CLEARED_EMAIL, subtitle: null }])
+    expect(list[0].reactions[0].reactors).toEqual([{ name: CLEARED_EMAIL, title: null, subtitle: null }])
   })
 
   it('in "Set by" for priority', async () => {

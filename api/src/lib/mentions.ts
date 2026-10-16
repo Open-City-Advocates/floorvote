@@ -1,6 +1,9 @@
 import { getDb } from '../db/client'
-import { commentMentions, userRoles, users, bills, roles, sessions, associationConfig, comments } from '../db/schema'
+import { notifications, type MentionNotificationData, userRoles, users, bills, roles, sessions, associationConfig, comments } from '../db/schema'
+import { writeNotifications, mentionData } from './notifications'
+import { chunk, D1_MAX_PARAMS } from './chunk'
 import { eq, inArray, exists, and } from 'drizzle-orm'
+import { activeUser } from './accountDeletion'
 import { billUrl } from '../../../shared/sessionSlug'
 import { PRODUCT_NAME } from '../../../shared/brand'
 import { sendBatch, resolveAssocName } from './email'
@@ -11,6 +14,7 @@ import { renderBillCardOpen, BILL_CARD_CLOSE, renderCommentRow, formatEmailDateT
 import { renderEmailShell, emailButton, emailFooterLink } from './emailShell'
 import { sanitizeCommentHtml } from './sanitizeHtml'
 import { displayName } from './displayName'
+import { userTitleSql } from './userTitle'
 
 /** @mention emails are on unless an admin explicitly disabled them. */
 export async function mentionEmailsEnabled(db: ReturnType<typeof getDb>): Promise<boolean> {
@@ -20,7 +24,7 @@ export async function mentionEmailsEnabled(db: ReturnType<typeof getDb>): Promis
 }
 
 type Mention = {
-  type: 'user' | 'role' | 'everyone'
+  type: 'user' | 'role' | 'admins' | 'everyone'
   id: string
   label: string
 }
@@ -35,14 +39,14 @@ export function extractMentions(html: string): Mention[] {
 
   while ((match = spanPattern.exec(html)) !== null) {
     const span = match[0]
-    const idMatch = span.match(/data-id="(user|role|everyone):([^"]+)"/)
+    const idMatch = span.match(/data-id="(user|role|admins|everyone):([^"]+)"/)
     const labelMatch = span.match(/data-label="([^"]+)"/)
     if (idMatch && labelMatch) {
       const key = `${idMatch[1]}:${idMatch[2]}`
       if (!seen.has(key)) {
         seen.add(key)
         mentions.push({
-          type: idMatch[1] as 'user' | 'role' | 'everyone',
+          type: idMatch[1] as 'user' | 'role' | 'admins' | 'everyone',
           id: idMatch[2],
           label: labelMatch[1],
         })
@@ -51,7 +55,7 @@ export function extractMentions(html: string): Mention[] {
   }
 
   // Handle attributes in different order (data-id before data-type)
-  const altPattern = /<span[^>]*data-id="(user|role|everyone):([^"]+)"[^>]*data-type="mention"[^>]*>/g
+  const altPattern = /<span[^>]*data-id="(user|role|admins|everyone):([^"]+)"[^>]*data-type="mention"[^>]*>/g
   while ((match = altPattern.exec(html)) !== null) {
     const key = `${match[1]}:${match[2]}`
     if (seen.has(key)) continue
@@ -60,7 +64,7 @@ export function extractMentions(html: string): Mention[] {
     if (labelMatch) {
       seen.add(key)
       mentions.push({
-        type: match[1] as 'user' | 'role' | 'everyone',
+        type: match[1] as 'user' | 'role' | 'admins' | 'everyone',
         id: match[2],
         label: labelMatch[1],
       })
@@ -68,10 +72,6 @@ export function extractMentions(html: string): Mention[] {
   }
 
   return mentions
-}
-
-export function stripHtml(html: string): string {
-  return html.replace(/<[^>]*>/g, '').trim()
 }
 
 
@@ -102,7 +102,7 @@ export function tiptapToEmailHtml(rawHtml: string): string {
         // label is already HTML-encoded by TipTap — use as-is, no double-escaping.
         // Colours come from the shared MENTION_STYLE so the email can't drift from
         // the app (role = indigo, user = gray). See shared/mentionStyle.ts.
-        const isGroup = match.includes('data-id="role:') || match.includes('data-id="everyone:')
+        const isGroup = match.includes('data-id="role:') || match.includes('data-id="admins:') || match.includes('data-id="everyone:')
         const pill = isGroup ? MENTION_STYLE.role : MENTION_STYLE.user
         const rad = isGroup ? '99px' : '4px'
         const pad = isGroup ? '2px 8px' : '1px 6px'
@@ -113,7 +113,7 @@ export function tiptapToEmailHtml(rawHtml: string): string {
 
 export interface MentionEmailInput {
   appUrl: string
-  author: { name: string; subtitle: string | null }
+  author: { name: string; title: string | null }
   bill: {
     id: string; billNumber: string; title: string
     /** Lets the card label an untitled draft "Untitled draft". Absent = filed. */
@@ -125,7 +125,7 @@ export interface MentionEmailInput {
     tenantSummary: string | null
   }
   comment: { id: string; createdAt: string; html: string }
-  via: 'user' | 'role' | 'everyone'
+  via: 'user' | 'role' | 'admins' | 'everyone'
   roleName?: string | null
   instanceName: string
 }
@@ -148,9 +148,9 @@ export function renderMentionEmail(input: MentionEmailInput): string {
   })
   const billHref = `${appUrl}${billUrl({ id: bill.id, state: bill.state, session: bill.session, sessionSlug: bill.sessionSlug, billNumber: bill.billNumber })}`
   const commentUrl = `${billHref}#comment-${comment.id}`
-  const subtitle = author.subtitle ? truncate(author.subtitle, 60) : null
+  const title = author.title ? truncate(author.title, 60) : null
   const commentRow = renderCommentRow({
-    appUrl, name: author.name, subtitle,
+    appUrl, name: author.name, title,
     dateText: formatEmailDateTime(comment.createdAt),
     bodyHtml: tiptapToEmailHtml(comment.html),
   })
@@ -161,12 +161,17 @@ export function renderMentionEmail(input: MentionEmailInput): string {
   const strong = (s: string) => `<strong style="font-weight:${fontWeight.semibold};">${s}</strong>`
   const intro = via === 'everyone'
     ? `${strong(authorName)} notified everyone in a comment`
+    : via === 'admins'
+      ? `${strong(authorName)} mentioned ${strong('@admins')} in a comment`
     : (via === 'role' && roleName)
       ? `${strong(authorName)} mentioned ${strong(`@${escHtml(roleName)}`)} in a comment`
       : `${strong(authorName)} mentioned you in a comment`
 
   const roleNote = (via === 'role' && roleName)
     ? `<p style="margin:0 0 20px;font-size:${fontSize.sm}px;color:${color.textSecondary};">You're receiving this because your account has the <span style="font-size:${fontSize.xs}px;font-weight:${fontWeight.medium};color:${MENTION_STYLE.role.text};background:${MENTION_STYLE.role.bg};border-radius:${radius.pill}px;padding:3px 9px;display:inline-block;white-space:nowrap;">${escHtml(roleName)}</span> role.</p>`
+    : ''
+  const adminsNote = via === 'admins'
+    ? `<p style="margin:0 0 20px;font-size:${fontSize.sm}px;color:${color.textSecondary};">You're receiving this because you're an admin.</p>`
     : ''
   const everyoneNote = via === 'everyone'
     ? `<p style="margin:0 0 20px;font-size:${fontSize.sm}px;color:${color.textSecondary};">You're receiving this because an admin notified everyone.</p>`
@@ -177,7 +182,7 @@ export function renderMentionEmail(input: MentionEmailInput): string {
     appUrl,
     signalHtml: intro,
     dateLabel: formatEmailDateTime(comment.createdAt),
-    bodyHtml: `${card}${roleNote}${everyoneNote}`,
+    bodyHtml: `${card}${roleNote}${adminsNote}${everyoneNote}`,
     ctaHtml: emailButton(escHtml(commentUrl), 'View comment'),
     footerHtml: emailFooterLink(escHtml(appUrl), PRODUCT_NAME),
   })
@@ -195,44 +200,38 @@ interface MentionEnv {
 
 type NotificationTarget = {
   userId: string
-  via: 'user' | 'role' | 'everyone'
+  via: 'user' | 'role' | 'admins' | 'everyone'
   roleName?: string
+  /** What the mention record points at: the user, the role, or 'all' for @admins and @everyone. */
+  sourceId: string
 }
 
-export async function extractAndNotifyMentions(
-  commentId: string,
-  html: string,
+type Db = ReturnType<typeof getDb>
+
+/**
+ * Resolves a comment's mention spans to the people they reach, one target per
+ * person. A person reached more than one way is attributed to the first that
+ * applies: direct mention, then role, then @admins, then @everyone. The author
+ * is never a target, @everyone only counts from an admin or owner (@admins
+ * from anyone), and role, @admins, and @everyone expansion skips members
+ * without a login session (invite-pending or deactivated).
+ *
+ * Both the create path and the edit diff resolve through here, so "who does this
+ * comment reach" has one definition.
+ */
+async function resolveMentionTargets(
+  db: Db,
+  mentions: Mention[],
   authorUserId: string,
   authorRole: 'admin' | 'member' | 'owner',
-  billId: string,
-  env: MentionEnv,
-  waitUntil?: (p: Promise<unknown>) => void,
-): Promise<string[]> {
-  const mentions = extractMentions(html)
+): Promise<NotificationTarget[]> {
   if (mentions.length === 0) return []
 
-  const db = getDb(env.DB)
   const targets = new Map<string, NotificationTarget>()
-  const mentionRows: Array<{
-    id: string
-    commentId: string
-    userId: string
-    sourceType: 'user' | 'role' | 'everyone'
-    sourceId: string
-  }> = []
 
   for (const m of mentions) {
-    if (m.type === 'user') {
-      if (m.id !== authorUserId && !targets.has(m.id)) {
-        targets.set(m.id, { userId: m.id, via: 'user' })
-        mentionRows.push({
-          id: crypto.randomUUID(),
-          commentId,
-          userId: m.id,
-          sourceType: 'user',
-          sourceId: m.id,
-        })
-      }
+    if (m.type === 'user' && m.id !== authorUserId && !targets.has(m.id)) {
+      targets.set(m.id, { userId: m.id, via: 'user', sourceId: m.id })
     }
   }
 
@@ -254,14 +253,27 @@ export async function extractAndNotifyMentions(
 
     for (const rm of roleMembers) {
       if (rm.userId !== authorUserId && !targets.has(rm.userId)) {
-        targets.set(rm.userId, { userId: rm.userId, via: 'role', roleName: roleNameMap.get(rm.roleId) })
-        mentionRows.push({
-          id: crypto.randomUUID(),
-          commentId,
+        targets.set(rm.userId, {
           userId: rm.userId,
-          sourceType: 'role',
+          via: 'role',
+          roleName: roleNameMap.get(rm.roleId),
           sourceId: rm.roleId,
         })
+      }
+    }
+  }
+
+  if (mentions.some(m => m.type === 'admins')) {
+    const adminRows = await db.select({ id: users.id }).from(users)
+      .where(and(
+        inArray(users.role, ['admin', 'owner']),
+        activeUser,
+        exists(db.select({ id: sessions.id }).from(sessions).where(eq(sessions.userId, users.id))),
+      ))
+      .all()
+    for (const a of adminRows) {
+      if (a.id !== authorUserId && !targets.has(a.id)) {
+        targets.set(a.id, { userId: a.id, via: 'admins', sourceId: 'all' })
       }
     }
   }
@@ -273,36 +285,162 @@ export async function extractAndNotifyMentions(
       .all()
     for (const u of allUsers) {
       if (u.id !== authorUserId && !targets.has(u.id)) {
-        targets.set(u.id, { userId: u.id, via: 'everyone' })
-        mentionRows.push({
-          id: crypto.randomUUID(),
-          commentId,
-          userId: u.id,
-          sourceType: 'everyone',
-          sourceId: 'all',
-        })
+        targets.set(u.id, { userId: u.id, via: 'everyone', sourceId: 'all' })
       }
     }
   }
 
-  if (mentionRows.length > 0) {
-    await db.insert(commentMentions).values(mentionRows)
-  }
+  return [...targets.values()]
+}
 
-  if (targets.size > 0) {
-    const targetList = [...targets.values()]
-    if (await mentionEmailsEnabled(db)) {
-      const emailTask = sendMentionEmails(targetList, authorUserId, billId, commentId, html, env)
-      if (waitUntil) {
-        waitUntil(emailTask)
-      } else {
-        emailTask.catch(() => {})
+/**
+ * Writes mention notifications for the given targets, then emails the people
+ * actually written unless an admin turned mention emails off. A person who
+ * already has a mention on this comment (a concurrent edit got there first) is
+ * neither written nor emailed again.
+ */
+async function recordAndEmail(
+  db: Db,
+  newTargets: NotificationTarget[],
+  commentId: string,
+  html: string,
+  authorUserId: string,
+  billId: string,
+  env: MentionEnv,
+  waitUntil?: (p: Promise<unknown>) => void,
+): Promise<void> {
+  if (newTargets.length === 0) return
+
+  const written = await writeNotifications(db, newTargets.map(t => ({
+    recipientId: t.userId,
+    kind: 'mention',
+    billId,
+    commentId,
+    actorId: authorUserId,
+    data: { sourceType: t.via, sourceId: t.sourceId },
+  })))
+  const toEmail = newTargets.filter(t => written.has(t.userId))
+
+  if (toEmail.length > 0 && await mentionEmailsEnabled(db)) {
+    const emailTask = sendMentionEmails(toEmail, authorUserId, billId, commentId, html, env)
+    if (waitUntil) {
+      waitUntil(emailTask)
+    } else {
+      emailTask.catch(() => {})
+    }
+  }
+}
+
+/** Create path: record a mention for, and email, everyone the new comment reaches. Returns their user ids. */
+export async function extractAndNotifyMentions(
+  commentId: string,
+  html: string,
+  authorUserId: string,
+  authorRole: 'admin' | 'member' | 'owner',
+  billId: string,
+  env: MentionEnv,
+  waitUntil?: (p: Promise<unknown>) => void,
+): Promise<string[]> {
+  const db = getDb(env.DB)
+  const targets = await resolveMentionTargets(db, extractMentions(html), authorUserId, authorRole)
+  await recordAndEmail(db, targets, commentId, html, authorUserId, billId, env, waitUntil)
+  return targets.map(t => t.userId)
+}
+
+/** Repoints a mention notification at the token that now reaches its recipient. Read state is untouched. */
+function setMentionSource(db: Db, id: string, data: MentionNotificationData) {
+  return db.update(notifications).set({ data: JSON.stringify(data) }).where(eq(notifications.id, id))
+}
+
+/** A mention token: `user:<id>`, `role:<id>`, `admins`, or `everyone`. A record's source maps to the same form. */
+function mentionToken(type: Mention['type'], id: string): string {
+  return type === 'everyone' || type === 'admins' ? type : `${type}:${id}`
+}
+
+/**
+ * Edit path: reconcile the comment's mention records with its new content instead
+ * of starting over. Records are keyed by person (comment + user); each carries
+ * the source token that reached them (a user, a role, or @everyone).
+ *
+ * The diff is on mention tokens, not on who a role contains today. Re-resolving a
+ * role or @everyone on every edit would email people who joined the role after
+ * the comment was posted and delete the records of people who have since left
+ * it, so a typo fix could not leave things alone. Instead:
+ *
+ *   - Tokens unchanged: nothing is written and nobody is emailed.
+ *   - A record whose source token is still present is kept as is, read state and
+ *     all, without re-resolving it. The one exception is a person now mentioned
+ *     directly, whose source flips to the user.
+ *   - A record whose source token was removed is re-resolved against the
+ *     remaining tokens: kept with its new source if still reached, otherwise
+ *     deleted.
+ *   - Added tokens are resolved, and only people with no record yet get one and
+ *     an email. Someone already reached, directly or through a role, is not
+ *     emailed again.
+ *
+ * Returns everyone the edited comment now reaches, kept and new.
+ */
+export async function syncMentionsOnEdit(
+  commentId: string,
+  previousHtml: string,
+  html: string,
+  authorUserId: string,
+  authorRole: 'admin' | 'member' | 'owner',
+  billId: string,
+  env: MentionEnv,
+  waitUntil?: (p: Promise<unknown>) => void,
+): Promise<string[]> {
+  const db = getDb(env.DB)
+  const mentions = extractMentions(html)
+  const tokens = new Set(mentions.map(m => mentionToken(m.type, m.id)))
+  const previousTokens = new Set(extractMentions(previousHtml).map(m => mentionToken(m.type, m.id)))
+  const existing = (await db
+    .select({ id: notifications.id, userId: notifications.recipientId, data: notifications.data })
+    .from(notifications)
+    .where(and(eq(notifications.commentId, commentId), eq(notifications.kind, 'mention')))
+    .all())
+    .flatMap(r => {
+      const data = mentionData(r.data)
+      return data ? [{ id: r.id, userId: r.userId, ...data }] : []
+    })
+
+  const added = mentions.filter(m => !previousTokens.has(mentionToken(m.type, m.id)))
+  const removed = [...previousTokens].some(t => !tokens.has(t))
+  if (added.length === 0 && !removed) return existing.map(r => r.userId)
+
+  // Only needed when some record's source token went away.
+  const sourceGone = (r: (typeof existing)[number]) => !tokens.has(mentionToken(r.sourceType, r.sourceId))
+  const remaining = existing.some(sourceGone)
+    ? new Map((await resolveMentionTargets(db, mentions, authorUserId, authorRole)).map(t => [t.userId, t]))
+    : new Map<string, NotificationTarget>()
+
+  const reached = new Set<string>()
+  const writes: unknown[] = []
+  for (const row of existing) {
+    if (tokens.has(`user:${row.userId}`) && row.sourceType !== 'user') {
+      reached.add(row.userId)
+      writes.push(setMentionSource(db, row.id, { sourceType: 'user', sourceId: row.userId }))
+    } else if (!sourceGone(row)) {
+      reached.add(row.userId)
+    } else {
+      const target = remaining.get(row.userId)
+      if (!target) {
+        writes.push(db.delete(notifications).where(eq(notifications.id, row.id)))
+        continue
+      }
+      reached.add(row.userId)
+      if (row.sourceType !== target.via || row.sourceId !== target.sourceId) {
+        writes.push(setMentionSource(db, row.id, { sourceType: target.via, sourceId: target.sourceId }))
       }
     }
-    return targetList.map(t => t.userId)
   }
+  if (writes.length > 0) await db.batch(writes as unknown as Parameters<typeof db.batch>[0])
 
-  return []
+  const existingIds = new Set(existing.map(r => r.userId))
+  const newcomers = (await resolveMentionTargets(db, added, authorUserId, authorRole))
+    .filter(t => !existingIds.has(t.userId))
+  await recordAndEmail(db, newcomers, commentId, html, authorUserId, billId, env, waitUntil)
+  return [...reached, ...newcomers.map(t => t.userId)]
 }
 
 async function sendMentionEmails(
@@ -315,7 +453,7 @@ async function sendMentionEmails(
 ): Promise<void> {
   const db = getDb(env.DB)
   const [author] = await db
-    .select({ name: users.name, email: users.email, subtitle: users.subtitle })
+    .select({ name: users.name, email: users.email, title: userTitleSql })
     .from(users)
     .where(eq(users.id, authorUserId))
     .all()
@@ -343,11 +481,12 @@ async function sendMentionEmails(
     .all()
   const commentCreatedAt = commentMeta?.createdAt ?? new Date().toISOString() // ts-write-ok: display-only fallback, not a DB column
 
-  const recipients = await db
+  // Split under D1's parameter limit: an @everyone can reach more than 100 people.
+  const recipients = (await Promise.all(chunk(targets.map(t => t.userId), D1_MAX_PARAMS).map(ids => db
     .select({ id: users.id, email: users.email, name: users.name })
     .from(users)
-    .where(inArray(users.id, targets.map(t => t.userId)))
-    .all()
+    .where(inArray(users.id, ids))
+    .all()))).flat()
 
   const instanceName = (await resolveAssocName(env, db)) ?? ''
 
@@ -360,7 +499,7 @@ async function sendMentionEmails(
     // renderMentionEmail, which styles it via tiptapToEmailHtml.
     const rendered = renderMentionEmail({
       appUrl: env.APP_URL,
-      author: { name: displayName(author), subtitle: author.subtitle },
+      author: { name: displayName(author), title: author.title },
       bill: {
         id: bill.id, billNumber: bill.billNumber, title: bill.title, isDraft: bill.isDraft,
         state: bill.state, session: bill.session, sessionSlug: bill.sessionSlug, priority: bill.priority,
@@ -371,7 +510,9 @@ async function sendMentionEmails(
     })
     const subject = via === 'everyone'
       ? `[${bill.billNumber}] New comment for everyone`
-      : `[${bill.billNumber}] You were mentioned in a comment`
+      : via === 'admins'
+        ? `[${bill.billNumber}] The admins were mentioned in a comment`
+        : `[${bill.billNumber}] You were mentioned in a comment`
     return { to: [recipient.email], subject, html: rendered }
   })
 
