@@ -269,6 +269,9 @@ const DENIED = new Set([
   'POST /api/auth/magic-link',
   'POST /api/auth/verify',
   'POST /api/bills/:id/link',
+  // Grouping and splitting change the conversation every visitor sees.
+  'POST /api/bills/:id/group',
+  'POST /api/bills/:id/split',
   'POST /api/bills/bulk',
   'POST /api/bills/bulk-dismiss',
   'POST /api/bills/draft',
@@ -278,6 +281,8 @@ const DENIED = new Set([
   'POST /api/calendar/import',
   'POST /api/calendar/regenerate-slug',
   'POST /api/feedback',
+  // A signed email link with no session. A demo sends no email, so it has no links.
+  'POST /api/mute-link',
   'POST /api/users/me/deactivate',
   'POST /api/users/me/email-change',
   'PUT /api/admin/custom-fields/:id',
@@ -329,9 +334,9 @@ describe('demo write categorisation', () => {
   })
 
   it('pins the size of each category so a silent shift is visible', () => {
-    expect(DEMO_WRITE_ALLOWLIST.size).toBe(21)
-    expect(DENIED.size).toBe(54)
-    expect(registered().length).toBe(81)
+    expect(DEMO_WRITE_ALLOWLIST.size).toBe(23)
+    expect(DENIED.size).toBe(57)
+    expect(registered().length).toBe(86)
   })
 
   it('refuses every denied route with the read-only message', async () => {

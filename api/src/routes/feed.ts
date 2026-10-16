@@ -8,6 +8,7 @@ import { PASSIVE_EVENT_TYPES } from '../../../shared/feedUtils'
 import { nowDb } from '../lib/dbTime'
 import { activeUser } from '../lib/accountDeletion'
 import type { AppEnv } from '../types'
+import { userTitleSql } from '../lib/userTitle'
 
 export const feedRouter = new Hono<AppEnv>()
 
@@ -63,9 +64,16 @@ feedRouter.get('/', async (c) => {
   // The bills join is a left join so an event with no bill (a bulk edit) still
   // returns: such a row has NULL bills columns, which the default scope already
   // treats as visible when its type is not passive. The analyzed scope filters on
-  // the bill's match, which a bill-less event has no bill to fail.
+  // the bill's match, which a bill-less event has no bill to fail. The new-matches
+  // row is left out of it: this scope already lists every match, each as a
+  // bill_matched event, so the day's summary would only repeat them.
   const baseWhere = scope === 'analyzed'
-    ? and(ne(feedEvents.suppressed, true), or(isNull(feedEvents.billId), isNotNull(bills.matchType)), activeUser)
+    ? and(
+        ne(feedEvents.suppressed, true),
+        ne(feedEvents.type, 'new_matches'),
+        or(isNull(feedEvents.billId), isNotNull(bills.matchType)),
+        activeUser,
+      )
     : and(ne(feedEvents.suppressed, true), activeUser, defaultVisible)
 
   const [rows, countRow, latestRow, seenRow] = await Promise.all([
@@ -87,7 +95,7 @@ feedRouter.get('/', async (c) => {
         userId: feedEvents.userId,
         userName: users.name,
         userEmail: users.email,
-        userSubtitle: users.subtitle,
+        userTitle: userTitleSql,
         metadata: feedEvents.metadata,
         createdAt: feedEvents.createdAt,
       })
@@ -146,7 +154,9 @@ feedRouter.get('/', async (c) => {
       billIsDraft: r.billIsDraft ?? false,
       userId: r.userId,
       userName: r.userName || r.userEmail,
-      userSubtitle: r.userSubtitle,
+      userTitle: r.userTitle,
+      // `subtitle` is the old name for `title`. Remove in the release after this one.
+      userSubtitle: r.userTitle,
       metadata: JSON.parse(r.metadata) as unknown,
       createdAt: r.createdAt,
     })),

@@ -7,6 +7,7 @@ import { matchesUnion, billMatchText } from '../lib/keywords'
 import { DEFAULT_PROVIDER_ID, findProvider, getProvider, type SessionRef, type SyncEntry } from '../providers'
 import { secretsMatch } from '../lib/auth'
 import { isSuperadminEmail } from '../lib/superadminIssuer'
+import { getSuperadminProfile } from '../lib/superadminProfile'
 import { revokeSuperadminJti } from '../lib/superadminRevocation'
 import { SUPERADMIN_TOKEN_TTL_SEC } from '../lib/superadminJwt'
 import { runSync } from '../cron/sync'
@@ -18,7 +19,7 @@ import { applyCutover, applyUndo, CutoverError, cutoverReport, planCutover, plan
 import { runAnomalyWatch } from '../lib/anomalyWatch'
 import { nowDb } from '../lib/dbTime'
 import { providerContext } from '../lib/providerContext'
-import type { Env, IngestorMessage, NotificationMessage } from '../types'
+import type { BillMessage, Env, IngestorMessage, NotificationMessage } from '../types'
 import { getTenantQueue } from '../lib/tenantQueue'
 import { deliverBatchToTenant } from '../lib/tenantDelivery'
 import { queuesRestEnabled } from '../lib/queuesRest'
@@ -231,6 +232,23 @@ adminRoutes.get('/superadmin/emails', async (c) => {
   return c.json({ hashes })
 })
 
+// One superadmin's profile, for an instance refreshing its copy when that person
+// signs in by emailed link. Behind the x-admin-secret middleware above, so only
+// an authenticated instance gets an answer. The email travels in the body to
+// keep it out of request logs.
+//
+// It answers `{ profile: null }` for anyone who isn't a superadmin, exactly as
+// for a superadmin with no saved profile, and does the same database read either
+// way, so a caller learns nothing more than the `check` route already tells it.
+// A row left behind by someone taken off the list is never returned.
+adminRoutes.post('/superadmin/profile', async (c) => {
+  const body = await c.req.json<{ email?: unknown }>().catch(() => ({} as { email?: unknown }))
+  const email = typeof body?.email === 'string' ? body.email : ''
+  const profile = await getSuperadminProfile(drizzle(c.env.DB, { schema }), email)
+  const answer = isSuperadminEmail(c.env, email) ? profile : null
+  return c.json({ profile: answer })
+})
+
 async function sha256Hex(s: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s))
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
@@ -440,9 +458,11 @@ adminRoutes.post('/sync-keywords/:tenantId', guardCallerTenantParam(), async (c)
   // Queue each newly-matched bill to the ingestor with forceAI:true.
   // The ingestor will call getBill() once per message (1 LegiScan API call per bill),
   // download text, then notify the tenant with forceAI so the tenant runs AI on full text.
+  // A keyword re-run's matches are bulk: bills the tenant already had, newly
+  // matched by a configuration change, stay out of its feed and digest.
   for (let i = 0; i < newlyMatched.length; i += 100) {
     const batch = newlyMatched.slice(i, i + 100).map(billId => ({
-      body: { billId, forceAI: true } as IngestorMessage,
+      body: { billId, forceAI: true, matchProvenance: { [tenantId]: 'bulk' } } satisfies BillMessage,
     }))
     await c.env.INGESTOR_QUEUE.sendBatch(batch)
   }

@@ -14,6 +14,7 @@ import { findMemberByAddress, normalizeMemberAddress } from '../lib/memberAddres
 import { rememberInstance, forgetInstance } from '../lib/instanceHint'
 import { verifySuperadminJwt } from '../../../shared/superadminJwt'
 import { isSuperadminEmailViaCentral } from '../lib/superadminCentral'
+import { applyTokenProfile, isSuperadminUser, refreshProfileFromCentral, refreshProfileFromRequestToken } from '../lib/superadminProfile'
 import { checkRateLimit } from '../../../shared/rateLimit'
 import { verifyTurnstile } from '../../../shared/turnstile'
 import { countActiveOwners } from '../lib/owners'
@@ -24,6 +25,7 @@ import type { AppEnv } from '../types'
 import { isValidEmail } from '../../../shared/email'
 import { confirmEmailChange, emailChangeLinkStatus, EMAIL_CHANGE_ERRORS } from '../lib/emailChange'
 import { reportNotMe, notMeLinkStatus, NOT_ME_ERRORS } from '../lib/emailChangeReport'
+import { titleOf, userTitleSql } from '../lib/userTitle'
 
 export const authRoutes = new Hono<AppEnv>()
 
@@ -275,11 +277,27 @@ authRoutes.post('/verify', async (c) => {
   })
 
   const verifiedUser = await db
-    .select({ email: users.email, name: users.name })
+    .select({ id: users.id, email: users.email, name: users.name, title: users.title })
     .from(users)
     .where(eq(users.id, userId))
     .get()
   rememberInstance(c, verifiedUser?.email)
+
+  // A superadmin's name and title are kept in central. Refresh this instance's copy
+  // on an emailed-link sign-in too; an unreachable central keeps the existing copy.
+  // The superadmin check and the refresh both call central, so they run in
+  // waitUntil, off the response path: no member's sign-in ever waits on central.
+  // The cost is that a superadmin's new name and title show on their next page
+  // load, not in this response. Without an execution context (some tests), run
+  // it inline; it never throws.
+  if (verifiedUser) {
+    const refresh = refreshProfileFromCentral(c.env, db, verifiedUser)
+    try {
+      c.executionCtx.waitUntil(refresh)
+    } catch {
+      await refresh
+    }
+  }
 
   // Tenants no longer mint the cross-tenant superadmin SSO cookie. Central is the
   // SOLE issuer: it sets the `.<parent-domain>`-scoped `superadmin_jwt` cookie on
@@ -380,6 +398,9 @@ authRoutes.get('/me', async (c) => {
             })
             localUser = await db.select().from(users).where(eq(users.id, id)).get()!
           }
+          // Central keeps the superadmin's name and title. Each dashboard sign-in
+          // refreshes this instance's copy.
+          localUser = await applyTokenProfile(db, localUser!, payload)
           const sessionToken = await generateToken()
           const sessionHash = await hashToken(sessionToken)
           const expiresInstant = new Date(Date.now() + SESSION_DURATION_MS)
@@ -403,12 +424,16 @@ authRoutes.get('/me', async (c) => {
             email: localUser!.email,
             name: localUser!.name,
             role: localUser!.role,
-            subtitle: localUser!.subtitle,
+            title: titleOf(localUser!),
+            // `subtitle` is the old name for `title`. Remove in the release after this one.
+            subtitle: titleOf(localUser!),
             canVote: !!localUser!.canVote,
             emailDigestEnabled: localUser!.emailDigestEnabled === 1,
+            emailDigestMatchesEnabled: localUser!.emailDigestMatchesEnabled === 1,
             emailWeekAheadEnabled: localUser!.emailWeekAheadEnabled === 1,
             emailRepliesEnabled: localUser!.emailRepliesEnabled === 1,
             lastSeenFeed: localUser!.lastSeenFeed ?? null,
+            isSuperadmin: true,
             isLastOwner: localUser!.role === 'owner' && (await countActiveOwners(db)) <= 1,
             ...(await termsAcceptanceState(db, c.env, localUser!.id, localUser!.email)),
           })
@@ -429,9 +454,10 @@ authRoutes.get('/me', async (c) => {
       email: users.email,
       name: users.name,
       role: users.role,
-      subtitle: users.subtitle,
+      title: userTitleSql,
       canVote: users.canVote,
       emailDigestEnabled: users.emailDigestEnabled,
+      emailDigestMatchesEnabled: users.emailDigestMatchesEnabled,
       emailWeekAheadEnabled: users.emailWeekAheadEnabled,
       emailRepliesEnabled: users.emailRepliesEnabled,
       lastSeenFeed: users.lastSeenFeed,
@@ -449,6 +475,12 @@ authRoutes.get('/me', async (c) => {
   if (dbTsToEpoch(sessionWithUser.sessionExpiry) < Date.now()) {
     return c.json({ error: 'Session expired' }, 401)
   }
+
+  // A superadmin coming back from the dashboard with a live instance session still
+  // gets their central profile refreshed.
+  const profiled = await refreshProfileFromRequestToken(c, db, { ...sessionWithUser, id: sessionWithUser.userId })
+  sessionWithUser.name = profiled.name
+  sessionWithUser.title = profiled.title
 
   const newExpiryInstant = new Date(Date.now() + SESSION_DURATION_MS)
   await db
@@ -482,12 +514,16 @@ authRoutes.get('/me', async (c) => {
     email: sessionWithUser.email,
     name: sessionWithUser.name,
     role: sessionWithUser.role,
-    subtitle: sessionWithUser.subtitle,
+    title: sessionWithUser.title,
+    // `subtitle` is the old name for `title`. Remove in the release after this one.
+    subtitle: sessionWithUser.title,
     canVote: !!sessionWithUser.canVote,
     emailDigestEnabled: sessionWithUser.emailDigestEnabled === 1,
+    emailDigestMatchesEnabled: sessionWithUser.emailDigestMatchesEnabled === 1,
     emailWeekAheadEnabled: sessionWithUser.emailWeekAheadEnabled === 1,
     emailRepliesEnabled: sessionWithUser.emailRepliesEnabled === 1,
     lastSeenFeed: sessionWithUser.lastSeenFeed ?? null,
+    isSuperadmin: await isSuperadminUser(c, sessionWithUser.email),
     isLastOwner: sessionWithUser.role === 'owner' && (await countActiveOwners(db)) <= 1,
     ...(await termsAcceptanceState(db, c.env, sessionWithUser.userId, sessionWithUser.email)),
   })

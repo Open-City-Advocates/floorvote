@@ -21,6 +21,7 @@ import { recordAuthEvent, authReqContext, authEventActor, authEventActorName } f
 import { getAccountDeletionEnabled, ACCOUNT_DELETION_KEY } from '../lib/accountDeletion'
 import { countActiveOwners } from '../lib/owners'
 import { healStalledAiBills } from '../lib/healStalledAi'
+import { isPulledByGroup } from '../lib/companionAnalysis'
 import { exportApiRouter } from './exportApi'
 import { customFieldsApiRouter } from './customFieldsApi'
 import { adminSavedViewsRouter } from './savedViewsApi'
@@ -31,7 +32,9 @@ import { isPendingInvite, pendingInviteWhere } from '../lib/pendingInvite'
 import { isPreviouslyBounced, previouslyBouncedAddresses } from '../lib/bouncedAddresses'
 import { adminSendChecks, claimSend, releaseSend } from '../lib/adminSendLimits'
 import { mayChangeEmail, refuseSuperadmin, requestEmailChange } from '../lib/emailChange'
+import { recordGroupTagChanges, snapshotGroupTags } from '../lib/teamFields'
 import { centralEmail, type DeliveryStatus, type SuppressionStatus } from '../lib/centralEmail'
+import { userTitleSql } from '../lib/userTitle'
 
 export const adminApiRouter = new Hono<AppEnv>()
 
@@ -51,7 +54,7 @@ adminApiRouter.get('/members', async (c) => {
       email: users.email,
       name: users.name,
       role: users.role,
-      subtitle: users.subtitle,
+      title: userTitleSql,
       createdAt: users.createdAt,
       lastActive: users.lastActive,
       deactivatedAt: users.deactivatedAt,
@@ -129,7 +132,9 @@ adminApiRouter.get('/members', async (c) => {
       email: u.email,
       name: u.name,
       role: u.role,
-      subtitle: u.subtitle,
+      title: u.title,
+      // `subtitle` is the old name for `title`. Remove in the release after this one.
+      subtitle: u.title,
       createdAt: u.createdAt,
       lastActive: u.lastActive,
       deactivatedAt: u.deactivatedAt,
@@ -960,7 +965,7 @@ adminApiRouter.post('/keyword-resync', async (c) => {
 
   // ── Cleanup pass: demote or protect stale keyword matches ──
   const keywordBills = await db
-    .select({ id: bills.id, externalId: bills.externalId, title: bills.title, abstract: bills.abstract, billNumber: bills.billNumber, priority: bills.priority })
+    .select({ id: bills.id, externalId: bills.externalId, title: bills.title, abstract: bills.abstract, billNumber: bills.billNumber, priority: bills.priority, groupKey: bills.groupKey })
     .from(bills)
     .where(and(eq(bills.matchType, 'keyword'), isNotNull(bills.externalId)))
     .all()
@@ -992,6 +997,10 @@ adminApiRouter.post('/keyword-resync', async (c) => {
     const toManual = staleBills.filter(b => engagedIds.has(b.id) || b.priority != null)
     const toDemote = staleBills.filter(b => !engagedIds.has(b.id) && b.priority == null)
 
+    // A group's tags come from a tracked member first (#554), so demoting a bill can move them, and no
+    // analysis records it. Protecting one as manual keeps it tracked, so it can't.
+    const tagsBefore = await snapshotGroupTags(db, toDemote)
+
     const updateStmts = [
       ...toManual.map(b => db.update(bills).set({ matchType: 'manual' }).where(eq(bills.id, b.id))),
       ...toDemote.map(b => db.update(bills).set({ matchType: null }).where(eq(bills.id, b.id))),
@@ -1016,6 +1025,14 @@ adminApiRouter.post('/keyword-resync', async (c) => {
       if (!mtRes.ok) console.warn(`[keyword-resync] central update-bill-match-types returned ${mtRes.status}`)
     } catch (err) {
       console.error('[keyword-resync] central update-bill-match-types failed:', err)
+    }
+
+    // After central is told, and best-effort like it: the event is advisory history, so a failure to
+    // write it must not fail the route once the bills are demoted here.
+    try {
+      await recordGroupTagChanges(db, tagsBefore)
+    } catch (err) {
+      console.error('[keyword-resync] recording group tag changes failed:', err)
     }
   }
 
@@ -1115,7 +1132,10 @@ adminApiRouter.post('/keyword-match-summary', async (c) => {
 adminApiRouter.post('/reprocess-bill/:externalId', async (c) => {
   if (!c.env.BILL_QUEUE) return c.json({ error: 'Queue not configured' }, 503)
   const externalId = decodeURIComponent(c.req.param('externalId'))
-  await c.env.BILL_QUEUE.send({ tenantId: c.env.TENANT_ID, billId: externalId, forceAI: true, interactive: true })
+  // A bill pulled in by its companion group keeps the match type central gave it (lib/companionAnalysis.ts).
+  const bill = await getDb(c.env.DB).select({ id: bills.id }).from(bills).where(eq(bills.externalId, externalId)).get()
+  const groupAnalysis = bill ? await isPulledByGroup(getDb(c.env.DB), bill.id) : false
+  await c.env.BILL_QUEUE.send({ tenantId: c.env.TENANT_ID, billId: externalId, forceAI: true, ...(groupAnalysis ? { groupAnalysis: true as const } : {}), interactive: true })
   return c.json({ queued: 1 })
 })
 

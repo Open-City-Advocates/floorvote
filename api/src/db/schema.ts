@@ -1,11 +1,14 @@
 import { sqliteTable, text, integer, primaryKey, uniqueIndex, index } from 'drizzle-orm/sqlite-core'
 import { sql } from 'drizzle-orm'
+import type { EventSource } from '../../../shared/eventSource'
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
   email: text('email').notNull().unique(),
   name: text('name').notNull().default(''),
   role: text('role', { enum: ['admin', 'member', 'owner'] }).notNull().default('member'),
+  title: text('title'),
+  // The old name for `title`, kept in sync until the drop migration (follow-up issue), so the previous build still works if a deploy is rolled back.
   subtitle: text('subtitle'),
   invitedBy: text('invited_by'),
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
@@ -13,6 +16,7 @@ export const users = sqliteTable('users', {
   deactivatedAt: text('deactivated_at'),
   canVote: integer('can_vote').notNull().default(1),
   emailDigestEnabled: integer('email_digest_enabled').notNull().default(1),
+  emailDigestMatchesEnabled: integer('email_digest_matches_enabled').notNull().default(1),
   emailWeekAheadEnabled: integer('email_week_ahead_enabled').notNull().default(1),
   emailRepliesEnabled: integer('email_replies_enabled').notNull().default(1),
   lastSeenFeed: text('last_seen_feed'),
@@ -153,6 +157,9 @@ export const bills = sqliteTable('bills', {
   // migrations/0066_affected_citations.sql for why these are not normalised.
   affectedCitations: text('affected_citations').notNull().default('[]'),
   priority: text('priority', { enum: ['high', 'medium', 'low'] }),
+  // When the priority was last set (migration 0101). A companion group reads
+  // its priority from the member where it was set most recently.
+  prioritySetAt: text('priority_set_at'),
   sponsor: text('sponsor'),
   sponsorParty: text('sponsor_party'),
   sponsorUrl: text('sponsor_url'),
@@ -212,13 +219,70 @@ export const bills = sqliteTable('bills', {
   aiHealAttempts: integer('ai_heal_attempts').notNull().default(0),
   textStatus: text('text_status'),
   newMatchAt: text('new_match_at'),
+  // Where the keyword match came from, as central declared it (MatchProvenance
+  // in types.ts). NULL, for any match made before central declared one, counts
+  // as bulk. Holds the latest declaration until the match is recorded
+  // (new_match_at), then never changes.
+  matchProvenance: text('match_provenance', { enum: ['routine', 'bulk'] }),
   triagedAt: text('triaged_at'),
   triagedBy: text('triaged_by'),
   isDraft: integer('is_draft', { mode: 'boolean' }).notNull().default(false),
   draftText: text('draft_text'),
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
   updatedAt: text('updated_at').notNull().default(sql`(datetime('now'))`),
+  // The bill's companion group: the smallest id among the bills linked to it by
+  // identical relationships, or null for a bill with none in this instance
+  // (migration 0100). Written only by lib/companionGroups.ts.
+  groupKey: text('group_key'),
+  // The tags of the bill's companion group's current analysis, or its own tags
+  // when it's in no group, as a JSON array (migration 0103). A tag filter tests
+  // these. Written only by the triggers 0106 recreates, never by the app.
+  groupTags: text('group_tags').notNull().default('[]'),
 })
+
+// Identical relationships, as central's vocabulary reads them, by bill handle
+// on both sides (migration 0100). One row per bill naming a companion, so a
+// companion the instance doesn't hold yet is still remembered. Companion groups
+// are computed from these in either direction. Written only by
+// lib/companionGroups.ts.
+export const billIdenticalLinks = sqliteTable('bill_identical_links', {
+  externalId: text('external_id').notNull(),
+  companionExternalId: text('companion_external_id').notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.externalId, t.companionExternalId] }),
+  index('idx_bill_identical_links_companion').on(t.companionExternalId),
+])
+
+// An admin's overrides of companion groups (migration 0104), one row per pair
+// of bills, smaller id first: `link` groups the two as an identical link would,
+// and `split` removes any identical link between them. The group recompute
+// reads them with the provider's links on every sync (lib/companionGroups.ts).
+export const billGroupOverrides = sqliteTable('bill_group_overrides', {
+  billId: text('bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
+  otherBillId: text('other_bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
+  kind: text('kind', { enum: ['link', 'split'] }).notNull(),
+  actorUserId: text('actor_user_id'),
+  createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
+}, (t) => [
+  primaryKey({ columns: [t.billId, t.otherBillId] }),
+  index('idx_bill_group_overrides_other').on(t.otherBillId),
+])
+
+// Structured events about a bill's team-level state, one row per bill (migration
+// 0100): a companion group forming or splitting so far. `type` has no CHECK
+// constraint, so a new kind of event needs no table rebuild. A null actor
+// means FloorVote did it automatically. Metadata is per type: see
+// shared/companionGroups.ts for grouping events.
+export const teamEvents = sqliteTable('team_events', {
+  id: text('id').primaryKey(),
+  billId: text('bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
+  type: text('type').notNull(),
+  actorUserId: text('actor_user_id'),
+  metadata: text('metadata').notNull().default('{}'),
+  createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
+}, (t) => [
+  index('idx_team_events_bill').on(t.billId, t.createdAt),
+])
 
 export const billSubjects = sqliteTable('bill_subjects', {
   billId:      text('bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
@@ -283,7 +347,7 @@ export const notes = sqliteTable('notes', {
 export const feedEvents = sqliteTable('feed_events', {
   id: text('id').primaryKey(),
   type: text('type', {
-    enum: ['bill_added', 'priority_set', 'position_set', 'comment_added', 'vote_milestone', 'bill_updated', 'hearing_added', 'hearing_changed', 'hearing_cancelled', 'bill_matched'],
+    enum: ['bill_added', 'priority_set', 'position_set', 'comment_added', 'vote_milestone', 'bill_updated', 'hearing_added', 'hearing_changed', 'hearing_cancelled', 'bill_matched', 'new_matches'],
   }).notNull(),
   // Null for an event about no single bill (a bulk edit, and later instance-level
   // events). Such an event keeps what it is about in `metadata`, and survives the
@@ -393,7 +457,9 @@ export const calendarEvents = sqliteTable('calendar_events', {
   // 'hearing': a bill's calendar entry, from central. 'custom': the instance's
   // own. 'body': an event on a legislature's own calendar, from central
   // (lib/bodyEvents.ts), which links its agenda bills in calendar_event_bills.
-  source: text('source').notNull().default('hearing'),
+  // A date custom field's event (source 'field') is never stored: it's
+  // projected from bill_custom_field_values at read time (lib/dateFieldEvents.ts).
+  source: text('source').$type<EventSource>().notNull().default('hearing'),
   // A bill calendar entry's kind, as central sent it: 'hearing', 'markup',
   // 'meeting', or 'deadline' (shared/calendarKinds.ts). Null for custom
   // events, and for an entry central hasn't sent since migration 0079.
@@ -433,7 +499,7 @@ export const calendarEventBills = sqliteTable('calendar_event_bills', {
 
 /** A mention notification's kind-specific data: how the mention reached the recipient. */
 export type MentionNotificationData = {
-  sourceType: 'user' | 'role' | 'everyone'
+  sourceType: 'user' | 'role' | 'admins' | 'everyone'
   /** The user, the role, or 'all' for @everyone. */
   sourceId: string
 }
@@ -467,3 +533,17 @@ export const notifications = sqliteTable('notifications', {
 })
 
 export type NotificationKind = typeof notifications.$inferSelect['kind']
+
+/**
+ * Bills whose comments a member muted (#355). A muted bill sends that member no
+ * reply notifications, in the app or by email. Mentions still reach them.
+ * Muting works whether or not the member has commented on the bill.
+ */
+export const billMutes = sqliteTable('bill_mutes', {
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  billId: text('bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
+  createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
+}, (t) => [
+  primaryKey({ columns: [t.userId, t.billId] }),
+  index('idx_bill_mutes_bill').on(t.billId),
+])
