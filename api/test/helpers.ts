@@ -80,6 +80,7 @@ export async function seedUser(overrides?: {
   title?: string
   canVote?: boolean
   emailDigestEnabled?: boolean
+  emailDigestMatchesEnabled?: boolean
   emailRepliesEnabled?: boolean
   deactivatedAt?: string | null
   invitedBy?: string | null
@@ -96,6 +97,7 @@ export async function seedUser(overrides?: {
     subtitle: overrides?.title ?? null,
     canVote: overrides?.canVote === false ? 0 : 1,
     emailDigestEnabled: overrides?.emailDigestEnabled === false ? 0 : 1,
+    emailDigestMatchesEnabled: overrides?.emailDigestMatchesEnabled === false ? 0 : 1,
     emailRepliesEnabled: overrides?.emailRepliesEnabled === false ? 0 : 1,
     deactivatedAt: overrides?.deactivatedAt ?? null,
     invitedBy: overrides?.invitedBy ?? null,
