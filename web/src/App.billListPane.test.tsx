@@ -54,6 +54,7 @@ import { routes } from './App'
 import { AuthProvider } from './context/AuthContext'
 
 const realMatchMedia = window.matchMedia
+const realScroll = Element.prototype.scrollIntoView
 function setViewport(width: number) {
   window.matchMedia = ((query: string) => {
     const min = /min-width:\s*(\d+)px/.exec(query)
@@ -74,8 +75,9 @@ function renderAt(path: string) {
 beforeEach(() => {
   hoisted.calls = []
   sessionStorage.clear()
+  Element.prototype.scrollIntoView = vi.fn()
 })
-afterEach(() => { window.matchMedia = realMatchMedia })
+afterEach(() => { window.matchMedia = realMatchMedia; Element.prototype.scrollIntoView = realScroll })
 
 describe('bill list beside a bill (split pane)', () => {
   it('shows no list on a narrower viewport — the bill page is unchanged', async () => {
@@ -152,5 +154,39 @@ describe('bill list beside a bill (split pane)', () => {
     expect(screen.getByRole('navigation', { name: 'Bill list' })).toBe(pane)
     expect(hoisted.calls.filter(c => c.startsWith('/bills?'))).toHaveLength(1)
     expect(within(pane).getByRole('link', { current: 'page' })).toHaveAttribute('href', '/RI/2026/HB 2')
+  })
+
+  // The legacy /bills/:billId route carries the pane too, and a reader can move
+  // between it and the canonical shape without the pane remounting.
+  it('shows the list on the legacy /bills/:id route and marks the bill by its id', async () => {
+    setViewport(1440)
+    renderAt('/bills/b2')
+    expect(await screen.findByText('detail /bills/b2')).toBeInTheDocument()
+    const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+    await within(pane).findByText('Bill number 1')
+    const current = within(pane).getByRole('link', { current: 'page' })
+    expect(current).toHaveTextContent('Bill number 2')
+    expect(current).toHaveAttribute('href', '/RI/2026/HB 2')
+  })
+
+  it('keeps the same pane when the legacy route moves to a canonical bill URL', async () => {
+    setViewport(1440)
+    const router = renderAt('/bills/b2')
+    const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+    await within(pane).findByText('Bill number 1')
+
+    fireEvent.click(within(pane).getByRole('link', { name: /Draft three/ }))
+    expect(await screen.findByText('detail /RI/2026/HB 3')).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/RI/2026/HB 3')
+    expect(screen.getByRole('navigation', { name: 'Bill list' })).toBe(pane)
+    expect(hoisted.calls.filter(c => c.startsWith('/bills?'))).toHaveLength(1)
+    expect(within(pane).getByRole('link', { current: 'page' })).toHaveTextContent('Draft three')
+  })
+
+  it('shows the list on the legacy /:session/:bill route', async () => {
+    setViewport(1440)
+    renderAt('/2026/HB%202')
+    expect(await screen.findByText('detail /2026/HB%202')).toBeInTheDocument()
+    expect(await screen.findByRole('navigation', { name: 'Bill list' })).toBeInTheDocument()
   })
 })

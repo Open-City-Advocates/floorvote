@@ -1,5 +1,5 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { Link, useLocation, useMatch } from 'react-router-dom'
 import { apiFetch } from '../../lib/api'
 import { decodeStatus } from '../../lib/legislativeStatus'
 import { billUrl } from '../../lib/sessionSlug'
@@ -8,11 +8,11 @@ import { BillBadge } from '../../components/BillBadge'
 import { DraftChip } from '../../components/DraftChip'
 import { StatusChip } from '../../components/StatusChip'
 import { SECTION_LABEL, CHROME_TEXT, SR_ONLY } from '../../lib/textStyles'
-import { color, fontSize } from '../../styles/tokens'
+import { color, fontSize, fontWeight } from '../../styles/tokens'
 import { billDisplayTitle } from '../../../../shared/billTitle'
-import { billsApiParams, billsFilterValuesFromSearch } from './billsQuery'
-import { peekBillsListCache } from './index'
-import { PAGE_SIZE } from './constants'
+import { billsApiParamsFromSearch, searchFromListUrl } from './billsQuery'
+import { peekBillsListCache, peekCustomFieldDefs } from './index'
+import { groupDisplay, memberPath } from './BillRow'
 import type { Bill } from './types'
 import type { SavedView } from './ViewSwitcher'
 
@@ -31,7 +31,7 @@ type BillsPage = { bills: Bill[]; pagination: { page: number; pageSize: number; 
 // `?view=<slug>` form, which spells out no filters, so it is expanded from
 // /views here the way BillList hydrates it.
 async function resolveListSearch(listUrl: string): Promise<URLSearchParams> {
-  const search = new URLSearchParams(listUrl.includes('?') ? listUrl.slice(listUrl.indexOf('?') + 1) : '')
+  const search = searchFromListUrl(listUrl)
   const viewId = search.get('view')
   if (!viewId || normalizeViewQuery(search.toString()) !== '') return search
   try {
@@ -50,10 +50,25 @@ function decodePath(path: string): string {
   try { return decodeURI(path) } catch { return path }
 }
 
+// A bill is the open one when it is the row's own bill or, for a group row,
+// any bill in the group: the row's own fields are the lead's, so opening a
+// companion would otherwise highlight nothing. `legacyId` is the id on a
+// /bills/:billId URL, whose path is never the canonical one the row builds.
+function isOpenBill(bill: Bill, path: string, here: string, legacyId: string | undefined): boolean {
+  if (path === here || (legacyId !== undefined && bill.id === legacyId)) return true
+  return !!bill.group?.some(m => memberPath(m) === here || (legacyId !== undefined && m.id === legacyId))
+}
+
+const STACK: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4, minWidth: 0 }
+
 const PaneRow = memo(function PaneRow({ bill, path, isCurrent, billPaths, index }: {
   bill: Bill; path: string; isCurrent: boolean; billPaths: string[]; index: number
 }) {
   const [hovered, setHovered] = useState(false)
+  // A companion group is one row (the lead's), drawn as the Bills list draws it:
+  // the lead and one other number, "+N" for the rest, each shown status once.
+  const group = bill.group ? groupDisplay(bill.group) : null
+  const companions = bill.group ? bill.group.slice(1) : []
   return (
     <Link
       to={path}
@@ -73,11 +88,27 @@ const PaneRow = memo(function PaneRow({ bill, path, isCurrent, billPaths, index 
         textDecoration: 'none',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-        <BillBadge mini billNumber={bill.billNumber} state={bill.state} isDraft={bill.isDraft} priority={bill.priority} />
+      <div style={{ display: 'flex', alignItems: group ? 'flex-start' : 'center', gap: 8, marginBottom: 4 }}>
+        {group ? (
+          <div style={STACK}>
+            {group.shown.map((m, n) => (
+              // The priority is the group's, drawn once, on the lead's number.
+              <BillBadge key={m.id} mini billNumber={m.billNumber} state={m.state} priority={n === 0 ? bill.priority : null} />
+            ))}
+            {group.hidden.length > 0 && (
+              <span aria-hidden style={{ ...CHROME_TEXT, fontWeight: fontWeight.semibold }}>+{group.hidden.length}</span>
+            )}
+          </div>
+        ) : (
+          <BillBadge mini billNumber={bill.billNumber} state={bill.state} isDraft={bill.isDraft} priority={bill.priority} />
+        )}
         {bill.priority && <span style={SR_ONLY}>, {bill.priority} priority</span>}
         <span style={{ marginLeft: 'auto', display: 'flex', minWidth: 0 }}>
-          {bill.isDraft ? <DraftChip mini /> : <StatusChip status={decodeStatus(bill.status)} />}
+          {group ? (
+            <span style={{ ...STACK, alignItems: 'flex-end' }}>
+              {group.statuses.map(status => <StatusChip key={status} status={decodeStatus(status)} />)}
+            </span>
+          ) : bill.isDraft ? <DraftChip mini /> : <StatusChip status={decodeStatus(bill.status)} />}
         </span>
       </div>
       <div style={{
@@ -91,6 +122,11 @@ const PaneRow = memo(function PaneRow({ bill, path, isCurrent, billPaths, index 
       }}>
         {billDisplayTitle(bill)}
       </div>
+      {/* Only the lead and one other number are drawn, so a screen reader is
+          told of every companion by number. */}
+      {companions.length > 0 && (
+        <span style={SR_ONLY}>, with {companions.length} companion {companions.length === 1 ? 'bill' : 'bills'}: {companions.map(m => m.billNumber).join(', ')}</span>
+      )}
     </Link>
   )
 })
@@ -121,7 +157,7 @@ export function BillListPane() {
   useEffect(() => {
     if (!search) return
     let cancelled = false
-    const params = billsApiParams(billsFilterValuesFromSearch(search), 1, PAGE_SIZE)
+    const params = billsApiParamsFromSearch(search, 1, peekCustomFieldDefs())
     // The Bills page's first-page cache paints instantly when it holds this
     // same query; the fetch below then refreshes it.
     const cached = peekBillsListCache()
@@ -150,7 +186,7 @@ export function BillListPane() {
     if (!search || loadingMore) return
     setLoadingMore(true)
     const next = page + 1
-    apiFetch<BillsPage>(`/bills?${billsApiParams(billsFilterValuesFromSearch(search), next, PAGE_SIZE)}`)
+    apiFetch<BillsPage>(`/bills?${billsApiParamsFromSearch(search, next, peekCustomFieldDefs())}`)
       .then(data => {
         setBills(prev => [...prev, ...data.bills])
         setHasMore(next < data.pagination.totalPages)
@@ -161,23 +197,22 @@ export function BillListPane() {
   }
 
   const here = decodePath(location.pathname)
+  const legacyId = useMatch('/bills/:billId')?.params.billId
   const paths = useMemo(() => bills.map(b => billUrl({ id: b.id, state: b.state, sessionSlug: b.sessionSlug, billNumber: b.billNumber })), [bills])
 
   // Bring the current bill into view only when it is off-screen, and only when
   // the bill changes (or the list first arrives) — never when "Show more"
   // appends, which would yank the reader back from where they scrolled.
+  // `loading` is a dependency because the list renders only once it is false:
+  // were the bills and the end of loading ever committed separately, an effect
+  // that ran in between would find no list and never run again.
   const hasBills = bills.length > 0
   useLayoutEffect(() => {
-    const list = scrollRef.current
-    const row = list?.querySelector<HTMLElement>('[aria-current="page"]')
-    if (!list || !row) return
-    const li = row.parentElement as HTMLElement
-    const top = li.offsetTop
-    const bottom = top + li.offsetHeight
-    if (top < list.scrollTop || bottom > list.scrollTop + list.clientHeight) {
-      list.scrollTop = top - (list.clientHeight - li.offsetHeight) / 2
-    }
-  }, [location.pathname, hasBills])
+    const row = scrollRef.current?.querySelector<HTMLElement>('[aria-current="page"]')
+    // 'nearest' moves nothing when the row is already on screen. The pane only
+    // exists on wide viewports, where the document itself never scrolls.
+    row?.scrollIntoView({ block: 'nearest' })
+  }, [location.pathname, hasBills, loading])
 
   return (
     <nav
@@ -207,7 +242,7 @@ export function BillListPane() {
         <ul ref={scrollRef} style={{ listStyle: 'none', margin: 0, padding: 0, flex: 1, minHeight: 0, overflowY: 'auto', position: 'relative' }}>
           {bills.map((b, i) => (
             <li key={b.id}>
-              <PaneRow bill={b} path={paths[i]} isCurrent={paths[i] === here} billPaths={paths} index={i} />
+              <PaneRow bill={b} path={paths[i]} isCurrent={isOpenBill(b, paths[i], here, legacyId)} billPaths={paths} index={i} />
             </li>
           ))}
           {hasMore && (
