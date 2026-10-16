@@ -1,5 +1,6 @@
 import { NJ_COUNTY_CLERKS } from '../../config/associations/nj-county-clerks'
 import type { DemoSeed } from './types'
+import { viewQuery } from './viewQuery'
 
 // The elections demo at demo.floor.vote: an association of New Jersey county
 // clerks. Fictional personas and fictional county names, attached to real NJ
@@ -504,5 +505,31 @@ export const NJ_COUNTY_CLERKS_SEED: DemoSeed = {
     { id: 'demo-event-3', externalId: 'legiscan:2100182', source: 'custom', offsetDays: 11, time: '17:00:00', location: null,               description: 'Comment period closes — A1195 rules' },
     { id: 'demo-event-4', externalId: null,               source: 'custom', offsetDays: 20, time: '09:00:00', location: 'Trenton Marriott', description: 'NJ County Clerks Association — spring conference' },
     { id: 'demo-event-5', externalId: null,               source: 'custom', offsetDays: 25, time: '14:00:00', location: 'Zoom',             description: 'Legislative strategy working group' },
+  ],
+
+  // Written for a county clerk's week. Each view combines filters the way a team
+  // would, and they lean on what this seed writes (priority, position, fiscal impact)
+  // so they return bills whatever the AI tagged. None uses a subject: the live NJ
+  // demo hides subjects for the whole tenant. The first is the one OR view, joining
+  // a priority and a tag: what leadership flagged, or what is squarely a clerk's job.
+  // Counts below are for the eight bills above.
+  savedViews: [
+    {
+      // 5 bills: the four high-priority bills plus A548.
+      id: 'demo-view-flagged-or-clerk', name: 'High priority or clerk duties', slug: 'high-priority-or-clerk-duties',
+      query: viewQuery([['match', 'any'], ['priority', 'high'], ['tag', 'County Clerk Functions']]),
+    },
+    {
+      // 2 bills: A1195 and A1715, of the three with Significant fiscal impact (the
+      // third, A251, is medium priority).
+      id: 'demo-view-costly-high', name: 'Costly, high-priority bills', slug: 'costly-high-priority-bills',
+      query: viewQuery([['cf_fiscal-impact', 'Significant (>$100K)'], ['priority', 'high']]),
+    },
+    {
+      // 2 bills: A1680 (Amend) and A1715 (Support), of the three assigned to Legislative
+      // Affairs (the third, A2670, has no position yet).
+      id: 'demo-view-leg-affairs', name: 'Legislative Affairs, backed or amended', slug: 'legislative-affairs-backed-or-amended',
+      query: viewQuery([['cf_committee', 'Legislative Affairs'], ['position', 'Support'], ['position', 'Amend']]),
+    },
   ],
 }

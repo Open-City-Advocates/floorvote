@@ -52,9 +52,11 @@ Leave `DEMO_SEED` out and the tenant gets `nj-county-clerks`, the New Jersey cou
 
 The seed writes `ai_context`, `relevance_question`, `tag_taxonomy`, and `keywords` itself on every reset, so a demo tenant's content comes entirely from its seed module — there's no separate configuration step.
 
+A seed also carries its saved views, three named bill-list filters written for that demo's audience. The view switcher shows nothing on an instance with no views, so without them a visitor would never see the feature. Every reset deletes all of a demo's saved views and writes the seed's back, so a view added, changed, or removed between resets does not survive. Each view stores the bill list's own query string, and each combines several filters the way a team would (for example, a custom field plus an official position). At most one is an OR view: `match=any` across two or more filter dimensions, the OR group operator. Write views from what the seed itself installs (priorities, positions, custom field values), so each returns bills whatever the AI tagged. Do not filter on a subject: a seed writes none, a bill page shows subjects as the legislature's, and an operator can hide them for a whole tenant, as the live New Jersey demo does. A test checks that every view returns at least one bill, that each dimension of the OR view does on its own, and that no view uses a subject.
+
 ### Adding a second demo
 
-1. Add a seed module beside `njCountyClerks.ts` in `api/src/lib/demoSeeds/`, exporting a `DemoSeed`. Copy the existing one — the type is the contract, and its comments explain the conventions (day offsets, timestamp format, mention markup).
+1. Add a seed module beside `njCountyClerks.ts` in `api/src/lib/demoSeeds/`, exporting a `DemoSeed`. Copy the existing one — the type is the contract, and its comments explain the conventions (day offsets, timestamp format, mention markup, saved views).
 2. Register it in `DEMO_SEEDS` in `api/src/lib/demoSeeds/index.ts` under the key you want operators to type.
 3. Deploy the tenant with `DEMO_MODE = "true"` and `DEMO_SEED = "<your key>"` in its vars.
 
