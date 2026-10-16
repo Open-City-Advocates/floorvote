@@ -74,6 +74,10 @@
 
 **Notification**: one stored item in a member's notifications panel, telling them about an event on a bill's comments, of a kind (a mention, a reply, or a reaction). Written when the event happens, marked read when the member opens the panel or the bill, and hidden once its comment is deleted. Avoid: "alert"; "mention" for a notification of another kind.
 
+**Muted bill**: a bill whose comments a member has muted, from the bill page or a reply email. It sends them no reply notifications, in the app or by email, but mentions on it (direct, role, @admins, or @everyone) still reach them. A member can mute a bill before ever commenting on it, unmute it from the bill page, and stays muted when a draft they muted is linked to its filed bill. A companion group is one conversation, so muting any of its bills mutes the group, and unmuting any of them unmutes it. Avoid: "unsubscribed," "unfollowed."
+
+**Mute link**: the link in a reply email, signed for one member and one bill, that mutes that bill without signing in. It is both the email's one-click List-Unsubscribe and its "Mute this bill" footer link, which opens a page that asks before muting. It can mute nothing else and does not expire. Mention emails carry none.
+
 **Keyword**: one line of an instance's keyword list, matched against a bill's title, abstract, and number. A bare word matches a whole word, `*` widens it (`election*`), and `#` stands for one digit. A list whose only entry is `*` matches every bill and sends all of them to AI, so it is a cost decision. Unrelated to `state_coverage`'s `["*"]`, which means every state. Avoid: "tag," which AI assigns from the instance's taxonomy, and "subject," which the legislature assigns.
 
 **Subject**: a term a legislature assigns to a bill, shown on the bill page and filterable on the Bills page, grouped by state because each legislature's vocabulary is its own. An operator can hide a state's subjects with the `subjects_suppressed_states` config row. Avoid: "tag," which is the instance's own taxonomy applied by AI.
