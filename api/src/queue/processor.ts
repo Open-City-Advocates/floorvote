@@ -12,6 +12,7 @@ import { syncIdenticalCompanions } from '../lib/companionGroups'
 import { pullCompanions } from '../lib/companionAnalysis'
 import { loadGroupTeamValues, recordFieldChanges, recordGroupTagChanges, snapshotGroupTags } from '../lib/teamFields'
 import { nowDb } from '../lib/dbTime'
+import { addToNewMatchesRow } from '../lib/newMatch'
 import { LEGACY_STATUS_ORDER, LEGISCAN_CODE_WORDS } from '../../../shared/legacyStatusOrder'
 import { httpUrl } from '../../../shared/httpUrl'
 import type { AppDb, Env, TenantQueueMessage } from '../types'
@@ -836,6 +837,9 @@ async function applyCentralBill(
         userId:   'system',
         metadata: JSON.stringify(matchProvenance ? { matchProvenance } : {}),
       })
+      // The feed's one row for the day's routine new matches. Judged by the same
+      // definition as the digest and the triage list, on the match just recorded.
+      await addToNewMatchesRow(db, billInternalId)
     }
   }
 
