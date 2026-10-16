@@ -58,7 +58,7 @@ export function identify(d: Directory, key: string): Identity | null {
 
 const today = todayIso
 const input: React.CSSProperties = { fontSize: fontSize.sm, padding: '5px 8px', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, background: color.white }
-const primary: React.CSSProperties = { ...input, background: color.linkBlue, color: color.white, border: 'none', cursor: 'pointer', fontWeight: fontWeight.medium }
+const primary: React.CSSProperties = { ...input, background: color.linkBlue, color: color.textOnFill, border: 'none', cursor: 'pointer', fontWeight: fontWeight.medium }
 const quiet: React.CSSProperties = { background: 'none', border: 'none', padding: 0, color: color.textMuted, cursor: 'pointer', fontSize: fontSize.xs }
 
 /**

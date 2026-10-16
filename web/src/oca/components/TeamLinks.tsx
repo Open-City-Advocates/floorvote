@@ -85,7 +85,7 @@ export function TeamLinks({ kind, subjectId, isAdmin }: { kind: 'bill' | 'event'
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
           <input aria-label="Document title" placeholder="Title, e.g. Joint comment letter (July 1)" value={title} onChange={e => setTitle(e.target.value)} style={{ ...input, flex: '1 1 220px' }} />
           <input aria-label="Document link" placeholder="https://docs.google.com/…" value={url} onChange={e => setUrl(e.target.value)} style={{ ...input, flex: '2 1 280px' }} />
-          <button type="button" onClick={add} disabled={busy || !title.trim() || !url.trim()} style={{ ...input, background: color.linkBlue, color: color.white, border: 'none', cursor: 'pointer', fontWeight: fontWeight.medium }}>{busy ? 'Adding…' : 'Add'}</button>
+          <button type="button" onClick={add} disabled={busy || !title.trim() || !url.trim()} style={{ ...input, background: color.linkBlue, color: color.textOnFill, border: 'none', cursor: 'pointer', fontWeight: fontWeight.medium }}>{busy ? 'Adding…' : 'Add'}</button>
           <button type="button" onClick={() => { setAdding(false); setError(null) }} style={{ ...input, background: 'none', cursor: 'pointer' }}>Cancel</button>
         </div>
       )}
