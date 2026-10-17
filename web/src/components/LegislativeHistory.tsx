@@ -119,13 +119,16 @@ export function LegislativeHistory({ entries, votes, lastAction, lastActionDate,
     <span>
       {!hideHeader && (
         <button
+          type="button"
+          aria-expanded={hasTimeline ? open : undefined}
           onClick={() => hasTimeline ? setOpen(s => !s) : undefined}
+          onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false) }}
           style={{
             fontSize: fontSize.sm,
             color: color.textSlate,
             background: 'none',
             border: 'none',
-            borderBottom: hasTimeline ? `1px dotted ${color.textMuted}` : 'none',
+            borderBottom: 'none',
             cursor: hasTimeline ? 'pointer' : 'default',
             padding: 0,
           }}
