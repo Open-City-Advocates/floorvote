@@ -17,7 +17,8 @@ import { billTypeExplainer, eventTypeExplainer, statusExplainer as explainStatus
 import { getNoAnalysisMessage } from '../lib/billDetailCopy'
 import { REGENERATE_PRESERVES_DESCRIPTION } from '../lib/billDetailCopy'
 import { OverflowMenu, type OverflowMenuRow } from '../components/ui/OverflowMenu'
-import { orgPositionLabel, orgRelevanceLabel, DEFAULT_ORG_NOUN } from '../lib/orgNoun'
+import { orgPositionLabel, orgRelevanceLabel, titleCase as upperFirst, DEFAULT_ORG_NOUN } from '../lib/orgNoun'
+import { groupSharedThings } from '../lib/groupShares'
 import { RelevanceChip } from '../components/RelevanceChip'
 import { SessionChip } from '../components/SessionChip'
 import { SentimentBars } from '../components/SentimentBars'
@@ -1532,7 +1533,7 @@ export function BillDetail() {
                 menuRows.push({
                   key: 'group-with',
                   label: 'Group with…',
-                  description: 'Share one discussion and the team\'s values with an identical bill.',
+                  description: `Share ${groupSharedThings(config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0)} with an identical bill.`,
                   disabled: demoLocked,
                   onSelect: () => setGroupWithOpen(true),
                 })
@@ -1541,7 +1542,7 @@ export function BillDetail() {
                 menuRows.push({
                   key: 'split',
                   label: 'Split from group',
-                  description: `Give ${bill.billNumber} back its own discussion and the team's values.`,
+                  description: `Give ${bill.billNumber} back its own ${groupSharedThings(config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0)}.`,
                   disabled: splitting || demoLocked,
                   onSelect: async () => {
                     if (splitting || demoLocked) return
@@ -1550,7 +1551,7 @@ export function BillDetail() {
                       // The server says what the split would leave, so the
                       // confirmation can name bills that would come apart.
                       const preview = await apiFetch<{ billNumber: string; parts: GroupBill[][] }>(`/bills/${bill.id}/split-preview`)
-                      if (!window.confirm(splitConfirmText(bill.billNumber, preview.parts.map(part => part.map(b => b.billNumber))))) return
+                      if (!window.confirm(splitConfirmText(bill.billNumber, preview.parts.map(part => part.map(b => b.billNumber)), config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0))) return
                       await apiFetch(`/bills/${bill.id}/split`, { method: 'POST' })
                       await refetchBill()
                     } catch {
@@ -2871,6 +2872,29 @@ export function BillDetail() {
         )}
       </div>
 
+      {/* Why values this page never set appear here: the group's other bills share them. */}
+      {(() => {
+        const companions = (bill.groupBills ?? []).filter(g => g.billId !== bill.id)
+        if (companions.length === 0) return null
+        return (
+          <p data-testid="group-shares-line" style={{ margin: '16px 0 0', fontSize: fontSize.sm, lineHeight: 1.6, color: color.textMuted }}>
+            {upperFirst(groupSharedThings(config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0))} are shared with{' '}
+            {companions.map((g, i) => (
+              <Fragment key={g.billId}>
+                {i === 0 ? null : companions.length === 2 ? ' and ' : i === companions.length - 1 ? ', and ' : ', '}
+                <BillBadge
+                  mini
+                  billNumber={g.billNumber}
+                  state={g.state}
+                  to={billUrl({ id: g.billId, state: g.state, sessionSlug: g.sessionSlug, billNumber: g.billNumber })}
+                />
+              </Fragment>
+            ))}
+            .
+          </p>
+        )
+      })()}
+
       {/* Two-column layout */}
       <div className="bill-detail-columns" style={{ display: 'flex', gap: 24, padding: '24px 0' }}>
 
@@ -3153,6 +3177,7 @@ export function BillDetail() {
           billId={bill.id}
           billNumber={bill.billNumber}
           groupBillIds={(bill.groupBills ?? []).map(b => b.billId).concat(bill.id)}
+          shares={groupSharedThings(config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0, 'and', true)}
           onClose={() => setGroupWithOpen(false)}
           onGrouped={() => { setGroupWithOpen(false); void refetchBill() }}
         />

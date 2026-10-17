@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { BillDetail } from './BillDetail'
 import * as api from '../lib/api'
@@ -152,13 +153,13 @@ const CONFIG = {
 
 
 
-function renderBillDetail(overrides: Record<string, unknown>) {
+function renderBillDetail(overrides: Record<string, unknown>, config: Record<string, unknown> = {}, customFields: unknown[] = []) {
   const bill = { ...BILL, ...overrides }
   routerMock.loaderData = bill
   vi.spyOn(api, 'apiFetch').mockImplementation(async (path: string) => {
     if (path === '/bills/42') return bill as never
-    if (path === '/config') return { ...CONFIG } as never
-    if (path === '/config/custom-fields') return [] as never
+    if (path === '/config') return { ...CONFIG, ...config } as never
+    if (path === '/config/custom-fields') return customFields as never
     if (path === '/roles' || path === '/users') return [] as never
     return {} as never
   })
@@ -296,5 +297,168 @@ describe('the header of a grouped bill', () => {
     renderBillDetail({ groupBills: [THIS], companionBillIds: ['legacy-companion-7'], billNumber: 'A190' })
     await screen.findByText('Test Bill')
     expect(screen.queryByText('Companion:')).toBeNull()
+  })
+})
+
+// The one muted line above the comments and the org's position that says they
+// are shared with the group's other bills, in the page's own terms: Comments,
+// member votes, and the configured org noun's position.
+describe('the line saying what a companion group shares', () => {
+  const SENTENCE_FOR = (names: string, noun = 'association') => `Comments, votes, and ${noun} position are shared with ${names}.`
+  const FOURTH = link('d2001', 'S1714', 'NJ', '2026')
+  const NO_COMMENTS = { comments: [], commentsTotal: 0, groupingEvents: [] }
+  const line = () => screen.getByTestId('group-shares-line')
+
+  it('renders once for a group of two, naming the companion as a link to its canonical bill page', async () => {
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, COMPANION] })
+    await screen.findByText('Test Bill')
+    expect(screen.getAllByTestId('group-shares-line')).toHaveLength(1)
+    expect(within(line()).getByRole('link', { name: 'S1713' })).toHaveAttribute('href', '/NJ/2025-2026/S1713')
+    expect(line()).toHaveTextContent(SENTENCE_FOR('S1713'))
+  })
+
+  it("names the configured org noun's position, as the position card does", async () => {
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, COMPANION] }, { orgNoun: 'alliance' })
+    await screen.findByText('Alliance position')
+    expect(line()).toHaveTextContent(SENTENCE_FOR('S1713', 'alliance'))
+  })
+
+  it('names custom fields too once the instance defines at least one', async () => {
+    const field = { id: 'cf1', name: 'Committee lead', slug: null, type: 'text', options: null, displayOrder: 0, pinned: false }
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, COMPANION] }, {}, [field])
+    await waitFor(() => expect(line()).toHaveTextContent('Comments, votes, association position, and custom fields are shared with S1713.'))
+  })
+
+  it('falls back to the default noun before /config answers', async () => {
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, COMPANION] }, { orgNoun: undefined })
+    await screen.findByText('Test Bill')
+    expect(line()).toHaveTextContent(SENTENCE_FOR('S1713', 'team'))
+  })
+
+  it('sits above the two-column area, below the header', async () => {
+    renderBillDetail({ ...GROUPED, groupBills: [THIS, COMPANION] })
+    await screen.findByText('c1 text')
+    const columns = document.querySelector('.bill-detail-columns')!
+    expect(columns).not.toBeNull()
+    expect(columns.contains(line())).toBe(false)
+    expect(line().compareDocumentPosition(columns) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByTestId('bill-group-badges').compareDocumentPosition(line()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The comments and the position live in that two-column area, below the line.
+    expect(line().compareDocumentPosition(document.getElementById('section-comments')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('names both companions of a group of three as "S1713 and H2000", and never the page\'s own bill', async () => {
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, COMPANION, THIRD] })
+    await screen.findByText('Test Bill')
+    expect(line()).toHaveTextContent(SENTENCE_FOR('S1713 and H2000'))
+    expect(line()).not.toHaveTextContent('A190')
+    expect(within(line()).getAllByRole('link').map(a => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['S1713', '/NJ/2025-2026/S1713'],
+      ['H2000', '/NJ/2026/H2000'],
+    ])
+  })
+
+  it('joins a group of four as "S1713, H2000, and S1714", with the serial comma', async () => {
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, COMPANION, THIRD, FOURTH] })
+    await screen.findByText('Test Bill')
+    expect(line()).toHaveTextContent(SENTENCE_FOR('S1713, H2000, and S1714'))
+    expect(line()).not.toHaveTextContent('A190')
+    expect(within(line()).getAllByRole('link')).toHaveLength(3)
+  })
+
+  it('names the companions in the order the group bills arrive', async () => {
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, THIRD, COMPANION] })
+    await screen.findByText('Test Bill')
+    expect(line()).toHaveTextContent(SENTENCE_FOR('H2000 and S1713'))
+  })
+
+  it('links a companion with no session slug to /bills/:id', async () => {
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, { ...COMPANION, sessionSlug: '' }] })
+    await screen.findByText('Test Bill')
+    expect(within(line()).getByRole('link', { name: 'S1713' })).toHaveAttribute('href', '/bills/b1713')
+  })
+
+  it('shows no line on a bill in no group', async () => {
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS] })
+    await screen.findByText('Test Bill')
+    expect(screen.queryByTestId('group-shares-line')).toBeNull()
+    expect(screen.queryByText(/are shared with/)).toBeNull()
+  })
+
+  it('shows no line when the response carries no group bills at all', async () => {
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: undefined })
+    await screen.findByText('Test Bill')
+    expect(screen.queryByTestId('group-shares-line')).toBeNull()
+  })
+
+  it('shows no line on a draft bill, which is in no group', async () => {
+    renderBillDetail({ ...NO_COMMENTS, billNumber: 'D1', isDraft: true, state: 'NJ', groupBills: [link('42', 'D1')] })
+    await screen.findByText('Test Bill')
+    expect(screen.queryByTestId('group-shares-line')).toBeNull()
+    expect(screen.queryByText(/are shared with/)).toBeNull()
+  })
+
+  it('renders the same for a standard member as for an admin', async () => {
+    authState.role = 'member'
+    try {
+      renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, COMPANION] })
+      await screen.findByText('Test Bill')
+      expect(line()).toHaveTextContent(SENTENCE_FOR('S1713'))
+    } finally {
+      authState.role = 'admin'
+    }
+  })
+
+  it('puts no per-field group marker on the position, votes, custom fields, or the note', async () => {
+    renderBillDetail({
+      ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, COMPANION],
+      customFieldValues: { f1: { value: 'Shared value', setBy: 'Ann', updatedAt: '2026-10-10 12:00:00' } },
+    })
+    await screen.findByText('Test Bill')
+    // The companion's number shows twice and only twice: the header badge and the line.
+    expect(screen.getAllByText('S1713')).toHaveLength(2)
+    expect(screen.getAllByRole('link', { name: 'S1713' })).toHaveLength(2)
+    // Nothing else on the page says the values are shared.
+    expect(screen.getAllByText(/are shared with/)).toHaveLength(1)
+    const columns = document.querySelector('.bill-detail-columns')!
+    expect(within(columns as HTMLElement).queryByText('S1713')).toBeNull()
+    expect(within(columns as HTMLElement).queryByText(/shared with|from S1713|via S1713/i)).toBeNull()
+  })
+
+  it("makes the line's badges reachable by keyboard", async () => {
+    const user = userEvent.setup()
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, COMPANION, THIRD] })
+    await screen.findByText('Test Bill')
+    const links = within(line()).getAllByRole('link')
+    for (const a of links) expect(a.tabIndex).toBeGreaterThanOrEqual(0)
+    const reached = new Set<Element>()
+    for (let i = 0; i < 80 && reached.size < links.length; i++) {
+      await user.tab()
+      if (links.includes(document.activeElement as HTMLAnchorElement)) reached.add(document.activeElement!)
+    }
+    expect(reached.size).toBe(links.length)
+  })
+
+  it('reads as one sentence to a screen reader, its badges announced by their bill numbers', async () => {
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, COMPANION, THIRD] })
+    await screen.findByText('Test Bill')
+    // One paragraph holds the whole sentence, not one block per badge.
+    const paragraph = screen.getAllByRole('paragraph').filter(p => p.textContent?.startsWith('Comments, votes'))
+    expect(paragraph).toHaveLength(1)
+    expect(paragraph[0]).toHaveTextContent(SENTENCE_FOR('S1713 and H2000'))
+    // Nothing in it is hidden from assistive technology.
+    expect(paragraph[0].querySelector('[aria-hidden="true"]')).toBeNull()
+    expect(within(paragraph[0]).getByRole('link', { name: 'S1713' })).toBeInTheDocument()
+    expect(within(paragraph[0]).getByRole('link', { name: 'H2000' })).toBeInTheDocument()
+  })
+
+  it("draws the line's badges as mini badges, smaller than the header's", async () => {
+    renderBillDetail({ ...GROUPED, ...NO_COMMENTS, groupBills: [THIS, COMPANION] })
+    await screen.findByText('Test Bill')
+    const inLine = within(line()).getByRole('link', { name: 'S1713' })
+    const inHeader = within(screen.getByTestId('bill-group-badges')).getByRole('link', { name: 'S1713' })
+    expect(parseFloat(inLine.style.fontSize)).toBeLessThan(parseFloat(inHeader.style.fontSize))
+    // Navy fill, as the header's.
+    expect(inLine.style.background).toBe(inHeader.style.background)
   })
 })
