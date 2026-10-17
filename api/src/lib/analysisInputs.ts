@@ -10,6 +10,7 @@ import {
   buildDefaultRelevanceQuestion,
   isAiConfigDefault,
 } from '../../../shared/aiDefaults'
+import { legacyHandle } from '../../../shared/billHandle'
 import type { AppDb, Env } from '../types'
 
 // What one bill analysis is given, shared by the queue consumer and by
@@ -65,7 +66,7 @@ export async function loadBillTextForAi(
   let textDocId: string | null = null
   let textHash: string | null = null
   try {
-    const textRes = await centralFetch(env, `/bills/${billId}/text`)
+    const textRes = await centralFetch(env, `/bills/${legacyHandle(billId)}/text`)
     if (textRes.ok) {
       const textData = await textRes.json() as { type: 'html' | 'pdf'; content?: unknown; docId?: unknown; textHash?: unknown }
       // An empty document is no document: the model reads the title and
