@@ -16,8 +16,9 @@
  * address can't receive mail) or temporary (worth trying again later).
  *
  * Adding a purpose: add its message type to `PurposeMessage` and its rule to
- * `RULES`. Today only sign-in is here: tenant login, admin-sent login and
- * invite links, and the invite queue. #707 to #710 move the rest.
+ * `RULES`. Today: sign-in (tenant login, admin-sent login and invite links, the
+ * invite queue), account (the email-change emails and the "this wasn't me"
+ * report), and notification (mentions and replies). #708 to #710 move the rest.
  *
  * Tests pass in-memory providers through `SenderOptions.providers`; the real
  * adapters live in `./emailProviders`.
@@ -61,7 +62,13 @@ export type SignInMessage = BaseMessage & {
   recordEvent?: (e: SignInEvent) => Promise<void>
 }
 
-export type PurposeMessage = SignInMessage
+/** An email-change email (the confirmation link, the notice to the old address) or the "this wasn't me" report. */
+export type AccountMessage = BaseMessage & { purpose: 'account' }
+
+/** A mention or reply email. A reply carries its thread and one-click mute headers in `headers`. */
+export type NotificationMessage = BaseMessage & { purpose: 'notification' }
+
+export type PurposeMessage = SignInMessage | AccountMessage | NotificationMessage
 
 export type SendResult =
   | { ok: true; provider: ProviderName; messageId?: string; attempts: Attempt[] }
@@ -145,6 +152,12 @@ const RULES: Rules = {
   // into a demo arrives by one, so they always send. (The API's invite routes
   // already refuse demo writes. This is the second lock on that door.)
   'sign-in': { fallback: true, counts: true, from: 'default', suppressedInDemo: (m) => m.link === 'invite' },
+  // The email-change emails and the "this wasn't me" report. A member waits on
+  // them, so they fall back, and a demo instance never sends them.
+  account: { fallback: true, counts: true, from: 'default', suppressedInDemo: () => true },
+  // Mentions and replies. Same rule as account mail: a member is waiting on the
+  // conversation, so a first-provider outage shouldn't drop it.
+  notification: { fallback: true, counts: true, from: 'default', suppressedInDemo: () => true },
 }
 
 function ruleFor(message: PurposeMessage): Rule<PurposeMessage> {
