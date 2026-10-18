@@ -1457,13 +1457,10 @@ export function BillDetail() {
           {bill.session && (
             <SessionChip
               session={bill.session}
-              onClick={() => {
-                if (bill.yearStart) {
-                  navigate(billsListPath({ year: [String(bill.yearStart)], ...(bill.state ? { state: [bill.state] } : {}) }))
-                } else {
-                  navigate(billsListPath({ sessionName: [bill.session] }))
-                }
-              }}
+              // The Bills page filters by year only. Without a usable yearStart (null or 0) the chip is plain text.
+              onClick={bill.yearStart
+                ? () => navigate(billsListPath({ year: [String(bill.yearStart)], ...(bill.state ? { state: [bill.state] } : {}) }))
+                : undefined}
             />
           )}
           <ChangeHistoryTooltip
