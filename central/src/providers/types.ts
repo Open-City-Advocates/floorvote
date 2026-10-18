@@ -446,6 +446,12 @@ export interface ProviderContext<K extends ProviderEnvKey = ProviderEnvKey> {
    */
   knownIds(kind: string, nativeKeys: readonly string[]): Promise<Map<string, number>>
   /**
+   * Whether core has stored a record of this provider's for the session whose
+   * native key matches `glob` (SQLite GLOB). For a provider that must tell a
+   * feed that has nothing yet from one that lost what it had.
+   */
+  hasStored(sessionId: number, glob: string): Promise<boolean>
+  /**
    * The people core has stored for this provider, by central id ascending, for
    * resolving the names its records use. People a cutover carried over from
    * another provider come after the rest, so where two share a name, the
