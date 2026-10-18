@@ -21,6 +21,7 @@ import { writeMemberVotes, type RollCallMemberVotes } from '../lib/rollCallVotes
 import { loadVoteDataset, VOTE_DATASET_DEFER_SECONDS, VOTE_DATASET_RETRY_SECONDS } from '../cron/vote-datasets'
 import { nowDb } from '../lib/dbTime'
 import { providerContext } from '../lib/providerContext'
+import { ingestQueueForId } from '../lib/providerRouting'
 import { deliverToTenant } from '../lib/tenantDelivery'
 import { safeFetch } from '../lib/safeFetch'
 import { toHandle } from '../lib/billHandle'
@@ -49,7 +50,7 @@ export async function processIngestorQueue(
     if (body.kind === 'vote-dataset') {
       try {
         if (datasetLoaded) {
-          await env.INGESTOR_QUEUE.send(body, { delaySeconds: VOTE_DATASET_DEFER_SECONDS })
+          await ingestQueueForId(body.providerId, env).send(body, { delaySeconds: VOTE_DATASET_DEFER_SECONDS })
         } else {
           datasetLoaded = true
           await loadVoteDataset(body, env, db)
