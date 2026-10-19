@@ -69,9 +69,11 @@ dashRoutes.get('/overview', async (c) => {
   const apiUsed = await legiscanCallsThisMonth(db)
 
   // Last sync (per-state syncs; we pick the most recent)
+  // A pass that failed is a row in the log and not a sync.
   const lastSync = await db
     .select()
     .from(schema.sessionSyncLog)
+    .where(eq(schema.sessionSyncLog.status, 'ok'))
     .orderBy(desc(schema.sessionSyncLog.syncedAt))
     .limit(1)
     .get()
@@ -272,7 +274,7 @@ dashRoutes.get('/sync/states', async (c) => {
     const lastSync = await db
       .select({ at: schema.sessionSyncLog.syncedAt })
       .from(schema.sessionSyncLog)
-      .where(eq(schema.sessionSyncLog.state, state))
+      .where(and(eq(schema.sessionSyncLog.state, state), eq(schema.sessionSyncLog.status, 'ok')))
       .orderBy(desc(schema.sessionSyncLog.syncedAt))
       .limit(1)
       .get()
@@ -414,6 +416,8 @@ dashRoutes.get('/sync/ticks', async (c) => {
       billsChecked: schema.sessionSyncLog.billsChecked,
       billsChanged: schema.sessionSyncLog.billsChanged,
       billsQueued: schema.sessionSyncLog.billsQueued,
+      status: schema.sessionSyncLog.status,
+      error: schema.sessionSyncLog.error,
     })
     .from(schema.sessionSyncLog)
     .orderBy(desc(schema.sessionSyncLog.syncedAt))
@@ -859,6 +863,8 @@ dashRoutes.get('/sync/ticks/:id/changes', async (c) => {
     .from(schema.sessionSyncLog)
     .where(and(
       eq(schema.sessionSyncLog.sessionId, tick.sessionId),
+      // A failed pass queued nothing, so it doesn't end the window the ok pass's changes land in.
+      eq(schema.sessionSyncLog.status, 'ok'),
       gte(schema.sessionSyncLog.syncedAt, tick.syncedAt),
       sql`${schema.sessionSyncLog.id} != ${id}`,
     ))
