@@ -80,7 +80,7 @@ import { useMultiState } from '../context/ConfigContext'
 import { AnalysisBox, AnalysisProgressChip, DIMMED_WHILE_RUNNING } from '../components/AnalysisBox'
 import { pollForAnalysis, analysisOutcomeMessage, regenerateOutcomeMessage, type AnalysisSnapshot } from '../lib/analysisPoll'
 import { MissingRequiredReason, requiredName, useRequiredSubmit } from '../components/RequiredField'
-import { useCommentsMute, CommentsMuteButton, CommentsMutedNote } from '../components/CommentsMuteToggle'
+import { useCommentsMute, CommentsMuteButton } from '../components/CommentsMuteToggle'
 import { billsListPath } from '../../../shared/billFilter'
 
 function SponsorLink({ name, url, party, bold }: { name: string; url: string | null; party: string | null; bold?: boolean }) {
@@ -544,6 +544,8 @@ type BillDetailData = {
   commentsTotal: number
   /** Whether the signed-in member muted this bill's comments. */
   commentsMuted: boolean
+  /** Whether the member would get reply notifications here: they commented on the bill or its companion group. */
+  commentsParticipant: boolean
 }
 
 /**
@@ -675,6 +677,13 @@ export function BillDetail() {
   const [voteCounts, setVoteCounts] = useState(prefetchedBill?.voteCounts ?? { support: 0, oppose: 0, neutral: 0, total: 0 })
   const [comments, setComments] = useState<Comment[]>(prefetchedBill?.comments ?? [])
   const commentsMute = useCommentsMute({ billId: bill?.id ?? '', initialMuted: bill?.commentsMuted ?? false })
+  // Mute shows to a participant, and to anyone already muted (so they can unmute),
+  // while their "Replies on bills you've commented on" setting is on. With it off
+  // they get no replies on any bill, so the control is hidden and any mute they
+  // set earlier stays on file. The page's own just-posted comment counts without
+  // a refetch. Reading the loaded `commentsMuted` rather than the live toggle
+  // keeps the button in place after a non-participant unmutes.
+  const canMuteComments = !!bill && !!user?.emailRepliesEnabled && (bill.commentsParticipant || bill.commentsMuted || commentsMute.muted || comments.some(c => c.userId === user?.id))
   // Lines where the bill's companion group formed or split, placed among the comments by time.
   const groupingLines = useMemo(() => placeGroupingLines(comments, bill?.groupingEvents ?? []), [comments, bill?.groupingEvents])
   const [openPickerFor, setOpenPickerFor] = useState<string | null>(null)
@@ -2971,9 +2980,8 @@ export function BillDetail() {
               <div style={SECTION_LABEL}>
                 Comments{comments.length > 0 && <span style={{ ...COUNT_BADGE, textTransform: 'none', letterSpacing: 0, marginLeft: 6 }}>{comments.length}</span>}
               </div>
-              <CommentsMuteButton muted={commentsMute.muted} pending={commentsMute.pending} onToggle={commentsMute.toggle} />
+              {canMuteComments && <CommentsMuteButton muted={commentsMute.muted} pending={commentsMute.pending} onToggle={commentsMute.toggle} />}
             </div>
-            {commentsMute.muted && <CommentsMutedNote />}
             {comments.map((comment, idx) => (
               <Fragment key={comment.id}>
               {groupingLines.before.get(comment.id)?.map(e => <GroupingLine key={e.id} event={e} />)}
