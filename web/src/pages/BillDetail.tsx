@@ -72,8 +72,8 @@ import { ProviderExtrasList, ExtraMetaItem, ExtraDetailList, ExtraFlagItem, plac
 import type { BillExtras } from '../../../shared/providerExtras'
 import { RELATIONSHIP_KINDS, RELATIONSHIP_KIND_LABELS, isRelationshipKind, type RelationshipKind } from '../../../shared/relationshipKinds'
 import type { GroupBill, GroupBillLink, GroupBillTexts, GroupingEvent, GroupNote } from '../../../shared/companionGroups'
-import type { FieldChangeEvent } from '../../../shared/teamFields'
 import { PartyBadge } from '../components/PartyBadge'
+import type { FieldChangeEvent } from '../../../shared/teamFields'
 import { GroupWithDialog } from '../components/GroupWithDialog'
 import { splitConfirmText } from '../lib/splitConfirm'
 import { placeThreadLines } from '../lib/groupingLine'
@@ -510,8 +510,8 @@ type BillDetailData = {
   aiSkipReason: 'pdf_too_large' | null
   /**
    * The bill the analysis shown on this page comes from: this bill's own, or
-   * on a companion group's page a tracked member's (#554), with that bill's
-   * handle and analysis state. Regenerate re-analyzes and polls it (#563).
+   * on a companion group's page its lead's (or while the lead has none, a
+   * tracked member's), with that bill's handle and analysis state. Regenerate re-analyzes and polls it (#563).
    * Absent from a server that predates them, when the bill's own fields apply.
    */
   analysisBillId?: string
@@ -520,6 +520,12 @@ type BillDetailData = {
   analysisAiProcessedAt?: string | null
   analysisAiSkipReason?: 'pdf_too_large' | null
   analysisTextStatus?: 'not_checked' | 'no_texts' | 'available' | 'in_r2' | null
+  /**
+   * The group's lead, when Regenerate analyzes it instead of the bill above:
+   * while the lead has no analysis and the page shows another member's. Null
+   * or absent otherwise.
+   */
+  regenerateBill?: { id: string; externalId: string | null; billNumber: string; aiProcessedAt: string | null; aiSkipReason: string | null; textStatus: string | null } | null
   /**
    * The document the shown analysis read (#601), which on a companion's page is
    * the analyzed member's, with what names and opens it. `analysisLastAiText` is
@@ -548,13 +554,13 @@ type BillDetailData = {
   fieldEvents?: FieldChangeEvent[]
   /** The bills in its companion group, this one first: just this one in no group. */
   groupBills?: GroupBillLink[]
-  /** Every group bill's text versions, newest first, one entry per bill that has any (#712). Absent from a server that predates it. */
-  groupTexts?: GroupBillTexts[]
   /**
    * Another bill with the same title, in the other chamber of the same session, that an admin can group this
    * one with (#521). Admins only, and null when there is none. Absent from an older server.
    */
   companionSuggestion?: GroupBillLink | null
+  /** Every group bill's text versions, newest first, one entry per bill that has any (#712). Absent from a server that predates it. */
+  groupTexts?: GroupBillTexts[]
   priorityMeta: { setByName: string; updatedAt: string } | null
   position: { position: string; setByName: string; updatedAt: string } | null
   voteCounts: { support: number; oppose: number; neutral: number; total: number }
@@ -1355,18 +1361,23 @@ export function BillDetail() {
     // The guard reads this page's own bill, so it applies only when this page's
     // own bill is the one that would be re-analyzed. On a pulled companion's
     // page that is another bill, one with an analysis to show.
-    const targetId = bill.analysisBillId ?? bill.id
+    // While the group's lead has no analysis, Regenerate analyzes the lead
+    // (as a group analysis if it is untracked), never promoting it, and the
+    // run lands once the lead's analysis is the one the page shows.
+    const lead = bill.regenerateBill ?? null
+    const targetId = lead?.id ?? bill.analysisBillId ?? bill.id
     const other = targetId !== bill.id
-    if (!other && bill.matchType === null && !bill.aiProcessedAt) return handlePromote()
+    if (!lead && !other && bill.matchType === null && !bill.aiProcessedAt) return handlePromote()
     // Regenerate re-analyzes the bill whose analysis this page shows (#563):
-    // its own, or on a pulled companion's page the tracked bill's (#554),
+    // its own, or on a companion group's page the lead's (or the member's
+    // shown while the lead has none),
     // whose analysis time is what this run moves. Without the server's
     // analysis fields, that is this bill.
     const hasAnalysisBill = bill.analysisBillId != null
-    const targetExternalId = other ? bill.analysisBillExternalId : bill.externalId
-    const targetNumber = other ? (bill.analysisBillNumber ?? null) : bill.billNumber
-    const prevProcessedAt = hasAnalysisBill ? (bill.analysisAiProcessedAt ?? null) : bill.aiProcessedAt
-    const prevSkipReason = hasAnalysisBill ? (bill.analysisAiSkipReason ?? null) : bill.aiSkipReason
+    const targetExternalId = lead ? lead.externalId : other ? bill.analysisBillExternalId : bill.externalId
+    const targetNumber = lead ? lead.billNumber : other ? (bill.analysisBillNumber ?? null) : bill.billNumber
+    const prevProcessedAt = lead ? lead.aiProcessedAt : hasAnalysisBill ? (bill.analysisAiProcessedAt ?? null) : bill.aiProcessedAt
+    const prevSkipReason = lead ? lead.aiSkipReason : hasAnalysisBill ? (bill.analysisAiSkipReason ?? null) : bill.aiSkipReason
     const run = ++regenerateRun.current
     setRegenerateError(null)
     setRegenerateNotice(null)
@@ -1389,6 +1400,10 @@ export function BillDetail() {
           const r = await fetch(`/api/bills/${bill.id}`, { credentials: 'include' })
           if (!r.ok) return null
           const d = await r.json() as BillDetailData
+          // Still waiting on the lead: its own fields, named as the target.
+          if (d.regenerateBill && d.regenerateBill.id === targetId) {
+            return { aiProcessedAt: d.regenerateBill.aiProcessedAt, aiSkipReason: d.regenerateBill.aiSkipReason, textStatus: d.regenerateBill.textStatus, analysisBillId: targetId }
+          }
           if (d.analysisBillId == null) return d
           return {
             aiProcessedAt: d.analysisAiProcessedAt ?? null,
