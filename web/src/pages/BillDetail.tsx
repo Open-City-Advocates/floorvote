@@ -2950,7 +2950,10 @@ export function BillDetail() {
         const companions = (bill.groupBills ?? []).filter(g => g.billId !== bill.id)
         if (companions.length === 0) return null
         return (
-          <p data-testid="group-shares-line" style={{ margin: '16px 0 0', fontSize: fontSize.sm, lineHeight: 1.6, color: color.textMuted }}>
+          // Indented to the comments heading below it (the card's 1px border and 16px of padding), so the line
+          // and the heading start at the same x, and set closer to the comments and position boxes it describes
+          // than to the bill card above: 32px above, and the columns' 24px of top padding less 8px below.
+          <p data-testid="group-shares-line" style={{ margin: '32px 0 -8px 17px', fontSize: fontSize.sm, lineHeight: 1.6, color: color.textMuted }}>
             {upperFirst(groupSharedThings(config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0))} are shared with{' '}
             {companions.map((g, i) => (
               <Fragment key={g.billId}>
@@ -3030,7 +3033,7 @@ export function BillDetail() {
                     const describeId = `posted-on-${comment.id}`
                     return (
                       <span style={{ marginLeft: 6 }}>
-                        <HoverTooltip text={`Posted on ${comment.billNumber}`} describe={{ id: describeId, interactive: true }}>
+                        <HoverTooltip text={`This comment was posted on ${comment.billNumber}, a companion bill in this group.`} placement="top" describe={{ id: describeId, interactive: true }}>
                           <BillBadge
                             mini
                             billNumber={comment.billNumber}
