@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest'
 import { env, SELF } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession } from '../helpers'
+import { clearDb, seedUser, seedSession } from '../helpers'
 
 // A grouped bill's newest text date picks its group's lead (lib/groupLead.ts).
 // The list reads it for each grouped bill on a page, the bill-number sort for
@@ -36,8 +36,7 @@ describe('newest text date query plans', () => {
   }
 
   beforeAll(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     cookie = `session=${await seedSession(await seedUser({ role: 'admin' }))}`
     // 2,000 bills in pairs, each with three texts.
     await env.DB.batch([

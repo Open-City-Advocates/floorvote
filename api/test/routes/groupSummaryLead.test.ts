@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env, SELF } from 'cloudflare:test'
 import { eq, inArray } from 'drizzle-orm'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedBillText } from '../helpers'
+import { clearDb, seedUser, seedSession, seedBill, seedBillText } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { associationConfig, bills } from '../../src/db/schema'
 
@@ -40,8 +40,7 @@ describe("a companion group's summary is its lead bill's", () => {
   }
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     cookie = `session=${await seedSession(await seedUser({ role: 'admin', email: 'admin@example.com' }))}`
     await db().insert(associationConfig).values({ key: 'tag_taxonomy', value: JSON.stringify([{ name: 'Energy' }, { name: 'Labor' }]) })
   })

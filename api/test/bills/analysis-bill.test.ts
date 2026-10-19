@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { env, SELF } from 'cloudflare:test'
 import { eq, inArray } from 'drizzle-orm'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedBillText } from '../helpers'
+import { clearDb, seedUser, seedSession, seedBill, seedBillText } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { bills } from '../../src/db/schema'
 import { centralFetch } from '../../src/lib/centralFetch'
@@ -34,8 +34,7 @@ describe('GET /api/bills/:id: the bill the shown analysis comes from', () => {
   const db = () => getDb(env.DB)
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     cookie = `session=${await seedSession(await seedUser({ email: 'member@example.com', role: 'member' }))}`
     vi.mocked(centralFetch).mockReset()
     vi.mocked(centralFetch).mockResolvedValue(new Response('{}', { status: 200 }))
@@ -162,8 +161,7 @@ describe('GET /api/bills/:id: the bill Regenerate analyzes', () => {
   type RegenDetail = { analysisBillId: string; regenerateBill: { id: string; externalId: string | null; billNumber: string; aiProcessedAt: string | null; aiSkipReason: string | null; textStatus: string | null } | null }
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     cookie = `session=${await seedSession(await seedUser({ email: 'member@example.com', role: 'member' }))}`
     vi.mocked(centralFetch).mockReset()
     vi.mocked(centralFetch).mockResolvedValue(new Response('{}', { status: 200 }))
@@ -213,8 +211,7 @@ describe('GET /api/bills/:id: the document the shown analysis was based on', () 
   }
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     cookie = `session=${await seedSession(await seedUser({ email: 'member@example.com', role: 'member' }))}`
     vi.mocked(centralFetch).mockReset()
     vi.mocked(centralFetch).mockResolvedValue(new Response('{}', { status: 200 }))

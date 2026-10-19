@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { and, eq } from 'drizzle-orm'
-import { resetDb, applyMigrations, seedBill, seedBillText } from '../helpers'
+import { clearDb, seedBill, seedBillText } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { processCentralNotification } from '../../src/queue/processor'
 import { bills, billTexts } from '../../src/db/schema'
@@ -88,8 +88,7 @@ const analyzedBills = async () => vi.mocked((await import('../../src/lib/llm')).
 
 describe("a pulled lead is analyzed again when its newest text isn't the one it read", () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     vi.clearAllMocks()
     central.clear()
     queued.length = 0
