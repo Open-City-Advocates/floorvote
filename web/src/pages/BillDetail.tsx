@@ -27,7 +27,7 @@ import { SentimentBars } from '../components/SentimentBars'
 import { LegislativeHistory, syntheticLatestAction } from '../components/LegislativeHistory'
 import { CommitteeLine, type CommitteeRef, type ReferralRef } from '../components/CommitteeLine'
 import { TabularRow } from '../components/TabularRow'
-import { BillTextPanel, type PassageRequest } from '../components/BillTextPanel'
+import { BillTextPanel, type DocumentRequest, type PassageRequest } from '../components/BillTextPanel'
 import { linkableClaims, type ClaimSourcesDetail } from '../lib/claimLinks'
 import { BillTextChip } from '../components/BillTextChip'
 import { PersonalNote } from '../components/PersonalNote'
@@ -71,7 +71,7 @@ import { CollapsibleSection } from '../components/CollapsibleSection'
 import { ProviderExtrasList, ExtraMetaItem, ExtraDetailList, ExtraFlagItem, placeExtras } from '../components/ProviderExtras'
 import type { BillExtras } from '../../../shared/providerExtras'
 import { RELATIONSHIP_KINDS, RELATIONSHIP_KIND_LABELS, isRelationshipKind, type RelationshipKind } from '../../../shared/relationshipKinds'
-import type { GroupBill, GroupBillLink, GroupingEvent, GroupNote } from '../../../shared/companionGroups'
+import type { GroupBill, GroupBillLink, GroupBillTexts, GroupingEvent, GroupNote } from '../../../shared/companionGroups'
 import type { FieldChangeEvent } from '../../../shared/teamFields'
 import { PartyBadge } from '../components/PartyBadge'
 import { GroupWithDialog } from '../components/GroupWithDialog'
@@ -520,6 +520,14 @@ type BillDetailData = {
   analysisAiProcessedAt?: string | null
   analysisAiSkipReason?: 'pdf_too_large' | null
   analysisTextStatus?: 'not_checked' | 'no_texts' | 'available' | 'in_r2' | null
+  /**
+   * The document the shown analysis read (#601), which on a companion's page is
+   * the analyzed member's, with what names and opens it. `analysisLastAiText` is
+   * null when none is recorded or it is no longer listed. Both are absent from a
+   * server that predates them, when `lastAiTextDocId` and `texts` apply.
+   */
+  analysisLastAiTextDocId?: string | null
+  analysisLastAiText?: { docId: string; type: string; date: string; mime: string; stateLink: string | null; altStateLink: string | null } | null
   /** Whether the instance shows claim links (#570). Absent from a server that predates the setting. */
   claimLinksEnabled?: boolean
   /**
@@ -540,6 +548,8 @@ type BillDetailData = {
   fieldEvents?: FieldChangeEvent[]
   /** The bills in its companion group, this one first: just this one in no group. */
   groupBills?: GroupBillLink[]
+  /** Every group bill's text versions, newest first, one entry per bill that has any (#712). Absent from a server that predates it. */
+  groupTexts?: GroupBillTexts[]
   /**
    * Another bill with the same title, in the other chamber of the same session, that an admin can group this
    * one with (#521). Admins only, and null when there is none. Absent from an older server.
@@ -767,7 +777,16 @@ export function BillDetail() {
   const [passage, setPassage] = useState<PassageRequest | null>(null)
   const passageKeyRef = useRef(0)
   const billIdForPassage = bill?.id
-  useLayoutEffect(() => { setPassage(null) }, [billIdForPassage])
+  // Another bill's document to open, for the "based on text" link on a companion's page (#601).
+  const [docRequest, setDocRequest] = useState<DocumentRequest | null>(null)
+  // The bill a request was made on. The panel mounts for the next bill before the
+  // layout effect below clears these, and a request it sees on that first render
+  // would open the previous bill's document there (#734), so a request counts
+  // only on the bill it was made on.
+  const [requestBillId, setRequestBillId] = useState<string | undefined>(undefined)
+  useLayoutEffect(() => { setPassage(null); setDocRequest(null) }, [billIdForPassage])
+  const shownPassage = requestBillId === billIdForPassage ? passage : null
+  const shownDocRequest = requestBillId === billIdForPassage ? docRequest : null
   const [showHearings, setShowHearings] = useState(false)
   const [changeLog, setChangeLog] = useState<ChangeRecord[]>([])
   const [subjectsOpen, setSubjectsOpen] = useState(false)
@@ -1028,6 +1047,11 @@ export function BillDetail() {
       // ignore — polling will retry
     }
   }, [apiPath, applyBillData])
+
+  // The latest refetch, for a run that ends after the page moved on and so
+  // would hold the refetch of the page it started on.
+  const refetchBillRef = useRef(refetchBill)
+  useEffect(() => { refetchBillRef.current = refetchBill }, [refetchBill])
 
   usePolling(fetchBillData, 15_000)
 
@@ -1378,7 +1402,14 @@ export function BillDetail() {
         expectedBillId: targetId,
       })
       // Ends only the run that is still this page's: not one the admin has since left.
-      if (regenerateRun.current !== run) return
+      // But the analysis it produced is the analyzed bill's, so a page the admin
+      // moved to that shows that analysis (the bill's own, or a companion's of
+      // it) reloads to pick it up (#601), saying nothing about the run.
+      if (regenerateRun.current !== run) {
+        const now = billRef.current
+        if (outcome !== 'timeout' && now && (now.analysisBillId ?? now.id) === targetId) void refetchBillRef.current()
+        return
+      }
       setRegenerating(false)
       setRegenerateOtherBill(null)
       const message = regenerateOutcomeMessage(outcome, { billNumber: targetNumber, other })
@@ -1423,10 +1454,21 @@ export function BillDetail() {
   const borrowedFrom = bill.analysisBillId && bill.analysisBillId !== bill.id && bill.analysisBillNumber
     ? { billId: bill.analysisBillId, billNumber: bill.analysisBillNumber }
     : null
-  const openClaim = (index: number) => {
+  // The document the shown analysis read (#601). With the server's analysis
+  // fields it is that bill's, which on a companion's page is not in this bill's
+  // text list, so opening it asks the panel for another bill's document. A
+  // server that predates them describes only this bill's own.
+  const analysisText = bill.analysisLastAiText !== undefined
+    ? bill.analysisLastAiText
+    : (bill.texts.find(t => t.docId === bill.lastAiTextDocId) ?? null)
+  const analysisTextIsOwn = !bill.analysisBillId || bill.analysisBillId === bill.id
+  // With the group's texts the analysis's document is a version in the list, so it is selected there (#712).
+  const analysisTextInGroupTexts = !!analysisText && !!bill.groupTexts?.some(g => g.texts.some(t => t.docId === analysisText.docId))
+  const openClaim = (index: number, opener?: HTMLElement) => {
     const link = claimLinks.find(c => c.index === index)
     if (!link || !claimSources) return
     setShowBillText(true)
+    setRequestBillId(bill.id)
     const base = {
       key: ++passageKeyRef.current,
       billId: claimSources.billId,
@@ -1435,13 +1477,14 @@ export function BillDetail() {
     }
     // A PDF claim opens its page and shows its quote (#572), an HTML claim its highlighted passage (#571).
     setPassage('quote' in link
-      ? { ...base, quote: link.quote, page: link.page }
+      ? { ...base, quote: link.quote, page: link.page, opener: opener ?? null }
       : { ...base, matched: link.matched, quoteAt: link.quoteAt })
   }
 
   // Separators between collapsible sections — no border above the first one.
   // A claim's passage opens the bill text even where this bill has none of its own.
-  const hasBillText = (bill.texts.length > 0 && !!bill.textR2Key) || passage !== null
+  const groupVersionCount = (bill.groupTexts ?? []).reduce((n, g) => n + g.texts.length, 0)
+  const hasBillText = (bill.texts.length > 0 && !!bill.textR2Key) || groupVersionCount > 0 || shownPassage !== null || shownDocRequest !== null
   const hasAmendments = (bill.amendments ?? []).filter(a => a.url || a.stateLink).length > 0
   const hasActions = !!bill.lastAction
   const hasHearings = (bill.calendar ?? []).length > 0
@@ -2585,27 +2628,40 @@ export function BillDetail() {
                     </span>
                     {/* Hidden while a run is in flight: the doc it points at is the
                         previous run's input, so it would be stale mid-regenerate. */}
-                    {!regenerating && bill.lastAiTextDocId && (() => {
-                        const text = bill.texts.find(t => t.docId === bill.lastAiTextDocId)
-                        if (!text) return null
-                        return (
+                    {!regenerating && (analysisText || borrowedFrom) && (
                           <>
                             <span style={{ fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: color.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase' as const }}>
-                              <span style={{ marginRight: 6, marginLeft: 2 }}>·</span>based on text
+                              <span style={{ marginRight: 6, marginLeft: 2 }}>·</span>based on
                             </span>
-                            <BillTextChip
-                              type={text.type}
-                              date={text.date}
-                              onClick={() => {
-                                setShowBillText(true)
-                                setRequestedDocId(text.docId)
-                                setTimeout(() => setRequestedDocId(null), 100)
-                              }}
-                              title="Show this bill text version"
-                            />
+                            {/* A summary from another bill in the group names that bill (#712). Its chip is that bill's version, never the page bill's. */}
+                            {borrowedFrom && (
+                              <BillBadge billNumber={borrowedFrom.billNumber} state={(bill.groupBills ?? []).find(g => g.billId === borrowedFrom.billId)?.state} mini />
+                            )}
+                            {analysisText && (
+                              <BillTextChip
+                                type={analysisText.type}
+                                date={analysisText.date}
+                                onClick={() => {
+                                  setShowBillText(true)
+                                  if (analysisTextIsOwn || analysisTextInGroupTexts) {
+                                    // Selected in its own bill's row (#712).
+                                    setRequestedDocId(analysisText.docId)
+                                    setTimeout(() => setRequestedDocId(null), 100)
+                                  } else {
+                                    setRequestBillId(bill.id)
+                                    setDocRequest({
+                                      key: ++passageKeyRef.current,
+                                      billId: bill.analysisBillId!,
+                                      billNumber: bill.analysisBillNumber ?? null,
+                                      document: analysisText,
+                                    })
+                                  }
+                                }}
+                                title="Show this bill text version"
+                              />
+                            )}
                           </>
-                        )
-                      })()}
+                        )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, ...(regenerating ? DIMMED_WHILE_RUNNING : {}) }}>
                     {bill.relevanceScore != null && (
@@ -2622,12 +2678,6 @@ export function BillDetail() {
                     />
                   </div>
                 </div>
-                {/* A borrowed summary says whose it is, and its claim links open that bill's text (#571). */}
-                {borrowedFrom && (
-                  <div style={{ fontSize: fontSize.sm, color: color.textMuted, marginBottom: 6 }}>
-                    Summary of <Link to={billUrl({ id: borrowedFrom.billId, billNumber: borrowedFrom.billNumber })} className="blue-link">{borrowedFrom.billNumber}</Link>, this bill's identical companion
-                  </div>
-                )}
                 <div style={regenerating ? DIMMED_WHILE_RUNNING : undefined}>
                 <MarkdownSummary fontSize={fontSize.base} color={color.textSlate} lineHeight={1.5} claimLinks={claimLinks} onClaimActivate={openClaim}>
                   {bill.tenantSummary}
@@ -2791,11 +2841,11 @@ export function BillDetail() {
         {!bill.isDraft && hasBillText && (
           <CollapsibleSection
             label="Bill texts"
-            count={bill.texts.length > 0 ? bill.texts.length : 1}
+            count={groupVersionCount > 0 ? groupVersionCount : bill.texts.length > 0 ? bill.texts.length : 1}
             open={showBillText}
             onToggle={() => setShowBillText(v => !v)}
           >
-            <BillTextPanel key={bill.id} billId={bill.id} texts={bill.texts ?? []} externalOpen={showBillText} requestedDocId={requestedDocId} passage={passage} />
+            <BillTextPanel key={bill.id} billId={bill.id} texts={bill.texts ?? []} groupTexts={bill.groupTexts} groupBadges={(bill.groupBills ?? []).length > 1} externalOpen={showBillText} requestedDocId={requestedDocId} requestedDocument={shownDocRequest} passage={shownPassage} />
           </CollapsibleSection>
         )}
 

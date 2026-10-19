@@ -24,7 +24,7 @@ import { loadFieldDefs, loadGroupTeamValues } from '../../lib/teamFields'
 import { isReplyParticipant } from '../../lib/replies'
 import { findCompanionSuggestion } from '../../lib/companionSuggestion'
 import { claimLinksEnabled, readClaimSources } from '../../lib/claimSources'
-import type { GroupingEvent, GroupingEventMetadata, GroupingEventType } from '../../../../shared/companionGroups'
+import type { GroupBillTexts, GroupingEvent, GroupingEventMetadata, GroupingEventType } from '../../../../shared/companionGroups'
 import { FIELD_CHANGED, type FieldChangedMetadata, type FieldChangeEvent, type TeamField } from '../../../../shared/teamFields'
 
 type CentralBillRich = {
@@ -241,6 +241,17 @@ export async function buildBillDetail(
   ])
   const billNumberOf = new Map(groupBills.map(b => [b.billId, b.billNumber]))
   const groupingRows = threadEventRows.filter(e => e.type !== FIELD_CHANGED)
+  // The text versions of every bill in the group, newest first, for the page's
+  // Bill texts to list under each bill's badge (#712). A bill with none is left out.
+  const groupTextRows = await db.select().from(billTexts)
+    .where(inArray(billTexts.billId, groupBills.map(b => b.billId)))
+    .orderBy(desc(billTexts.date), desc(billTexts.docId)).all()
+  const groupTexts: GroupBillTexts[] = groupBills.flatMap(g => {
+    const texts = groupTextRows.filter(t => t.billId === g.billId).map(t => ({
+      docId: t.docId, type: t.type, date: t.date, mime: t.mime, stateLink: t.stateLink, altStateLink: t.altStateLink,
+    }))
+    return texts.length > 0 ? [{ ...g, texts }] : []
+  })
   const groupingMeta = groupingRows.map(e => JSON.parse(e.metadata) as GroupingEventMetadata)
   // Which of the bills each event joined or left had a comment posted before it. The thread shows an
   // automatic grouping or split line only for that: those comments now appear here, or no longer do.
@@ -363,7 +374,19 @@ export async function buildBillDetail(
     : (await db.select({
         id: bills.id, externalId: bills.externalId, billNumber: bills.billNumber,
         aiProcessedAt: bills.aiProcessedAt, aiSkipReason: bills.aiSkipReason, textStatus: bills.textStatus,
+        lastAiTextDocId: bills.lastAiTextDocId,
       }).from(bills).where(eq(bills.id, analysisBillId)).get()) ?? bill
+
+  // The document that analysis read, as the text list has it, for the page to
+  // name and open (#601). On a companion's page it is the analyzed member's,
+  // which is not in this bill's list. Null when none is recorded or it is no
+  // longer listed.
+  const analysisDocId = analysisBill.lastAiTextDocId ?? null
+  const analysisLastAiText = analysisDocId === null ? null : (await db.select({
+    docId: billTexts.docId, type: billTexts.type, date: billTexts.date, mime: billTexts.mime,
+    stateLink: billTexts.stateLink, altStateLink: billTexts.altStateLink,
+  }).from(billTexts)
+    .where(and(eq(billTexts.billId, analysisBill.id), eq(billTexts.docId, analysisDocId))).get()) ?? null
 
   const linksOn = await claimLinksEnabled(db)
   const stored = linksOn ? await readClaimSources(db, analysisBill.id) : null
@@ -448,6 +471,9 @@ export async function buildBillDetail(
     analysisAiProcessedAt: analysisBill.aiProcessedAt ?? null,
     analysisAiSkipReason: analysisBill.aiSkipReason ?? null,
     analysisTextStatus: analysisBill.textStatus ?? null,
+    // The document that analysis read (#601): the link above the summary names and opens it.
+    analysisLastAiTextDocId: analysisDocId,
+    analysisLastAiText,
     // Whether the instance shows claim links (#570). Off, a bill's stored claim
     // links render as plain text (#571, #572). It's the instance's setting, the
     // same for every bill, and the stored links are untouched either way.
@@ -478,6 +504,8 @@ export async function buildBillDetail(
     fieldEvents,
     // The bills in its companion group, this one first: just this one in no group.
     groupBills,
+    // Every group bill's versions, one entry per bill with any (#712). The page bill's own are `texts`.
+    groupTexts,
     texts: textRows.map(t => ({
       docId: t.docId,
       type: t.type,
