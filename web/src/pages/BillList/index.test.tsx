@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 
@@ -128,6 +128,10 @@ const configState: { value: { states: string[]; modules?: Record<string, unknown
 const digestState = { memberOn: false }
 const digestCalls: Array<{ method: string; path: string; body: unknown }> = []
 
+// The signed-in user's role as GET /auth/me reports it. Defaults to an owner, which
+// is what every test that doesn't care about roles gets.
+const authState = vi.hoisted(() => ({ role: 'owner' as string }))
+
 vi.mock('../../lib/api', () => {
   class ApiError extends Error {
     constructor(public status: number, message: string) { super(message); this.name = 'ApiError' }
@@ -155,7 +159,7 @@ vi.mock('../../lib/api', () => {
       return {} as T
     }
     if (path === '/auth/me') {
-      return { id: 'demo-user', email: 'demo@example.com', name: 'Demo', role: 'owner',
+      return { id: 'demo-user', email: 'demo@example.com', name: 'Demo', role: authState.role,
         title: null, canVote: true, emailDigestEnabled: digestState.memberOn, lastSeenFeed: null } as T
     }
     if (path === '/config') return CONFIG as T
@@ -173,6 +177,9 @@ vi.mock('../../lib/api', () => {
       return viewsState.response as T
     }
     if (path.startsWith('/bills/facets')) return (facetsState.respond ? facetsState.respond(path) : FACETS) as T
+    // What the Add draft bill button reads when the page mounts: a multi-state tenant with no states yet.
+    if (path === '/bills/draft-defaults') return { billNumber: 'D1', year: 2026, tenantState: null } as T
+    if (path === '/bills/draft-states') return { states: [] } as T
     if (path === '/bills/bulk-dismiss' || path.endsWith('/triage-dismiss')) return {} as T
     if (init?.method === 'PATCH' && path.endsWith('/priority')) return { priority: JSON.parse(init.body as string).priority } as T
     if (path.endsWith('/votes')) {
@@ -268,6 +275,7 @@ beforeEach(() => {
   configState.value = null
   digestState.memberOn = false
   digestCalls.length = 0
+  authState.role = 'owner'
   FACETS.subject = { 'UT:Counties': 1 }
   FACETS.subjectStates = ['UT']
   FACETS.billStates = ['UT']
@@ -304,6 +312,74 @@ describe('BillList vote failure rollback', () => {
     await waitFor(() => expect(within(supportRow()).getByText('0')).toBeInTheDocument())
   })
 })
+
+describe('BillList Add draft bill button', () => {
+  it.each(['admin', 'owner'])('is shown to an %s', async role => {
+    authState.role = role
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByText('Early Voting Centers')
+    expect(await screen.findByRole('button', { name: 'Add draft bill' })).toBeInTheDocument()
+  })
+
+  it('sits in a header row that wraps, so a long error cannot push past a phone-width screen', async () => {
+    render(<BillList />, { wrapper: Wrapper })
+    const button = await screen.findByRole('button', { name: 'Add draft bill' })
+    const heading = screen.getByRole('heading', { level: 1, name: 'Bills' })
+    const row = heading.parentElement as HTMLElement
+    expect(row).toContainElement(button)
+    expect(row.style.flexWrap).toBe('wrap')
+  })
+
+  it('is not shown to a member who is not an admin', async () => {
+    authState.role = 'member'
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByText('Early Voting Centers')
+    // Absence only means something once the user has loaded: let /auth/me resolve and the page re-render.
+    await waitFor(() => expect(apiCalls).toContain('/auth/me'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(screen.queryByRole('button', { name: 'Add draft bill' })).toBeNull()
+  })
+
+  it('reads draft-defaults and the state list once when the page mounts, and creates nothing', async () => {
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByRole('button', { name: 'Add draft bill' })
+    await waitFor(() => expect(apiCalls.filter(p => p.startsWith('/bills/draft'))).toEqual(['/bills/draft-defaults', '/bills/draft-states']))
+    // Neither the create nor the full facets computation is paid for the menu.
+    expect(apiCalls).not.toContain('/bills/draft')
+  })
+
+  it('makes no draft request for a member who is not an admin', async () => {
+    authState.role = 'member'
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByText('Early Voting Centers')
+    await waitFor(() => expect(apiCalls).toContain('/auth/me'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(apiCalls.some(p => p.startsWith('/bills/draft'))).toBe(false)
+  })
+
+  it('matches the Views control in size and line box, and is lighter in weight, so the two share a baseline', async () => {
+    // A tenant with no saved views has no Views control to compare with.
+    viewsState.response = { views: [{ id: 'v1', name: 'Clerk bills', query: 'subject=UT%3AElections' }] }
+    render(<BillList />, { wrapper: Wrapper })
+    const add = await screen.findByRole('button', { name: 'Add draft bill' })
+    const views = await screen.findByRole('button', { name: /^Views$/ })
+    const a = getComputedStyle(add)
+    const v = getComputedStyle(views)
+    expect(a.fontSize).toBe(v.fontSize)
+    expect(a.fontFamily).toBe(v.fontFamily)
+    expect(a.lineHeight).toBe(v.lineHeight)
+    expect(a.paddingTop).toBe(v.paddingTop)
+    expect(a.paddingBottom).toBe(v.paddingBottom)
+    expect(Number(a.fontWeight)).toBeLessThan(Number(v.fontWeight))
+    expect(a.color).toBe(v.color)
+    // Both sit in the header's one flex row, which centers its items on a line.
+    const row = screen.getByRole('heading', { level: 1, name: 'Bills' }).parentElement as HTMLElement
+    expect(row).toContainElement(add)
+    expect(row).toContainElement(views)
+    expect(row.style.alignItems).toBe('center')
+  })
+})
+
 
 describe('BillList votes on a locked demo tenant', () => {
   // Pins the handler, not the button. BillRow.test.tsx covers the vote bar being
