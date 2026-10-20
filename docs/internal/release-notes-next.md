@@ -90,3 +90,10 @@ Then deploy with `npm run deploy:central`. Both sets of names build the same wor
 - **`migrations-legiscan` is now a symlink to `migrations`.** A checkout without symlink support (Git for Windows with `core.symlinks` off) gets a plain file in its place, and wrangler then finds no migrations under the old name without saying so. Switch to `migrations_dir = "migrations"`, or check out on macOS, Linux, or WSL.
 - **Your own files in `central/migrations-legiscan/` need to move.** A checkout or fork with files of its own in that folder, committed or untracked, will see a refused pull or a git conflict, since the folder is now a link. Move them to `central/migrations/` under the same filenames, so wrangler still records them as applied and nothing runs twice.
 - **A fork that sets `SMOKE_BASE_URL` inline on `smoke:legiscan`** should move that to `smoke:central`, which `deploy:central` and `npm run deploy` now run. `smoke:legiscan` runs `smoke:central`.
+
+## Draft bills move to the Bills page
+
+Admins create draft bills from the Bills page now. An **Add draft bill** button sits there: one click on a single-state instance, a menu of the instance's states first on a multi-state one (a two-letter state field instead, until the instance has bills). Right after creating a draft, its page shows a **Discard draft** button that removes it with no confirmation. It only appears on arrival from that button, so a reload, a link, or an ordinary visit never shows it. Settings → Draft bills is gone, and `/admin/drafts` redirects to the Bills page with the Drafts filter on, so old links and bookmarks still land on the draft list.
+
+- **Nothing to configure.** No migration and no API change.
+- **A locked demo shows the button disabled,** with the same "Locked in demo mode" hover as the other demo-locked controls.

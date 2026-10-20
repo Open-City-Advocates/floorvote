@@ -9,7 +9,7 @@ import { color, fontSize, fontWeight } from '../../styles/tokens'
 import { contrast, resolveColor } from '../../test/colorTokens'
 
 // Mutable flag so a test can opt into a locked demo without a module-level
-// mock rewrite (same pattern as DraftBills.test.tsx).
+// mock rewrite.
 const demoState = vi.hoisted(() => ({ demoLocked: false }))
 vi.mock('../../context/DemoContext', () => ({
   useDemo: () => ({ demoMode: false, demoLocked: demoState.demoLocked, settled: true }),
