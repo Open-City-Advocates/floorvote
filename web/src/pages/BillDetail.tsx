@@ -56,6 +56,7 @@ import { CustomFieldsSection, type CustomFieldDef } from '../components/CustomFi
 import { useDemo } from '../context/DemoContext'
 import { useNotifications } from '../context/NotificationsContext'
 import { markNotificationsRead } from '../lib/demoReadState'
+import { peekJustCreatedDraft, clearJustCreatedDraft } from '../lib/justCreatedDraft'
 import { relativeTime, absoluteTime } from '../lib/time'
 import { COMMENT_STYLE } from '../../../shared/commentStyle'
 import { billDisplayTitle } from '../../../shared/billTitle'
@@ -828,6 +829,27 @@ export function BillDetail() {
   // button's other disabled reasons.
   const linkGate = useRequiredSubmit({ missingRequired: !linkTarget, blocked: linking || demoLocked })
   const [deletingDraft, setDeletingDraft] = useState(false)
+  // Why Discard draft (the button shown right after a draft is created) failed.
+  const [discardError, setDiscardError] = useState<string | null>(null)
+  // Whether this bill's page was reached straight from "Add draft bill" (the
+  // marker in lib/justCreatedDraft.ts), read on arrival for this bill's id and
+  // held in component state, so it survives the in-page number, year, and state
+  // edits that navigate with replace, and a different bill's page starts without
+  // it. The read happens during render (peek has no side effect, so StrictMode's
+  // second render sees the same answer); the marker is removed in an effect
+  // below, so a reload, back/forward, or a link finds none.
+  const [arrival, setArrival] = useState<{ id: string | null; justCreated: boolean }>(
+    () => ({ id: prefetchedBill?.id ?? null, justCreated: !!prefetchedBill?.id && peekJustCreatedDraft(prefetchedBill.id) }),
+  )
+  const arrivalId = bill?.id ?? null
+  if (arrivalId !== null && arrival.id !== arrivalId) {
+    setArrival({ id: arrivalId, justCreated: peekJustCreatedDraft(arrivalId) })
+  }
+  const justCreated = arrival.id === arrivalId && arrival.justCreated
+  useEffect(() => {
+    if (arrivalId) clearJustCreatedDraft(arrivalId)
+  }, [arrivalId])
+  const discardInFlight = useRef(false)
   // The page's toast for overflow-menu actions: Copy link's feedback, and a failed split.
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null)
   // Grouping by hand, from the overflow menu (admins).
@@ -1337,6 +1359,26 @@ export function BillDetail() {
     }
   }
 
+  // Discard draft: the one-click undo for a draft just created from the bills
+  // page. No confirm, because nothing has been added to the draft yet; the
+  // overflow menu's "Delete this draft bill" keeps its confirm for any other time.
+  async function handleDiscardDraft() {
+    // A ref, not `deletingDraft`: a second click can land before the first one's
+    // re-render disables the button (as AddDraftButton's inFlight guard says).
+    if (!bill || discardInFlight.current || deletingDraft || demoLocked) return
+    discardInFlight.current = true
+    setDeletingDraft(true)
+    setDiscardError(null)
+    try {
+      await apiFetch(`/bills/${bill.id}`, { method: 'DELETE' })
+      navigate('/bills')
+    } catch (err) {
+      setDiscardError(err instanceof ApiError ? err.message : 'Failed to discard draft.')
+      discardInFlight.current = false
+      setDeletingDraft(false)
+    }
+  }
+
   async function handleLinkDraft() {
     if (!bill || !linkTarget || demoLocked) return
     if (!window.confirm('Link this draft to the filed bill? The draft will be retired and all votes, positions, comments, notes, custom fields, and calendar events will be moved to the filed bill. This cannot be undone.')) return
@@ -1529,6 +1571,31 @@ export function BillDetail() {
         .comment-new { animation: slideInComment 0.38s cubic-bezier(0.16, 1, 0.3, 1) both; }
       `}</style>
 
+      {/* Only on arrival from "Add draft bill": the marker is read once on arrival
+          (lib/justCreatedDraft.ts), so a reload, a link, or any other visit to
+          the draft never shows this. */}
+      {isAdmin && bill.isDraft && justCreated && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 12px', marginBottom: 12 }}>
+          <button
+            type="button"
+            onClick={handleDiscardDraft}
+            disabled={deletingDraft || demoLocked}
+            title={demoLocked ? 'Locked in demo mode' : undefined}
+            aria-busy={deletingDraft || undefined}
+            style={{
+              fontFamily: 'inherit', fontSize: fontSize.sm, fontWeight: fontWeight.medium,
+              padding: '4px 6px', border: 'none', background: 'none', color: color.textSecondary,
+              cursor: demoLocked ? 'not-allowed' : deletingDraft ? 'default' : 'pointer',
+              opacity: demoLocked ? 0.6 : 1,
+            }}
+          >
+            Discard draft
+          </button>
+          {discardError && (
+            <span role="alert" style={{ minWidth: 0, overflowWrap: 'anywhere', fontSize: fontSize.sm, color: color.textErrorRed }}>{discardError}</span>
+          )}
+        </div>
+      )}
 
       {/* Static info block */}
       <div style={{ ...CARD, padding: '20px 24px' }}>
