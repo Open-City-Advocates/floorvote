@@ -31,6 +31,13 @@ Statements in an AI summary can now link to the bill text behind them, as summar
 
 **Deploying.** Deploy central before the instances. An instance on an older central keeps working and simply doesn't ask for claim sources. An instance that hasn't been upgraded shows its claim source counts as unavailable in central's dashboard until it is. The instance migration only adds nullable columns.
 
+## Committee filter
+
+The Bills page has a Committee filter. It lists each committee with its number of bills, grouped by state, with procedural committees (Rules, Assignments, Calendars) last and tagged "Procedural." A switch chooses whether a bill counts for the committee it is pending in now ("Current committee") or for any committee it was referred to ("Any referral," the default). The filter is in the page address and saved views as `committee` and `committeeScope`.
+
+- **Instance migration only.** Instance migration 0116 adds an empty `bill_committees` table. Central doesn't change, since it already sends each bill's committees.
+- **Run the refresh after deploying each instance.** An instance stores a bill's committees only when the bill is next delivered, and an analyzed bill that hasn't changed isn't redelivered. Until the refresh runs, the counts and the filter cover only bills delivered since the deploy. Fill every bill at once with `POST /admin/refresh-metadata` on the instance (an admin request). It queues one metadata-only delivery per stored bill, so one central fetch each: about 52,000 on the largest instance. It runs no AI, and it rewrites each bill's stored metadata from central.
+
 ## Comment attachments
 
 Members can attach files to comments (#465): from a paperclip in the comment toolbar, by dropping files on the composer, or by pasting. Posted comments list their files with a Download link, and admins see storage used against the quota in Settings. The feature stays off, and nothing needs doing, until you set it up.
