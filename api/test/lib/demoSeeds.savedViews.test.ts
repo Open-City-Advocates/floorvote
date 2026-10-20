@@ -26,12 +26,28 @@ const LM_FIXTURES: BillFixture[] = LM_BILLS.map(b => ({
   externalId: b.externalId, state: b.jurisdiction, tags: [b.theme],
 }))
 
-const CASES: Array<{ slug: string; fixtures: BillFixture[]; expectedTotals: Record<string, number> }> = [
+// The committee view reads referral rows central writes at sync, and the test tenant has none, so each case supplies
+// the ones its view needs: bills in WI Assembly Environment (one with it as the current committee, one referred on, one
+// of low priority the view's priority filter drops), a Michigan and an Illinois bill in other environment committees,
+// and a bill in a committee the view skips.
+type Referral = { externalId: string; committeeId: string; state: string; name: string; isCurrent: boolean }
+const LM_REFERRALS: Referral[] = [
+  { externalId: 'legiscan:2006944', committeeId: '4122', state: 'WI', name: 'Assembly Environment', isCurrent: true },
+  { externalId: 'legiscan:2006749', committeeId: '4122', state: 'WI', name: 'Assembly Environment', isCurrent: false },
+  { externalId: 'legiscan:2029026', committeeId: '5004', state: 'MI', name: 'House Natural Resources And Tourism', isCurrent: true },
+  { externalId: 'legiscan:1906052', committeeId: '3958', state: 'IL', name: 'House Energy & Environment', isCurrent: true },
+  { externalId: 'legiscan:2052600', committeeId: '4122', state: 'WI', name: 'Assembly Environment', isCurrent: true },
+  { externalId: 'legiscan:2041788', committeeId: '9999', state: 'MI', name: 'House Appropriations', isCurrent: true },
+]
+
+const CASES: Array<{
+  slug: string; fixtures: BillFixture[]; referrals: Referral[]; expectedTotals: Record<string, number>
+}> = [
   {
-    slug: 'lake-michigan', fixtures: LM_FIXTURES,
+    slug: 'lake-michigan', fixtures: LM_FIXTURES, referrals: LM_REFERRALS,
     expectedTotals: {
       'drinking-water-or-contaminants': 8, 'infrastructure-bills-with-no-position': 3,
-      'high-priority-in-michigan-and-wisconsin': 5,
+      'high-priority-in-michigan-and-wisconsin': 5, 'environment-committees-high-and-medium-priority': 4,
     },
   },
 ]
@@ -74,6 +90,15 @@ function orDimensions(query: string): Array<{ key: string; query: string }> | nu
   }))
 }
 
+async function seedReferrals(referrals: Referral[]) {
+  for (const r of referrals) {
+    const bill = await env.DB.prepare('SELECT id FROM bills WHERE external_id = ?').bind(r.externalId).first<{ id: string }>()
+    await env.DB.prepare(
+      'INSERT INTO bill_committees (bill_id, committee_id, state, name, chamber, is_current) VALUES (?, ?, ?, ?, NULL, ?)',
+    ).bind(bill!.id, r.committeeId, r.state, r.name, r.isCurrent ? 1 : 0).run()
+  }
+}
+
 async function seedFixtures(seed: DemoSeed, fixtures: BillFixture[]) {
   for (const [i, f] of fixtures.entries()) {
     await seedBill({
@@ -87,18 +112,19 @@ async function seedFixtures(seed: DemoSeed, fixtures: BillFixture[]) {
   expect(new Set(fixtures.map(f => f.externalId))).toEqual(new Set(seed.priorities.map(p => p.externalId)))
 }
 
-describe.each(CASES)('saved views in the $slug demo seed', ({ slug, fixtures, expectedTotals }) => {
+describe.each(CASES)('saved views in the $slug demo seed', ({ slug, fixtures, referrals, expectedTotals }) => {
   const seed = DEMO_SEEDS[slug]
 
   beforeEach(async () => {
     await clearDb()
     await seedFixtures(seed, fixtures)
+    await seedReferrals(referrals)
     await runDemoReset(env.DB, seed)
   })
 
-  it('creates exactly three views, each with a name and a filter', async () => {
+  it('creates exactly four views, each with a name and a filter', async () => {
     const views = await listViews()
-    expect(views).toHaveLength(3)
+    expect(views).toHaveLength(4)
     for (const v of views) {
       expect(v.name.trim().length).toBeGreaterThan(0)
       expect(v.query.trim().length).toBeGreaterThan(0)
@@ -114,6 +140,17 @@ describe.each(CASES)('saved views in the $slug demo seed', ({ slug, fixtures, ex
       const dims = new Set([...new URLSearchParams(v.query).keys()])
       expect(dims.size, `${v.name} (${v.query}) filters on one dimension`).toBeGreaterThanOrEqual(2)
     }
+  })
+
+  it('has a committee view that names environment committees in several states and reads any referral', async () => {
+    const view = (await listViews()).find(v => v.slug === 'environment-committees-high-and-medium-priority')!
+    const p = new URLSearchParams(view.query)
+    expect(view.name).toBe('Environment committees, high and medium priority')
+    expect(p.getAll('committee').sort()).toEqual(['1290', '2325', '2551', '3958', '4122', '4774', '5004', '5058'])
+    expect(p.getAll('priority')).toEqual(['high', 'medium'])
+    expect(p.has('committeeScope')).toBe(false)
+    expect(p.has('match')).toBe(false)
+    expect(orDimensions(view.query)).toBeNull()
   })
 
   // An operator can hide subjects for a whole tenant, and the seed writes none,
@@ -185,7 +222,7 @@ describe.each(CASES)('saved views in the $slug demo seed', ({ slug, fixtures, ex
 
   it('restores the views on the next reset, whatever happened to them in between', async () => {
     const before = await listViews()
-    expect(before).toHaveLength(3)
+    expect(before).toHaveLength(4)
 
     // A view deleted, a view rewritten, and a view added by a visitor with admin rights.
     await env.DB.prepare('DELETE FROM saved_views WHERE id = ?').bind(before[0].id).run()
@@ -200,7 +237,7 @@ describe.each(CASES)('saved views in the $slug demo seed', ({ slug, fixtures, ex
 
   it('gives views stable ids and slugs across resets, so a bookmark survives', async () => {
     const first = await listViews()
-    expect(first).toHaveLength(3)
+    expect(first).toHaveLength(4)
     await runDemoReset(env.DB, seed)
     await runDemoReset(env.DB, seed)
     expect(await listViews()).toEqual(first)
