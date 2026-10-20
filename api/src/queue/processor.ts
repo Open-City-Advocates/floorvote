@@ -616,7 +616,11 @@ async function applyCentralBill(
   // `forceAI` deliberately does NOT override this — a demo's content is whatever
   // its seed shipped, and there is no visitor action that should spend a model
   // call.
-  if (shouldRunAi && env.DEMO_MODE === 'true') {
+  //
+  // The one exception is `operatorAi`, which only central's direct operator
+  // reprocess sets (it drops the flag on any call through a tenant binding), so
+  // the operator can refresh a demo's analyses and no visitor can cause it.
+  if (shouldRunAi && env.DEMO_MODE === 'true' && !msg.operatorAi) {
     console.log(`[processor] demo tenant: skipping AI for ${msg.billId}`)
     shouldRunAi = false
   }
@@ -758,7 +762,8 @@ async function applyCentralBill(
   const priorMatchEvent = !aiResult && derivedMatchType === 'keyword' && !existing?.newMatchAt && existing?.matchType === null && existing.aiProcessedAt != null
     ? !!(await db.select({ id: feedEvents.id }).from(feedEvents).where(and(eq(feedEvents.billId, existing.id), eq(feedEvents.type, 'bill_matched'))).get())
     : null
-  const isFirstKeywordMatch = derivedMatchType === 'keyword' && !existing?.newMatchAt
+  // An operator's analysis of a demo refreshes content; it is not news, so it never marks a bill new.
+  const isFirstKeywordMatch = derivedMatchType === 'keyword' && !existing?.newMatchAt && !msg.operatorAi
     && (!!aiResult || priorMatchEvent === false)
 
   // Where the match came from, as central declared it. The declaration rides
