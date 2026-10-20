@@ -30,3 +30,13 @@ Statements in an AI summary can now link to the bill text behind them, as summar
 - **Operators can see how well links resolve.** Central's dashboard shows, for each instance, its stored claim sources counted as exact, normalized, fuzzy, anchored, ungrounded, or unverified (PDF quotes the instance can't check), plus how many analyses asked for claim sources and stored none, and how many responses were cut off inside them and retried without them. See "Summary citations" in the operating guide.
 
 **Deploying.** Deploy central before the instances. An instance on an older central keeps working and simply doesn't ask for claim sources. An instance that hasn't been upgraded shows its claim source counts as unavailable in central's dashboard until it is. The instance migration only adds nullable columns.
+
+## Comment attachments (server side)
+
+The API can now hold files attached to comments: upload, check, download, and cleanup (#465). The app doesn't offer attaching yet, so members see no change in this release. The feature stays off, and nothing needs doing, until you set it up.
+
+**To turn it on for an instance** (optional, and never on a demo instance, where it stays off regardless): create a private R2 bucket (no public access, no `r2.dev` URL), bind it as `ATTACHMENTS_BUCKET` (`api/wrangler.example.toml` has the block), and deploy as usual. Uploads stream through the instance's Worker, so the bucket needs no CORS rule and no API token. Several instances may share one bucket, since each stores its files under its `TENANT_ID`.
+
+**Limits.** 25 MB a file, 10 files a comment, 30 uploads a member an hour, and 5 GB for the instance. Programs, scripts, web pages (HTML, SVG, JavaScript), macro-enabled Office files, and archives are refused, by name and by the file's first bytes. Files download only for a signed-in member of the instance, while their comment shows. Uploads that never finish are deleted after an hour, uploads never posted after a day, a deleted comment's files 30 days after the delete, by the hourly cron, which also removes within the hour any file whose comment was removed with its member's account. The admin data export lists the files (not their contents).
+
+**Deploying.** Migration `0115` adds the `comment_attachments` table and touches no existing table.
