@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { apiFetch } from '../lib/api'
 import { SECTION_LABEL } from '../lib/textStyles'
 import { Picker } from './Picker'
@@ -7,6 +7,7 @@ import { promotableCount, bulkConfirmMessage, describeMultiDelta } from './bulkC
 import { useDemo } from '../context/DemoContext'
 import { parseStoredMulti } from '../../../shared/customFieldValues'
 import { serializeBillFilter, type BillFilter } from '../../../shared/billFilter'
+import { bulkDraftDeleteConfirm, fetchDraftDeletePreview, hasEngagement, type DraftDeletePreview } from '../lib/draftDeleteConfirm'
 
 type Priority = 'high' | 'medium' | 'low'
 
@@ -67,8 +68,12 @@ interface BulkActionBarProps {
     customFieldValues?: Record<string, string>
     newMatchAt?: string | null
     triagedAt?: string | null
+    isDraft?: boolean
   }>
   onClearSelection: () => void
+  /** Drafts that are gone after a bulk delete (deleted now, or already gone), for the page to drop
+      from its list and the selection. Drafts the server kept are not named. */
+  onDraftsDeleted: (ids: string[]) => void
   onApplied: (
     updatedIds: string[] | 'filter',
     updates: {
@@ -178,6 +183,17 @@ function computeInitialFromDistribution(
   return { priority, position, customFields, multiOptionCounts, sampleSize: count }
 }
 
+/** The small outlined triage buttons under the Priority pill (Dismiss new matches, Delete drafts). */
+function triageButtonStyle(blocked: boolean, locked: boolean): CSSProperties {
+  return {
+    fontSize: fontSize.sm, padding: '4px 10px', borderRadius: radius.md,
+    border: `1px solid ${color.borderDefault}`, background: color.white,
+    color: color.textMuted, cursor: blocked ? 'not-allowed' : 'pointer',
+    opacity: locked ? 0.5 : 1,
+    textAlign: 'left', whiteSpace: 'nowrap',
+  }
+}
+
 const SIDEBAR_DEFAULT_WIDTH = 225
 
 function useSidebarWidth() {
@@ -196,7 +212,7 @@ function useSidebarWidth() {
 
 export function BulkActionBar({
   selection, total, positionVocabulary, customFieldDefs, currentFilters, filterNewMatchCount,
-  selectedBills, onClearSelection, onApplied,
+  selectedBills, onClearSelection, onApplied, onDraftsDeleted,
 }: BulkActionBarProps) {
   const { demoLocked } = useDemo()
   const sidebarWidth = useSidebarWidth()
@@ -286,6 +302,21 @@ export function BulkActionBar({
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [hasPending])
+
+  // Select-all with the Drafts filter on (at most 1,000 bills, the delete's cap): the drafts among unloaded
+  // rows are unknown here, so the server's preview counts them for the Delete drafts button.
+  const filterDrafts = selection.mode === 'filter' && currentFilters.drafts && total <= 1000
+  const [filterDraftPreview, setFilterDraftPreview] = useState<DraftDeletePreview | null>(null)
+  useEffect(() => {
+    setFilterDraftPreview(null)
+    if (!filterDrafts) return
+    let current = true
+    fetchDraftDeletePreview({ filter: serializeBillFilter(currentFilters) })
+      .then(p => { if (current) setFilterDraftPreview(p) })
+      // No count, no button: the bar's other actions still work.
+      .catch(() => {})
+    return () => { current = false }
+  }, [filterDrafts, currentFilters, total])
 
   if (selection.mode === 'none') return null
 
@@ -439,6 +470,58 @@ export function BulkActionBar({
       onClearSelection()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to dismiss new matches')
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  // A selection of rows counts its drafts itself. Select-all counts them from the server's preview.
+  const selectedDrafts = selection.mode === 'ids' ? selectedBills.filter(b => b.isDraft) : []
+  const draftCount = selection.mode === 'ids' ? selectedDrafts.length : (filterDrafts ? filterDraftPreview?.drafts ?? 0 : 0)
+
+  async function handleDeleteDrafts() {
+    if (draftCount === 0 || applying || demoLocked) return
+    const plural = (n: number, one: string, many: string) => (n === 1 ? one : many)
+    setApplying(true)
+    setError(null)
+    try {
+      // A fresh preview at the click, so the confirm names what the delete will take now. For rows it is
+      // asked of the whole selection, so it also counts the filed bills the delete leaves alone.
+      const filter = selection.mode === 'filter' ? serializeBillFilter(currentFilters) : null
+      const preview = await fetchDraftDeletePreview(filter !== null ? { filter } : { ids: selectedBills.map(b => b.id) })
+      if (preview.drafts === 0) {
+        setError('There are no drafts left to delete in this selection.')
+        return
+      }
+      if (!window.confirm(bulkDraftDeleteConfirm(preview))) return
+      // Exactly the drafts the confirm counted: a draft made while it was open, which a select-all's filter
+      // would now match, is never deleted uncounted.
+      const body: { ids: string[]; includeEngaged?: true } = { ids: preview.draftIds }
+      // Only a confirm that named the work on the drafts lets the server delete it.
+      if (hasEngagement(preview)) body.includeEngaged = true
+      const result = await apiFetch<{
+        deleted?: string[]
+        skipped?: Array<{ id: string; reason: 'not_found' | 'not_draft' | 'engaged' | 'error' }>
+      }>('/bills/bulk-delete', { method: 'POST', body: JSON.stringify(body) })
+      const skipped = result.skipped ?? []
+      // A draft another admin deleted first is gone either way, so it leaves the list too.
+      const gone = [...(result.deleted ?? []), ...skipped.filter(s => s.reason === 'not_found').map(s => s.id)]
+      if (gone.length > 0) onDraftsDeleted(gone)
+      // Kept only without includeEngaged: a draft that gained engagement after a preview that found none.
+      const kept = skipped.filter(s => s.reason === 'engaged').length
+      const failed = skipped.filter(s => s.reason === 'error' || s.reason === 'not_draft').length
+      const messages: string[] = []
+      if (kept > 0) {
+        messages.push(`${kept.toLocaleString()} ${plural(kept, 'draft was', 'drafts were')} kept: ${plural(kept, 'it', 'they')} gained votes, comments, notes, or positions since you asked. Try again to see what goes with ${plural(kept, 'it', 'them')}.`)
+      }
+      if (failed > 0) {
+        messages.push(`${failed.toLocaleString()} ${plural(failed, 'draft', 'drafts')} could not be deleted. Try again.`)
+      }
+      if (messages.length > 0) setError(messages.join(' '))
+      // A row selection shrinks as its drafts leave the list. Select-all ends once every draft it held is gone.
+      else if (filter !== null) onClearSelection()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete drafts')
     } finally {
       setApplying(false)
     }
@@ -623,7 +706,7 @@ export function BulkActionBar({
           onUndo: () => clearStaged('position'),
         })}
 
-        {/* Priority pill + dismiss-new-matches, stacked (mirrors the single-row triage control) */}
+        {/* Priority pill + dismiss-new-matches + delete-drafts, stacked (mirrors the single-row triage control) */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
           {renderPill({
             fieldKey: 'priority',
@@ -646,15 +729,20 @@ export function BulkActionBar({
               onClick={handleDismissNewMatches}
               disabled={applying || demoLocked}
               title="Mark the new matches in this selection as reviewed — no priority"
-              style={{
-                fontSize: fontSize.sm, padding: '4px 10px', borderRadius: radius.md,
-                border: `1px solid ${color.borderDefault}`, background: color.white,
-                color: color.textMuted, cursor: (applying || demoLocked) ? 'not-allowed' : 'pointer',
-                opacity: demoLocked ? 0.5 : 1,
-                textAlign: 'left', whiteSpace: 'nowrap',
-              }}
+              style={triageButtonStyle(applying || demoLocked, demoLocked)}
             >
               ✕ Dismiss new matches ({newMatchCount.toLocaleString()})
+            </button>
+          )}
+          {draftCount > 0 && (
+            <button
+              type="button"
+              onClick={handleDeleteDrafts}
+              disabled={applying || demoLocked}
+              title={demoLocked ? 'Locked in demo mode' : 'Permanently delete the draft bills in this selection'}
+              style={triageButtonStyle(applying || demoLocked, demoLocked)}
+            >
+              ✕ Delete drafts ({draftCount.toLocaleString()})
             </button>
           )}
         </div>
