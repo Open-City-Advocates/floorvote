@@ -39,8 +39,14 @@ const MAX_FILL_FETCHES = 10
 
 // The newest event the poll compares to tell new activity from none. The
 // no-priority updates row is passive, as it is for the Feed dot: on its own it
-// raises no "New activity" banner and loads nothing in place.
-const topEventId = (events: FeedEvent[]) => events.find((e) => e.type !== NO_PRIORITY_UPDATES)?.id ?? null
+// raises no "New activity" banner and loads nothing in place. Nor does the card
+// the server sends in place of a row of one bill (#921). Only events the default
+// feed would draw count: the server can admit a lone update and send it
+// unmarked when its bill changes between two reads, and the Feed's rule drops it.
+const topEventId = (events: FeedEvent[]) => {
+  const shown = new Set(filterPriorityEvents(groupEventsByBillAndDay(events)).flatMap((g) => g.events.map((e) => e.id)))
+  return events.find((e) => e.type !== NO_PRIORITY_UPDATES && !e.noPriorityCard && shown.has(e.id))?.id ?? null
+}
 
 export type FeedLoaderResult =
   | { data: FeedResponse }
