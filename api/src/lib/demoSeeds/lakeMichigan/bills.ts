@@ -773,3 +773,103 @@ export const LM_COMPANION_BILLS: Array<{
   { externalId: 'legiscan:1966402', jurisdiction: 'US', billNumber: 'SB528',  companionOf: 'legiscan:1910159' },
   { externalId: 'legiscan:2058679', jurisdiction: 'US', billNumber: 'SB3457', companionOf: 'legiscan:2058690' },
 ]
+
+// ── Activity on bills with no priority (#925) ───────────────────────────────
+//
+// The demo holds about 2,100 more bills than the 20 above, delivered by central
+// with their real histories, and nobody has set a priority on any of them. They
+// never get feed events of their own: the demo's central runs no crons, so nothing
+// updates them. With the feed's daily row for bills with no priority (#918) a
+// visitor would never see it. These events give a dozen of them activity across
+// the recent window, so the row shows, among the team's cards.
+//
+// The row counts only bills the demo has analyzed (a bill with a match type), and the
+// demo analyzes a delivered bill only when it matches the demo's keywords. So every
+// bill here is one that does (the guard in demoSeeds.lakeMichigan.analyzed.test.ts
+// runs the real matcher on each); a bill that matches no keyword is delivered but
+// never analyzed, and its events would write no row.
+//
+// Each action below is one of the bill's own, verbatim from its stored history,
+// shown on a recent day instead of its real date (the dates differ, as in
+// LM_RECENT_ACTIVITY_EVENTS, and the banner names the recent activity as fictional).
+// A bill's actions keep their real order. They are procedural (assignments,
+// reports, readings, deadlines), never a vote, a passage, or an enactment, so
+// nothing here advances a bill past where its record has it. None of these bills
+// is tracked, has a companion, or has a comment, vote, or position, so each has no
+// earlier feed event and none repeats an action shown elsewhere.
+//
+// The cadence is the feed's: most days of the last 14 have a row of two or more
+// bills, two have a lone bill, and a few have none. Every row day has team cards
+// above it (the row ends its day), and the rows number about one for every five
+// cards of the team's. A lone bill is its own full card once the feed shows one
+// (#921), ordered by its events' time like any card, so it is dated 45 minutes
+// earlier than the team's cards that day, below them and never first. Every other event has no
+// minutesLater, so a reset on any minute of the day keeps one day's bills in one
+// UTC day, which is what the row is keyed by.
+
+/** One real action of a bill with no priority, and the recent day it is shown on. */
+export type NoPriorityAction = {
+  externalId: string
+  /** For reading the table only. The feed shows the bill's own number and title. */
+  billNumber: string
+  /** The date the bill's history gives the action. */
+  actionDate: string
+  /** Verbatim from the bill's stored history. */
+  action: string
+  daysAgo: number
+  minutesLater?: number
+}
+
+const np = (
+  externalId: string, billNumber: string, actionDate: string, daysAgo: number, action: string, minutesLater?: number,
+): NoPriorityAction => ({ externalId, billNumber, actionDate, action, daysAgo, ...(minutesLater !== undefined ? { minutesLater } : {}) })
+
+export const LM_NO_PRIORITY_ACTIONS: NoPriorityAction[] = [
+  // Today: three bills.
+  np('legiscan:2104855', 'IL SB3309', '2026-07-02', 0, 'Pursuant to Senate Rule 3-9(b) / Referred to Assignments'),
+  np('legiscan:2065195', 'IN HB1239', '2026-01-05', 0, 'First reading: referred to Committee on Environmental Affairs'),
+  np('legiscan:2065523', 'IN HB1297', '2026-01-06', 0, 'First reading: referred to Committee on Utilities, Energy and Telecommunications'),
+  // Yesterday: three.
+  np('legiscan:2135407', 'MI SB0855', '2026-04-21', 1, 'Referred To Committee Of The Whole With Substitute (s-1)'),
+  np('legiscan:2061495', 'IN HB1110', '2026-01-05', 1, 'First reading: referred to Committee on Environmental Affairs'),
+  np('legiscan:2155128', 'MI HB6143', '2026-06-30', 1, 'Referred To Committee On Natural Resources And Tourism'),
+  // 2 days ago: three.
+  np('legiscan:2041821', 'MI SB0505', '2026-03-11', 2, 'Referred To Committee Of The Whole With Substitute (s-1)'),
+  np('legiscan:2153386', 'MI HB6066', '2026-06-09', 2, 'Referred To Committee On Government Operations'),
+  np('legiscan:2144527', 'MI HB5842', '2026-04-21', 2, 'Referred To Committee On Appropriations'),
+  // 3 days ago: none.
+  // 4 days ago: two.
+  np('legiscan:2104855', 'IL SB3309', '2026-05-15', 4, 'Rule 2-10 Committee/3rd Reading Deadline Established As May 22, 2026'),
+  np('legiscan:1928265', 'IL SB0117', '2025-01-17', 4, 'Referred to Assignments'),
+  // 5 days ago: three.
+  np('legiscan:2135407', 'MI SB0855', '2026-04-21', 5, 'Reported Favorably With Substitute (s-1) 4/16/2026'),
+  np('legiscan:2041821', 'MI SB0505', '2026-03-11', 5, 'Reported Favorably With Substitute (s-1) 3/10/2026'),
+  np('legiscan:2035723', 'MI HB4568', '2025-06-05', 5, 'Referred To Committee On Appropriations'),
+  // 6 days ago: none.
+  // 7 days ago: a lone bill, ahead of that day's team card.
+  np('legiscan:2156259', 'US HB9836', '2026-07-22', 7, 'Introduced in House', -45),
+  // 8 days ago: none.
+  // 9 days ago: two.
+  np('legiscan:2104855', 'IL SB3309', '2026-04-24', 9, 'Rule 2-10 Committee/3rd Reading Deadline Established As May 15, 2026'),
+  np('legiscan:2153386', 'MI HB6066', '2026-06-09', 9, 'Read A First Time'),
+  // 10 days ago: two.
+  np('legiscan:2135407', 'MI SB0855', '2026-04-14', 10, 'Reassigned To Committee On Appropriations'),
+  np('legiscan:2041821', 'MI SB0505', '2025-08-14', 10, 'Referred To Committee On Natural Resources And Agriculture'),
+  // 11 days ago: none, since the team has no card that day for a row to follow.
+  // 12 days ago: two.
+  np('legiscan:2104855', 'IL SB3309', '2026-02-17', 12, 'Assigned to Appropriations'),
+  np('legiscan:1928265', 'IL SB0117', '2025-01-17', 12, 'First Reading'),
+  // 13 days ago: a lone bill.
+  np('legiscan:2135407', 'MI SB0855', '2026-03-18', 13, 'Rules Suspended', -45),
+]
+
+export const LM_NO_PRIORITY_EVENTS: DemoSeedFeedEvent[] = LM_NO_PRIORITY_ACTIONS.map((a, i) => ({
+  // `lm-fe-n-2104855-1` is that bill's first action in the table above.
+  id: `lm-fe-n-${a.externalId.replace('legiscan:', '')}-${LM_NO_PRIORITY_ACTIONS.slice(0, i).filter(x => x.externalId === a.externalId).length + 1}`,
+  type: 'bill_updated' as const,
+  externalId: a.externalId,
+  userId: 'system',
+  daysAgo: a.daysAgo,
+  ...(a.minutesLater !== undefined ? { minutesLater: a.minutesLater } : {}),
+  metadata: { changes: [chg('action_added', { newValue: a.action })] },
+}))
