@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { drizzle } from 'drizzle-orm/d1'
 import { eq } from 'drizzle-orm'
 import * as schema from '../../src/db/schema'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { clearDb } from '../helpers/migrations'
 import bulkRaw from '../fixtures/lims/bulk-records.json?raw'
 import details0400Raw from '../fixtures/lims/details-B26-0400.json?raw'
 import detailsHnRaw from '../fixtures/lims/details-HN26-0171.json?raw'
@@ -34,7 +34,7 @@ import { runBodyEventSync } from '../../src/cron/body-events'
 import { processIngestorQueue } from '../../src/queue/processor'
 import { lims } from '../../src/providers/lims'
 import { limsBillId } from '../../src/providers/lims/ids'
-import { toHandle } from '../../src/lib/billHandle'
+import { toLegacyHandle } from '../../src/lib/billHandle'
 import { tenantQueueBindingName } from '../../src/lib/tenantQueue'
 
 const LIMS = 'https://lims.dccouncil.gov/api/v2/PublicData/'
@@ -78,7 +78,7 @@ type Run = ReturnType<typeof makeEnv>
 const db = () => drizzle(env.DB, { schema })
 
 async function central(method: string, path: string, run: Run, body?: unknown) {
-  const { app } = await import('../../src/index-legiscan')
+  const { app } = await import('../../src/index')
   return app.fetch(new Request(`http://central/api${path}`, {
     method,
     headers: { 'x-admin-secret': 'test-secret', 'content-type': 'application/json' },
@@ -129,7 +129,7 @@ const withoutEvent = (id: number) => () => json(october.filter(h => h.hearingId 
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-09-28T09:00:00Z'))
-  await setupLsDb()
+  await clearDb()
   vi.clearAllMocks()
   feed = {
     'CouncilPeriods': () => json([CP26]),
@@ -168,7 +168,7 @@ describe('the Council\'s calendar', () => {
     expect(await syncCalendar()).toEqual([])
     expect(calls).toEqual([])
     expect(await eventsFor()).toMatchObject({ capabilities: {}, events: [] })
-    expect(await getJson('/bills/labels?state=DC')).toMatchObject({ hasEvents: false, capabilities: { bodyEvents: false, deadlines: false } })
+    expect(await getJson('/bills/labels?state=DC')).toMatchObject({ hasEvents: false, capabilities: { bodyEvents: false, deadlines: true } })
   })
 
   it('reaches instances covering DC once DC is claimed, each event under the UID a fork already issued', async () => {
@@ -182,7 +182,7 @@ describe('the Council\'s calendar', () => {
     expect(logged).toHaveLength(5)
 
     const { capabilities, events, byUid } = await eventsFor()
-    expect(capabilities).toEqual({ DC: { bodyEvents: true, deadlines: true } })
+    expect(capabilities).toEqual({ DC: { bodyEvents: true, deadlines: true, bodyName: 'Council' } })
     expect(events).toHaveLength(october.length)
     expect(byUid.get('council-2408@lims.dccouncil.gov')).toEqual({
       uid: 'council-2408@lims.dccouncil.gov',
@@ -219,27 +219,63 @@ describe('the Council\'s calendar', () => {
 
     // By its number: B26-0769's public hearing on October 23.
     expect(byUid.get('council-2405@lims.dccouncil.gov')).toMatchObject({
-      bills: [toHandle(B0769)],
-      covers: [{ billId: toHandle(B0769), identityKey: 'hearing|2026-10-23|public hearing on b26-0769' }],
+      bills: [toLegacyHandle(B0769)],
+      covers: [{ billId: toLegacyHandle(B0769), identityKey: 'hearing|2026-10-23|public hearing on b26-0769' }],
     })
     // Without a number: the oversight roundtable whose hearing notice is set for that day.
-    expect(byUid.get('council-2428@lims.dccouncil.gov')).toMatchObject({ bills: [toHandle(HN)], covers: [expect.objectContaining({ billId: toHandle(HN) })] })
+    expect(byUid.get('council-2428@lims.dccouncil.gov')).toMatchObject({ bills: [toLegacyHandle(HN)], covers: [expect.objectContaining({ billId: toLegacyHandle(HN) })] })
     // A bill on the agenda with no entry that day is linked and covers nothing.
     expect(byUid.get('council-2413@lims.dccouncil.gov')).toMatchObject({ covers: [] })
     // A numberless topic matching a bill's title, not its entry, names no bill.
     expect(byUid.get('council-9001@lims.dccouncil.gov')).toMatchObject({ bills: [], covers: [] })
 
-    const bill = await getJson(`/bills/${toHandle(B0769)}`)
+    const bill = await getJson(`/bills/${toLegacyHandle(B0769)}`)
     expect(bill.calendar).toEqual([expect.objectContaining({ date: '2026-10-23', coveredBy: 'council-2405@lims.dccouncil.gov' })])
     // An entry no event covers says so.
-    const b0400 = await getJson(`/bills/${toHandle(B0400)}`)
+    const b0400 = await getJson(`/bills/${toLegacyHandle(B0400)}`)
     expect(b0400.calendar.length).toBeGreaterThan(0)
     for (const entry of b0400.calendar) expect(entry.coveredBy).toBeNull()
 
     // The notification an ingest sends carries the cover too.
     const run = await ingest(B0769)
-    const sent = sentToTenant(run).find((m: any) => m.billId === toHandle(B0769))
+    const sent = sentToTenant(run).find((m: any) => m.billId === toLegacyHandle(B0769))
     expect(sent.calendar.events).toEqual([expect.objectContaining({ identityKey: 'hearing|2026-10-23|public hearing on b26-0769', coveredBy: 'council-2405@lims.dccouncil.gov' })])
+  })
+
+  // Release 2 of the neutral handle rename (#305): an instance that predates
+  // release 1 would treat `bill:<n>` as a bill it doesn't hold, so central names
+  // agenda bills and covered entries by the neutral handle only when the request
+  // says the instance reads it, and by the legacy handle otherwise.
+  it('names agenda bills and covered entries by legacy handles to an instance that does not ask for neutral ones', async () => {
+    await claimDc()
+    await syncBills()
+    await syncCalendar()
+    const { byUid } = await eventsFor()
+    expect(byUid.get('council-2405@lims.dccouncil.gov')).toMatchObject({
+      bills: [`legiscan:${B0769}`],
+      covers: [{ billId: `legiscan:${B0769}`, identityKey: 'hearing|2026-10-23|public hearing on b26-0769' }],
+    })
+    expect(byUid.get('council-2428@lims.dccouncil.gov')).toMatchObject({ bills: [`legiscan:${HN}`], covers: [expect.objectContaining({ billId: `legiscan:${HN}` })] })
+  })
+
+  it('names agenda bills and covered entries by neutral handles to an instance whose request says it reads them', async () => {
+    await claimDc()
+    await syncBills()
+    await syncCalendar()
+    const { app } = await import('../../src/index')
+    const res = await app.fetch(new Request(`http://central/api/tenants/oca/body-events?${WINDOW}`, {
+      headers: { 'x-admin-secret': 'test-secret', 'x-handle-form': 'neutral' },
+    }), makeEnv().env)
+    expect(res.status).toBe(200)
+    const byUid = new Map<string, any>(((await res.json()) as any).events.map((e: any) => [e.uid, e]))
+    expect(byUid.get('council-2405@lims.dccouncil.gov')).toMatchObject({
+      bills: [`bill:${B0769}`],
+      covers: [{ billId: `bill:${B0769}`, identityKey: 'hearing|2026-10-23|public hearing on b26-0769' }],
+    })
+    expect(byUid.get('council-2428@lims.dccouncil.gov')).toMatchObject({ bills: [`bill:${HN}`], covers: [expect.objectContaining({ billId: `bill:${HN}` })] })
+    // Every other field is the same as the legacy answer's.
+    const legacy = (await eventsFor()).byUid.get('council-2405@lims.dccouncil.gov')
+    expect({ ...byUid.get('council-2405@lims.dccouncil.gov'), bills: legacy.bills, covers: legacy.covers }).toEqual(legacy)
   })
 
   it('keeps covering a bill entry once it is cancelled, so the cancellation shows once', async () => {
@@ -248,7 +284,7 @@ describe('the Council\'s calendar', () => {
     await syncCalendar()
     await db().update(schema.billCalendar).set({ cancelledAt: '2026-09-28 09:00:00' }).where(eq(schema.billCalendar.billId, B0769))
     expect((await eventsFor()).byUid.get('council-2405@lims.dccouncil.gov').covers)
-      .toEqual([{ billId: toHandle(B0769), identityKey: 'hearing|2026-10-23|public hearing on b26-0769' }])
+      .toEqual([{ billId: toLegacyHandle(B0769), identityKey: 'hearing|2026-10-23|public hearing on b26-0769' }])
   })
 
   it('pairs no bill with a topic that only repeats the event\'s own name', async () => {
@@ -261,7 +297,7 @@ describe('the Council\'s calendar', () => {
     await claimDc()
     await syncBills()
     await syncCalendar()
-    expect((await getJson(`/bills/${toHandle(HN)}`)).calendar).toEqual([expect.objectContaining({ date: '2026-10-02', description: 'Legislative Meeting Notice' })])
+    expect((await getJson(`/bills/${toLegacyHandle(HN)}`)).calendar).toEqual([expect.objectContaining({ date: '2026-10-02', description: 'Legislative Meeting Notice' })])
     expect((await eventsFor()).byUid.get('council-2045@lims.dccouncil.gov')).toMatchObject({ title: 'Legislative Meeting', bills: [], covers: [] })
   })
 
@@ -270,7 +306,7 @@ describe('the Council\'s calendar', () => {
     await syncBills()
     await syncCalendar()
     const { byUid } = await eventsFor()
-    const youthReferral = (await getJson(`/bills/${toHandle(B0400)}`)).referrals.find((r: any) => r.name === 'Committee on Youth Affairs')
+    const youthReferral = (await getJson(`/bills/${toLegacyHandle(B0400)}`)).referrals.find((r: any) => r.name === 'Committee on Youth Affairs')
     expect(byUid.get('council-2415@lims.dccouncil.gov').committee).toEqual({ committeeId: youthReferral.committeeId, name: 'Committee on Youth Affairs' })
 
     const rows = await db().select().from(schema.committees).where(eq(schema.committees.name, 'Committee on Human Services')).all()
@@ -346,7 +382,7 @@ describe('the Council\'s calendar', () => {
     ])
     expect(await eventsFor('md')).toMatchObject({ capabilities: {}, events: [] })
     expect((await eventsFor('all')).events).toHaveLength(october.length)
-    expect((await eventsFor('all')).capabilities).toEqual({ DC: { bodyEvents: true, deadlines: true } })
+    expect((await eventsFor('all')).capabilities).toEqual({ DC: { bodyEvents: true, deadlines: true, bodyName: 'Council' } })
   })
 
   it('lists the committees and kinds an instance\'s event rules can choose from, once DC is claimed', async () => {

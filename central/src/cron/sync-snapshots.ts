@@ -1,12 +1,12 @@
-import { eq, and, or, inArray, notInArray, lt, gt, isNull, isNotNull, asc, sql } from 'drizzle-orm'
-import { sessions, bills, billTenants, tenants, people, providerRecords } from '../db/schema'
+import { eq, and, or, inArray, notInArray, lt, gt, gte, isNull, isNotNull, asc, sql } from 'drizzle-orm'
+import { sessions, bills, billTenants, tenants, people, providerRecords, sessionSyncLog } from '../db/schema'
 import { decideMode, getCurrentEtHour } from '../lib/sync-schedule'
 import { nowDb } from '../lib/dbTime'
 import { terminalStatuses } from '../lib/vocabulary'
 import { providerContext } from '../lib/providerContext'
 import { ingestQueueFor, providerConfigured } from '../lib/providerRouting'
 import { loadStateOwners, ownerOfState, statesOwnedBy } from '../lib/stateProviders'
-import { applyMasterList } from './sync'
+import { applyMasterList, firstIngestBudget, logSyncPass } from './sync'
 import { assignSessionSlugs } from '../lib/sessionSlugs'
 import { carriedBillIds, carriedPeopleIds, withCarriedBillIds, withCarriedPeople } from '../lib/carriedIds'
 import type { Provider, ProviderContext, ProviderPerson, ProviderRecord, StoredSession, SyncSession } from '../providers'
@@ -17,18 +17,22 @@ import type { Env, Db } from '../types'
  * hourly cron alongside the LegiScan sync, one job per provider, for the
  * states the ownership table gives it (lib/stateProviders.ts).
  *
- * None of these providers has a modified-since filter, so each full pass
- * takes the provider's snapshot of a session, stores every record whose hash
- * changed, and feeds the whole list to the same applyMasterList the LegiScan
- * full pass uses: keyword matching, monitor stubs, and queueing matched and
- * changed bills. The ingestor then hands each stored record back to the
- * provider's fetchMeasure.
+ * Each full pass takes the provider's snapshot of a session, stores every
+ * record whose hash changed, and feeds the whole list to the same
+ * applyMasterList the LegiScan full pass uses: keyword matching, monitor
+ * stubs, and queueing matched and changed bills. A provider that can tell
+ * what changed since its last read answers with a partial snapshot, and core
+ * fills in the rest from the records it stored. The ingestor then hands each
+ * stored record back to the provider's fetchMeasure.
  */
 
 const BATCH = 80
 const FLUSH_BATCH = 200
 /** Stored records read per query when a feed answers 304. */
 const STORED_PAGE = 500
+
+/** The longest error message a failed pass's log row keeps. */
+const ERROR_LOG_MAX = 500
 
 export interface SnapshotPassReport { sessionId: number; sessionName: string; records: number; queued: number; refreshed: number }
 
@@ -43,18 +47,80 @@ export function isSnapshotProvider(provider: Provider | undefined): provider is 
 }
 
 /**
+ * How many passes in a row a session fails before the hourly cron alerts. A
+ * provider's server drops a connection or answers 522 now and then, and the
+ * next pass reads the session fine; the States page shows every failed pass.
+ */
+export const FAILED_PASSES_BEFORE_ALERT = 4
+
+/** A session whose pass threw, and whether its failed row was logged. */
+type SessionFailure = { session: SessionRow; error: Error; logged: boolean }
+
+/**
  * `force` (the admin "run now" route) ignores the hour of day: the provider
- * refreshes its sessions and every synced session gets a full pass.
+ * refreshes its sessions and every synced session gets a full pass. Any
+ * session that fails is thrown, so the caller sees it at once.
  */
 export async function runSnapshotSync(
   provider: Provider, env: Env, db: Db, opts: { force?: boolean } = {},
 ): Promise<SnapshotPassReport[]> {
-  if (!isSnapshotProvider(provider)) return []
-  const owned = statesOwnedBy(await loadStateOwners(env, db), provider.id)
-  if (owned.length === 0) return []
+  const { reports, failures } = await syncSessions(provider, env, db, opts)
+  throwAll(provider, failures.map(f => f.error))
+  return reports
+}
+
+/**
+ * The hourly cron's sync, which throws (and so alerts) only for a session that
+ * has failed FAILED_PASSES_BEFORE_ALERT passes in a row. A failure outside a
+ * session's pass still throws at once.
+ */
+export async function runHourlySnapshotSync(provider: Provider, env: Env, db: Db): Promise<void> {
+  const { failures } = await syncSessions(provider, env, db, {})
+  const alerts: Error[] = []
+  for (const { session, error, logged } of failures) {
+    // A failed pass that couldn't be logged can't be counted, so it alerts.
+    if (!logged) { alerts.push(error); continue }
+    const inARow = await failedPassesInARow(db, session)
+    if (inARow < FAILED_PASSES_BEFORE_ALERT) {
+      console.warn(`[sync-${provider.id}] ${session.sessionName}: ${inARow} failed in a row; alerting at ${FAILED_PASSES_BEFORE_ALERT}`)
+      continue
+    }
+    const alert = new Error(`${session.state} ${session.sessionName}: ${inARow} passes in a row failed. Latest: ${errorMessage(error)}`, { cause: error })
+    alert.stack = error.stack
+    alerts.push(alert)
+  }
+  throwAll(provider, alerts)
+}
+
+function throwAll(provider: Provider, errors: Error[]): void {
+  if (errors.length === 1) throw errors[0]
+  if (errors.length > 1) throw new AggregateError(errors, `[sync-${provider.id}] ${errors.length} sessions failed: ${errors.map(e => e.message).join('; ')}`)
+}
+
+/**
+ * The session's failed passes since its last finished one, which stamps
+ * last_synced_at. A pass that logs its counts and then fails leaves an ok row,
+ * but no stamp, so it counts as failed here as it does on the States page.
+ */
+async function failedPassesInARow(db: Db, session: SessionRow): Promise<number> {
+  const [row] = await db.select({ n: sql<number>`COUNT(*)` }).from(sessionSyncLog).where(and(
+    eq(sessionSyncLog.sessionId, session.sessionId),
+    eq(sessionSyncLog.status, 'failed'),
+    session.lastSyncedAt ? gte(sessionSyncLog.syncedAt, session.lastSyncedAt) : undefined,
+  )).all()
+  return Number(row?.n ?? 0)
+}
+
+async function syncSessions(
+  provider: Provider, env: Env, db: Db, opts: { force?: boolean },
+): Promise<{ reports: SnapshotPassReport[]; failures: SessionFailure[] }> {
+  const none = { reports: [], failures: [] }
+  if (!isSnapshotProvider(provider)) return none
+  const owned = statesOwnedBy(await loadStateOwners(db), provider.id)
+  if (owned.length === 0) return none
   if (!providerConfigured(provider, env)) {
     console.warn(`[sync-${provider.id}] owns ${owned.join(', ')} but isn't configured on this central (missing its API key?); not syncing`)
-    return []
+    return none
   }
 
   const active = await db.select().from(tenants).where(eq(tenants.active, true)).all()
@@ -70,7 +136,7 @@ export async function runSnapshotSync(
       .map(t => ({ tenantId: t.tenantId, stateCoverage: t.stateCoverage, queueId: t.queueId ?? null }))
     if (covering.length > 0) coveringByState.set(state, covering)
   }
-  if (coveringByState.size === 0) return []
+  if (coveringByState.size === 0) return none
 
   const ctx = providerContext(provider, env, db)
   const etHour = getCurrentEtHour()
@@ -79,28 +145,64 @@ export async function runSnapshotSync(
   for (const state of owned) toSync.push(...await sessionsToSync(provider, state, ctx, etHour, force, db))
 
   // A session that fails (a provider failing closed on a bad file, say)
-  // doesn't stop the others. Its errors are thrown together at the end, so
-  // the job still fails and alerts.
+  // doesn't stop the others. Its error goes back to the caller, which decides
+  // whether to throw it.
   const reports: SnapshotPassReport[] = []
-  const errors: Error[] = []
+  const failures: SessionFailure[] = []
+  // One budget of first full ingests for all the sessions (Provider.ingestAll).
+  const firstIngests = await firstIngestBudget(db, provider)
   for (const session of toSync) {
     const covering = coveringByState.get(session.state)
     if (!covering) continue
     // A snapshot is the only kind of pull, so only the session's full-pass hours run it.
-    if (!force && decideMode(session, etHour) !== 'full') continue
+    if (!force && decideMode(session, etHour, provider) !== 'full') continue
     console.log(`[sync-${provider.id}] full pass: ${session.sessionName}`)
     try {
-      const counts = await runSnapshotPass(provider, session, covering, env, db, ctx, force)
+      const counts = await runSnapshotPass(provider, session, covering, env, db, ctx, force, firstIngests)
       reports.push({ sessionId: session.sessionId, sessionName: session.sessionName, ...counts })
       await db.update(sessions).set({ lastSyncedAt: nowDb() }).where(eq(sessions.sessionId, session.sessionId))
     } catch (err) {
       console.error(`[sync-${provider.id}] ${session.sessionName} failed:`, err)
-      errors.push(err instanceof Error ? err : new Error(String(err)))
+      const logged = await logOutcome(db, session, { status: 'failed', error: errorMessage(err) })
+      failures.push({ session, error: err instanceof Error ? err : new Error(String(err)), logged })
     }
   }
-  if (errors.length === 1) throw errors[0]
-  if (errors.length > 1) throw new AggregateError(errors, `[sync-${provider.id}] ${errors.length} sessions failed: ${errors.map(e => e.message).join('; ')}`)
-  return reports
+  return { reports, failures }
+}
+
+/**
+ * An error's message for the log, cut to ERROR_LOG_MAX characters. A failed
+ * query's own message is the SQL and every bound value (a stored record's JSON,
+ * say), so the database's error under it is logged instead.
+ */
+function errorMessage(err: unknown): string {
+  let e: unknown = err
+  while (e instanceof Error && e.message.startsWith('Failed query:') && e.cause instanceof Error) e = e.cause
+  const message = e instanceof Error ? e.message : String(e)
+  return message.length > ERROR_LOG_MAX ? `${message.slice(0, ERROR_LOG_MAX - 1)}…` : message
+}
+
+/**
+ * One row in session_sync_log for a pass's outcome: zero counts for an empty
+ * answer, which finished with nothing to count, or the error for a pass that
+ * failed. A pass that has records logs its counts through applyMasterList, as a
+ * LegiScan full pass does. The States page reads these rows. A pass that fails
+ * after applyMasterList logged its counts adds a failed row beside that one, and
+ * it is the newer, so the pass reads as failed.
+ */
+function logOutcome(
+  db: Db, session: SessionRow, outcome: { status: 'ok' } | { status: 'failed'; error: string },
+): Promise<boolean> {
+  return logSyncPass(db, {
+    syncedAt: nowDb(),
+    state: session.state,
+    sessionId: session.sessionId,
+    sessionName: session.sessionName,
+    billsChecked: 0,
+    billsChanged: 0,
+    billsQueued: 0,
+    ...outcome,
+  }, { tolerate: true, label: `${session.state} ${session.sessionName} (${outcome.status})` })
 }
 
 /**
@@ -206,6 +308,7 @@ async function upsertProviderPeople(db: Db, providerId: string, list: ProviderPe
       ...(p.first_name !== undefined ? { firstName: p.first_name } : {}),
       ...(p.middle_name !== undefined ? { middleName: p.middle_name } : {}),
       ...(p.last_name !== undefined ? { lastName: p.last_name } : {}),
+      ...(p.bioguide_id !== undefined ? { bioguideId: p.bioguide_id } : {}),
       ...(p.bio !== undefined ? { bioJson: JSON.stringify(p.bio) } : {}),
       provider: providerId,
     }
@@ -220,14 +323,22 @@ async function upsertProviderPeople(db: Db, providerId: string, list: ProviderPe
  * session with no stored ETag. Otherwise the provider gets the ETag of the
  * last snapshot a pass finished, and a feed that says nothing changed (304)
  * saves the download, not the pass: the records stored from the last read
- * stand in for the snapshot. applyMasterList still runs on every record,
- * since it is what links bills to an instance that newly covers the state,
- * re-queues a changed bill whose ingest failed (its change_hash stays
+ * stand in for the snapshot. A partial snapshot (only the records changed
+ * since that ETag) replaces the stored records it names, and the rest stand
+ * in for the others; nothing is removed. applyMasterList still runs on every
+ * record, since it is what links bills to an instance that newly covers the
+ * state, re-queues a changed bill whose ingest failed (its change_hash stays
  * behind until the ingest succeeds), and moves links whose keywords no
- * longer match. The new ETag is stored only once the pass has queued and
- * sent everything, and only while the provider still owns the state, so a
- * pass that fails or loses the state to a claim midway reads in full next
- * time.
+ * longer match.
+ *
+ * A partial snapshot answering a read in full (a null ETag) can't be told
+ * from a session that lost records, so the pass fails closed before writing
+ * anything. The new ETag is stored only once the pass has queued and sent
+ * everything, only while the provider still owns the state, and only while
+ * the stored ETag is still the one this pass read: a pass that fails retries
+ * from the old ETag, a claim midway leaves the claim's null (a read in full
+ * next time), and a pass that ran alongside another one, whose records may
+ * have landed over its own, clears the ETag so the next pass reads in full.
  */
 async function runSnapshotPass(
   provider: SnapshotProvider,
@@ -237,27 +348,57 @@ async function runSnapshotPass(
   db: Db,
   ctx: ProviderContext,
   force: boolean,
+  firstIngests: { left: number } | undefined,
 ): Promise<{ records: number; queued: number; refreshed: number }> {
-  const etag = force ? null : session.snapshotEtag ?? null
+  const storedEtag = session.snapshotEtag ?? null
+  const etag = force ? null : storedEtag
   const snapshot = await provider.snapshot({ ...storedSession(session), etag }, ctx)
+  if (snapshot.partial && snapshot.unchanged) {
+    throw new Error(`[sync-${provider.id}] ${session.sessionName}: a snapshot can't be both partial and unchanged; writing nothing`)
+  }
+  if (snapshot.partial && etag === null) {
+    throw new Error(`[sync-${provider.id}] ${session.sessionName}: a partial snapshot answered a read in full (no ETag); writing nothing`)
+  }
   if (snapshot.people && snapshot.people.length > 0) await upsertProviderPeople(db, provider.id, snapshot.people)
   if (snapshot.unchanged) console.log(`[sync-${provider.id}] ${session.sessionName} unchanged since its last read; matching its stored records`)
   // Bills a cutover moved to this provider keep their row ids
   // (lib/carriedIds.ts). Stored records were stored under them already.
+  const listed = snapshot.unchanged
+    ? []
+    : withCarriedBillIds(snapshot.records, await carriedBillIds(db, provider.id, session.state))
   const records = snapshot.unchanged
     ? await storedRecords(db, provider.id, session.sessionId)
-    : withCarriedBillIds(snapshot.records, await carriedBillIds(db, provider.id, session.state))
-  // An empty answer is nothing new.
-  if (records.length === 0) return { records: 0, queued: 0, refreshed: 0 }
+    : snapshot.partial
+      ? withChanges(await storedRecords(db, provider.id, session.sessionId), listed)
+      : listed
+  if (snapshot.partial) console.log(`[sync-${provider.id}] ${session.sessionName}: ${listed.length} records changed since its last read; matching them with its stored records`)
+  // An empty answer is nothing new, and a pass that finished all the same, unless the
+  // provider lost the state meanwhile (a pass with records logs nothing then, either).
+  if (records.length === 0) {
+    if (await ownerOfState(db, session.state) === provider.id) await logOutcome(db, session, { status: 'ok' })
+    return { records: 0, queued: 0, refreshed: 0 }
+  }
 
-  const entries = await storeRecords(provider, session, records, db, ctx)
+  // Only what the provider just listed is written. A record read from
+  // storage is never written back: a forced run may have stored a newer one
+  // since, which an unchanged pass or a partial one whose watermark didn't
+  // move would otherwise overwrite under an ETag the guard below can't tell
+  // apart.
+  const entries = await storeRecords(provider, session, records, db, ctx, new Set(listed.map(r => r.billId)))
   const queue = ingestQueueFor(provider, env)
   // Every bill a cutover moved here gets its first ingest, tracked or not.
   const queued = new Set(await applyMasterList(session, entries, covering, env, db, queue,
-    { deferQueuedUpdates: true, ingestMovedBills: true }))
-  const newEtag = snapshot.unchanged ? session.snapshotEtag ?? null : snapshot.etag ?? null
-  if (newEtag !== (session.snapshotEtag ?? null) && await ownerOfState(db, session.state) === provider.id) {
-    await db.update(sessions).set({ snapshotEtag: newEtag }).where(eq(sessions.sessionId, session.sessionId))
+    { deferQueuedUpdates: true, ingestMovedBills: true, tolerateLogFailure: true, ingestAll: firstIngests }))
+  const newEtag = snapshot.unchanged ? storedEtag : snapshot.etag ?? null
+  if (await ownerOfState(db, session.state) === provider.id) {
+    const still = storedEtag === null ? isNull(sessions.snapshotEtag) : eq(sessions.snapshotEtag, storedEtag)
+    const stored = await db.update(sessions).set({ snapshotEtag: newEtag })
+      .where(and(eq(sessions.sessionId, session.sessionId), still))
+      .returning({ sessionId: sessions.sessionId })
+    if (stored.length === 0) {
+      console.warn(`[sync-${provider.id}] ${session.sessionName}: another pass stored an ETag during this one; clearing it so the next pass reads in full`)
+      await db.update(sessions).set({ snapshotEtag: null }).where(eq(sessions.sessionId, session.sessionId))
+    }
   }
 
   const refreshed = provider.detailsRefresh
@@ -289,12 +430,21 @@ async function storedRecords(db: Db, providerId: string, sessionId: number): Pro
   }
 }
 
+/** The stored records with a partial snapshot's records in place of the ones they name, by bill id, and its new ones after. */
+function withChanges(stored: ProviderRecord[], changed: ProviderRecord[]): ProviderRecord[] {
+  const byId = new Map(stored.map(r => [r.billId, r]))
+  for (const r of changed) byId.set(r.billId, r)
+  return [...byId.values()]
+}
+
 /**
  * Store each record whose hash changed in provider_records, and return the
- * full-pass entries for all of them.
+ * full-pass entries for all of them. With `writable`, only the records it
+ * names are stored, and the rest are only mapped.
  */
 async function storeRecords(
   provider: SnapshotProvider, session: SessionRow, records: ProviderRecord[], db: Db, ctx: ProviderContext,
+  writable?: Set<number>,
 ) {
   // Stored hashes (to skip unchanged records) and stored descriptions (a list
   // record may have none; the ingestor fills them, and the pass would
@@ -320,7 +470,7 @@ async function storeRecords(
   }
   const entries = []
   for (const record of records) {
-    if (storedHash.get(record.billId) !== record.hash) {
+    if ((!writable || writable.has(record.billId)) && storedHash.get(record.billId) !== record.hash) {
       const values = {
         billId: record.billId,
         provider: provider.id,
@@ -390,8 +540,6 @@ export async function importProviderMeasures(
 
   const ctx = providerContext(provider, env, db)
   const found = await provider.importMeasures(numbers, ctx)
-  // Owners seeded before any session is slugged: the plain slug goes to the owner's session.
-  await loadStateOwners(env, db)
   const result: ImportReport = { imported: [], notFound: found.notFound, invalid: found.invalid }
   const queue = ingestQueueFor(provider, env)
   const covering = [{ tenantId, stateCoverage: tenant.stateCoverage, queueId: tenant.queueId ?? null }]

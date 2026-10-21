@@ -14,6 +14,9 @@ export type Env = OcaEnv & {
   DB: D1Database
   BILLS_BUCKET?: R2Bucket
   BILL_QUEUE?: Queue
+  // Comment attachments (#465): on once this bucket is bound, never on a
+  // DEMO_MODE instance.
+  ATTACHMENTS_BUCKET?: R2Bucket
   RESEND_API_KEY: string
   // AI Gateway (unified billing) — gateway-routed path
   CF_AIG_TOKEN?: string        // Account-level CF token with AI Gateway Run scope
@@ -54,6 +57,11 @@ export type Env = OcaEnv & {
   // (`[[ratelimits]]` in wrangler.toml, per tenant env). Optional: absent in dev/
   // tests → checkRateLimit fails open.
   LOGIN_RATE_LIMITER?: RateLimiter
+  // Workers Rate Limiting binding for the one-click mute link (#685): 120/60s
+  // per IP, since mail providers send many members' unsubscribes from a few
+  // IPs. Optional: an instance whose wrangler.toml predates it falls back to
+  // LOGIN_RATE_LIMITER (routes/muteLink.ts); with neither, it fails open.
+  MUTE_LINK_RATE_LIMITER?: RateLimiter
   // Workers Rate Limiting binding for the additive writes a DEMO_MODE tenant
   // allows. Demo auto-login hands any caller a session with no interaction, so
   // those writes are anonymous by construction and keyed per-IP in demoReadOnly.
@@ -83,9 +91,11 @@ export type MatchProvenance = 'routine' | 'bulk'
 
 export type TenantQueueMessage = {
   tenantId: string
-  billId: string // the bill handle, "legiscan:{bill_id}" (older data and tests may hold legacy "ocd-bill/{uuid}" ids)
+  billId: string // the bill handle, "bill:{bill_id}", or its legacy twin "legiscan:{bill_id}" from an older central (normalizeHandle in shared/billHandle; older data and tests may hold legacy "ocd-bill/{uuid}" ids)
   forceMetadata?: boolean // Skip providerUpdatedAt dedup; re-upsert metadata; still gates AI on keywords
   forceAI?: boolean // Skip text-hash dedup AND keyword gate; always run the model (Gemini)
+  /** Set ONLY by central's direct operator reprocess (never through a tenant binding): lets this message run AI on a DEMO_MODE tenant. */
+  operatorAi?: true
   interactive?: true     // Set ONLY by promote-bill and reprocess-bill routes; never inferred
   stubOnly?: boolean // Update stub metadata only; skip full bill fetch and AI
   probe?: string // A delivery check from scripts/verify-instance.sh: record arrival under this nonce and touch no bill

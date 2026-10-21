@@ -1,20 +1,27 @@
-import { and, eq, lt, sql } from 'drizzle-orm'
-import { processBill } from '../lib/llm'
+import { and, eq, inArray, lt, sql } from 'drizzle-orm'
+import { processBill, type ProcessBillResult } from '../lib/llm'
 import { filterTagsToTaxonomy } from '../lib/taxonomy'
 import { centralFetch } from '../lib/centralFetch'
+import { syncTitleKey } from '../lib/companionSuggestion'
 import { recordDeliveryProbe } from '../lib/deliveryProbe'
 import { loadAnalysisInputs, loadBillTextForAi } from '../lib/analysisInputs'
+import { claimLinksEnabled, type ResolvedClaimSource } from '../lib/claimSources'
+import { resolveClaimSources } from '../lib/claimResolution'
+import { recordClaimSourcesCutOff } from '../lib/claimSourceCounts'
 import { hearingUid } from '../lib/hearingUid'
 import { matchesKeywords, billMatchText } from '../lib/keywords'
 import { bills, associationConfig, feedEvents, billTexts, calendarEvents } from '../db/schema'
 import { syncBillSubjects } from '../lib/billSubjects'
+import { syncBillCommittees, type CentralCommittee } from '../lib/billCommittees'
 import { syncIdenticalCompanions } from '../lib/companionGroups'
 import { pullCompanions } from '../lib/companionAnalysis'
-import { loadGroupTeamValues, recordFieldChanges, recordGroupTagChanges, snapshotGroupTags } from '../lib/teamFields'
 import { nowDb } from '../lib/dbTime'
 import { addToNewMatchesRow } from '../lib/newMatch'
+import { noteLegislativeEvent } from '../lib/noPriorityRow'
 import { LEGACY_STATUS_ORDER, LEGISCAN_CODE_WORDS } from '../../../shared/legacyStatusOrder'
 import { httpUrl } from '../../../shared/httpUrl'
+import { handleForms, legacyHandle } from '../../../shared/billHandle'
+import { resolveStoredHandle } from '../lib/storedHandle'
 import type { AppDb, Env, TenantQueueMessage } from '../types'
 
 class AiShedError extends Error {
@@ -117,7 +124,7 @@ async function recordShedAttempt(
     // into permanent silence. A later success clears aiError.
     await db.update(bills)
       .set({ aiAttemptedAt: nowDb(), aiError: note.slice(0, 300) })
-      .where(eq(bills.externalId, billId))
+      .where(inArray(bills.externalId, handleForms(billId)))
       .run()
   } catch (recordErr) {
     console.error(`[processor] could not record shed for ${billId}:`, recordErr)
@@ -223,7 +230,7 @@ type CentralBill = {
   textHash: string | null
   textR2Key: string | null
   textStatus?: 'not_checked' | 'no_texts' | 'available' | 'in_r2'
-  texts: Array<{ docId: string; note: string; date: string; links: Array<{ url: string; mediaType: string }> }>
+  texts: Array<{ docId: string; note: string; date: string; /** This document's hash. Absent from a central older than #603. */ textHash?: string | null; links: Array<{ url: string; mediaType: string }> }>
   /** `videoUrl`: a recording of the meeting, when the provider publishes one. Absent from an older central. */
   actions: Array<{ description: string; date: string; chamber: string | null; classification: string[]; order: number; videoUrl?: string | null }>
   sponsors: Array<{ name: string; party: string | null; role: string | null; primary: boolean; personId: string | null; url: string | null }>
@@ -231,6 +238,13 @@ type CentralBill = {
   /** `sastBillId` is central's id for the other bill, and `kind` what the provider's vocabulary makes of the relationship. Both absent from an older central. */
   relatedBills: Array<{ identifier: string; session: string; relationType: string; sastBillId?: number | null; kind?: string }>
   subjects?: string[]
+  /** The committee the bill is pending in, and its referrals, each named by central's committee row (#471). */
+  committee?: CentralCommittee | null
+  referrals?: CentralCommittee[]
+  /** The bill's chamber as central stores it. Empty for a stub central hasn't fetched. */
+  body?: string | null
+  /** What title-matched companion suggestions match the bill by (#521), or null. Absent from an older central. */
+  titleKey?: string | null
 }
 
 /**
@@ -272,23 +286,33 @@ export async function processCentralNotification(
   db: AppDb,
 ): Promise<void> {
   if (msg.tenantId !== env.TENANT_ID) return
-
-  // A delivery check (scripts/verify-instance.sh): record that it arrived and
-  // stop. It must reach no bill write, no feed event, and no analysis.
+  // A delivery check (scripts/verify-instance.sh): record that it arrived, under
+  // the handle central sent, and stop. It must reach no bill write, no feed
+  // event, and no analysis.
   if (msg.probe !== undefined) return recordDeliveryProbe(msg, env, db)
+
+  // A handle may arrive in either form (#305). Everything below, including the
+  // bill lookup and the handle it is stored under, sees the spelling this
+  // instance stores for the bill. Only the reads from central and the calendar
+  // UIDs use the legacy one.
+  msg = { ...msg, billId: await resolveStoredHandle(db, msg.billId) }
 
   // When this copy of the bill was read: texts stored later come from a newer one.
   const fetchedAt = nowDb()
-  const res = await centralFetch(env, `/bills/${msg.billId}`)
+  const res = await centralFetch(env, `/bills/${legacyHandle(msg.billId)}`)
   if (!res.ok) throw new Error(`Central API returned ${res.status} for bill ${msg.billId}`)
 
   const centralBill = await res.json() as CentralBill
 
   await applyCentralBill(msg, env, db, centralBill, fetchedAt)
+  // After every path too, so a state opted into or out of title-matched
+  // suggestions reaches the bill on any delivery (lib/companionSuggestion.ts).
+  await syncTitleKey(db, msg.billId, centralBill)
   // After every path above, including the ones that skip an unchanged bill:
   // a bill's identical companions can change without its provider data
   // changing (a vocabulary edit), and this is cheap when nothing did.
   await syncIdenticalCompanions(db, msg.billId, centralBill.relatedBills)
+  if (msg.stubOnly || msg.metadataOnly) await syncGroupedBillTexts(db, msg.billId, centralBill, fetchedAt)
   await pullCompanions(env, db, msg)
 }
 
@@ -350,6 +374,7 @@ async function applyCentralBill(
           })
           .where(eq(bills.id, existing.id))
         await syncBillSubjects(db, existing.id, centralBill.state, centralBill.subjects ?? [])
+        await syncBillCommittees(db, existing.id, centralBill.state, centralBill.committee, centralBill.referrals)
       }
       return
     }
@@ -398,13 +423,18 @@ async function applyCentralBill(
       subjects: centralBill.subjects?.length ? JSON.stringify(centralBill.subjects) : null,
     }
 
-    const { id: stubInternalId } = await upsertBill(db, msg.billId, { ...stubData, updatedAt: nowStub }, existing)
+    const { id: stubInternalId } = await upsertBill(db, msg.billId, { ...stubData, updatedAt: nowStub })
     await syncBillSubjects(db, stubInternalId, centralBill.state, centralBill.subjects ?? [])
+    await syncBillCommittees(db, stubInternalId, centralBill.state, centralBill.committee, centralBill.referrals)
     return
   }
 
   // Metadata-only path: upsert metadata from central, skip text fetch + AI.
   // Used to refresh denormalized fields (history, sponsors, etc.) without burning AI quota.
+  // It leaves `providerUpdatedAt` out, so the stored version stays what it was (empty for a bill it
+  // creates). A bill whose text changed while a refresh was draining must still look changed to its
+  // regular delivery, which runs the full path; stamping central's version here would have that
+  // delivery skipped and the summary left on the old text (#789).
   if (msg.metadataOnly) {
     const primarySponsorMd = centralBill.sponsors.find(s => s.primary) ?? centralBill.sponsors[0] ?? null
     const coSponsorListMd = centralBill.sponsors
@@ -434,7 +464,6 @@ async function applyCentralBill(
       abstract: centralBill.abstract ?? null,
       url: centralBill.stateUrl ?? null,
       stateUrl: centralBill.stateUrl ?? null,
-      providerUpdatedAt: centralBill.updatedAt,
       sponsor: primarySponsorMd?.name ?? null,
       sponsorParty: primarySponsorMd?.party ?? null,
       sponsorUrl: primarySponsorMd?.url ?? null,
@@ -452,8 +481,9 @@ async function applyCentralBill(
       subjects: centralBill.subjects?.length ? JSON.stringify(centralBill.subjects) : null,
     }
 
-    const { id: metadataInternalId } = await upsertBill(db, msg.billId, { ...metadataData, updatedAt: nowMd }, existing)
+    const { id: metadataInternalId } = await upsertBill(db, msg.billId, { ...metadataData, updatedAt: nowMd })
     await syncBillSubjects(db, metadataInternalId, centralBill.state, centralBill.subjects ?? [])
+    await syncBillCommittees(db, metadataInternalId, centralBill.state, centralBill.committee, centralBill.referrals)
     return
   }
 
@@ -471,12 +501,16 @@ async function applyCentralBill(
   // is news even when its provider data hasn't: central says so with the match type alone, and nothing here
   // stored it.
   const newlyMatched = !!msg.matchType && !existing?.matchType
-  if (!msg.forceMetadata && !msg.forceAI && !msg.stubOnly && !msg.metadataOnly && !centralHasNewR2Key && !newlyMatched && existing?.providerUpdatedAt === centralBill.updatedAt && (existing?.aiProcessedAt != null || existing?.aiSkipReason != null)) {
+  // A group analysis asks for the analysis of a bill that didn't match (lib/companionAnalysis.ts), such as a
+  // group's lead whose newest text isn't the one its analysis read. Its own delivery already stored that
+  // version without analyzing it, so the version alone can't say whether the analysis is current: the text
+  // hash dedup below does.
+  if (!msg.forceMetadata && !msg.forceAI && !msg.groupAnalysis && !msg.stubOnly && !msg.metadataOnly && !centralHasNewR2Key && !newlyMatched && existing?.providerUpdatedAt === centralBill.updatedAt && (existing?.aiProcessedAt != null || existing?.aiSkipReason != null)) {
     // Calendar reconciliation must still run even when the bill itself hasn't changed,
     // since hearings are updated independently of bill metadata.
-    if (msg.calendar && existing && (existing.matchType !== null || existing.priority !== null)) {
+    if (msg.calendar && existing && (existing.matchType !== null || existing.priority !== null || existing.groupKey !== null)) {
       const nowEarly = nowDb()
-      await reconcileCalendar(db, existing.id, msg, false, nowEarly)
+      await reconcileCalendar(db, env, existing.id, msg, false, nowEarly)
     }
     return
   }
@@ -529,6 +563,7 @@ async function applyCentralBill(
     history: history.length > 0 ? JSON.stringify(history) : null,
     relatedBillIds: centralBill.relatedBills.length > 0 ? JSON.stringify(centralBill.relatedBills.map(r => r.identifier)) : null,
     centralSyncedAt: now,
+    fullyIngestedAt: now,
     textR2Key: centralBill.textR2Key,
     textStatus: centralBill.textStatus ?? null,
     subjects: centralBill.subjects?.length ? JSON.stringify(centralBill.subjects) : null,
@@ -558,6 +593,8 @@ async function applyCentralBill(
   // whose match text (title, abstract, bill number) doesn't satisfy the tenant's current keywords would
   // never re-run AI on text changes, freezing its summary at promote-time.
   let shouldRunAi = msg.forceAI || msg.groupAnalysis || derivedMatchType !== null
+  // A group analysis declined for want of a text hash, for the bill a lead analysis is queued for.
+  const groupAnalysisNoHash = !!msg.groupAnalysis && !hasFullText && (centralBill.texts?.length ?? 0) > 0
   if (shouldRunAi && !hasFullText) {
     const textCount = centralBill.texts?.length ?? 0
     const why = textCount === 0
@@ -581,7 +618,11 @@ async function applyCentralBill(
   // `forceAI` deliberately does NOT override this — a demo's content is whatever
   // its seed shipped, and there is no visitor action that should spend a model
   // call.
-  if (shouldRunAi && env.DEMO_MODE === 'true') {
+  //
+  // The one exception is `operatorAi`, which only central's direct operator
+  // reprocess sets (it drops the flag on any call through a tenant binding), so
+  // the operator can refresh a demo's analyses and no visitor can cause it.
+  if (shouldRunAi && env.DEMO_MODE === 'true' && !msg.operatorAi) {
     console.log(`[processor] demo tenant: skipping AI for ${msg.billId}`)
     shouldRunAi = false
   }
@@ -597,21 +638,30 @@ async function applyCentralBill(
   // bill the reader had just prioritized. Only forceAI forces the model.
   const aiDedup = !msg.forceAI && existing?.lastAiTextHash && existing.lastAiTextHash === centralBill.textHash
 
-  let aiResult: { summary: string; tags: string[]; relevanceScore: number; affectedCitations: string[] } | null = null
+  let aiResult: ProcessBillResult | null = null
+  // The document the model read, which claim sources are pinned to (#568).
+  let claimSourcesPin: { docId: string; textHash: string | null } | null = null
+  // The model's claim sources, each resolved against that document and the summary (#569).
+  let resolvedClaimSources: ResolvedClaimSource[] | null = null
   let aiSkipReason: AiSkipReason | null = null
   // Transient failure text, recorded so a bill that failed is distinguishable
   // from one never attempted. Truncated — this is a diagnostic breadcrumb, not a log.
   let aiError: string | null = null
   if (shouldRunAi && !aiDedup) {
     const { aiContext, relevanceQuestion, taxonomy } = await loadAnalysisInputs(db)
-    const { billText, billPdfBase64, hasFullText } = await loadBillTextForAi(env, msg.billId, centralBill)
+    const { billText, billPdfBase64, hasFullText, textDocId, textHash } = await loadBillTextForAi(env, msg.billId, centralBill)
     if (!hasFullText) console.log(`[processor] No full text for ${centralBill.number}, AI ran on title+abstract only`)
+    // Ask for claim sources only when they can be pinned to the document read:
+    // not on the title and abstract, and not from an older central that does
+    // not name the document it served.
+    if (textDocId !== null && await claimLinksEnabled(db)) claimSourcesPin = { docId: textDocId, textHash }
+    const claimSources = claimSourcesPin !== null
 
     const tier: 'flex' | 'priority' = msg.interactive ? 'priority' : 'flex'
 
     try {
       aiResult = await processBill(
-        { billNumber: centralBill.number, title: centralBill.title, text: billText, pdfBase64: billPdfBase64, taxonomy, aiContext, relevanceQuestion },
+        { billNumber: centralBill.number, title: centralBill.title, text: billText, pdfBase64: billPdfBase64, taxonomy, aiContext, relevanceQuestion, claimSources },
         env,
         tier,
       )
@@ -621,7 +671,7 @@ async function applyCentralBill(
           console.warn(`[processor] priority shed for ${centralBill.number}, retrying at standard tier`)
           try {
             aiResult = await processBill(
-              { billNumber: centralBill.number, title: centralBill.title, text: billText, pdfBase64: billPdfBase64, taxonomy, aiContext, relevanceQuestion },
+              { billNumber: centralBill.number, title: centralBill.title, text: billText, pdfBase64: billPdfBase64, taxonomy, aiContext, relevanceQuestion, claimSources },
               env,
               'standard',
             )
@@ -663,13 +713,47 @@ async function applyCentralBill(
         console.warn(`[processor] dropped ${dropped.length} off-taxonomy tag(s) for ${centralBill.number}: ${JSON.stringify(dropped)}`)
       }
       aiResult.tags = filterTagsToTaxonomy(aiResult.tags, allowed)
+
+      // A response cut off inside the claim sources was retried without them
+      // (lib/llm.ts), which leaves a null list that looks like never asked. Count
+      // it so operators can see it (#573). Extra to the analysis, so a failure
+      // to count never fails it.
+      if (aiResult.claimSourcesRetried) {
+        try {
+          await recordClaimSourcesCutOff(db)
+        } catch (err) {
+          console.error(`[processor] could not count the claim sources cut-off for ${centralBill.number}:`, err)
+        }
+      }
+
+      // Resolve the claim sources here, while the document the model read is in
+      // hand: a PDF has no text to match, so its quotes stay unverified.
+      if (Array.isArray(aiResult.claimSources) && claimSourcesPin !== null) {
+        try {
+          const resolved = resolveClaimSources(aiResult.claimSources, aiResult.summary, billPdfBase64 === undefined ? billText : null)
+          resolvedClaimSources = resolved.items
+          if (resolved.dropped > 0) {
+            console.warn(`[processor] dropped ${resolved.dropped} claim source(s) for ${centralBill.number} whose claim is not in the summary`)
+          }
+          if (resolved.capped > 0 || resolved.unsearched > 0) {
+            console.warn(`[processor] ${resolved.capped} claim source(s) past the limit and ${resolved.unsearched} fuzzy search(es) past the work budget left ungrounded for ${centralBill.number}`)
+          }
+        } catch (err) {
+          // Extra to the analysis, so it never fails it: the summary, tags, and
+          // score are the contract.
+          console.error(`[processor] could not resolve claim sources for ${centralBill.number}:`, err)
+          resolvedClaimSources = []
+        }
+      }
     }
   }
 
   const aiTextDocId = pickLatestTextDocId(centralBill)
+  const leadCaughtUp = !!msg.groupAnalysis && (existing?.aiProcessedAt != null || existing?.aiSkipReason != null)
+    && ((shouldRunAi && !!aiDedup) || groupAnalysisNoHash)
   const queueChanges = msg.changes ?? []
 
-  // New-match signal: the first time a bill becomes a fully-analyzed KEYWORD match
+  // New-match signal: the first time a bill becomes an analyzed KEYWORD match
   // (manual adds are excluded — the adding admin already knows). Set once; later
   // re-analysis / status changes / keyword-resync re-promotes won't re-surface it.
   //
@@ -680,7 +764,8 @@ async function applyCentralBill(
   const priorMatchEvent = !aiResult && derivedMatchType === 'keyword' && !existing?.newMatchAt && existing?.matchType === null && existing.aiProcessedAt != null
     ? !!(await db.select({ id: feedEvents.id }).from(feedEvents).where(and(eq(feedEvents.billId, existing.id), eq(feedEvents.type, 'bill_matched'))).get())
     : null
-  const isFirstKeywordMatch = derivedMatchType === 'keyword' && !existing?.newMatchAt
+  // An operator's analysis of a demo refreshes content; it is not news, so it never marks a bill new.
+  const isFirstKeywordMatch = derivedMatchType === 'keyword' && !existing?.newMatchAt && !msg.operatorAi
     && (!!aiResult || priorMatchEvent === false)
 
   // Where the match came from, as central declared it. The declaration rides
@@ -688,7 +773,11 @@ async function applyCentralBill(
   // bill has text to analyse, so it is kept on the bill until the match is
   // recorded and goes on the bill_matched event from there. Once the match
   // is recorded it never changes. With no declaration it stays NULL: bulk.
-  const declaredProvenance = !existing?.newMatchAt && msg.matchProvenance ? msg.matchProvenance : undefined
+  // A group analysis is for a bill that didn't match (lib/companionAnalysis.ts)
+  // and brings no match, so any declaration on it is ignored: it would
+  // otherwise be kept until the bill matched on its own, and be taken for that
+  // match's provenance.
+  const declaredProvenance = !existing?.newMatchAt && !msg.groupAnalysis && msg.matchProvenance ? msg.matchProvenance : undefined
   const matchProvenance = declaredProvenance ?? existing?.matchProvenance ?? null
 
   const upsertData = {
@@ -706,6 +795,14 @@ async function applyCentralBill(
       // layer over bill text, kept verbatim so a later consumer can decide what
       // structure it needs.
       affectedCitations: JSON.stringify(aiResult.affectedCitations),
+      // Every analysis writes all three, so a re-analysis replaces the list,
+      // and one that did not ask clears it: a list never outlives its summary.
+      // Not yet surfaced anywhere.
+      ...(resolvedClaimSources !== null && claimSourcesPin !== null ? {
+        claimSources: JSON.stringify(resolvedClaimSources),
+        claimSourcesDocId: claimSourcesPin.docId,
+        claimSourcesTextHash: claimSourcesPin.textHash,
+      } : { claimSources: null, claimSourcesDocId: null, claimSourcesTextHash: null }),
       // Clear any prior permanent skip — AI ran successfully on this text version.
       aiSkipReason: null,
       // …and any prior transient failure, for the same reason.
@@ -727,6 +824,17 @@ async function applyCentralBill(
       // next pass retries rather than deduping itself into permanent silence.
       aiAttemptedAt: now,
       aiError,
+    } : leadCaughtUp ? {
+      // A group analysis of an analyzed (or skipped) bill, queued because its
+      // newest text isn't the one its analysis read (lib/companionAnalysis.ts),
+      // that ran no model: the text hash says the analysis already read this
+      // text, or central sent no hash to analyze by. Record the newest text as
+      // read and release the claim, or the bill stays stale and is queued
+      // again once a floor, forever. Claim sources stay pinned to their own
+      // document.
+      lastAiTextDocId: aiTextDocId,
+      aiAttemptedAt: null,
+      aiHealAttempts: 0,
     } : msg.forceAI && !shouldRunAi ? {
       // A forceAI pass that declined to run AI — no full text in central, or a
       // demo tenant. It produced no result, no skip reason and no error, so
@@ -752,76 +860,50 @@ async function applyCentralBill(
     ...(queueChanges.length > 0 ? { updatedAt: now } : {}),
   }
 
-  // Tags are a team field (lib/teamFields.ts), set only by the analysis. The
-  // group's tags before this one, for the team event recording a change.
-  const tagsBefore = aiResult && existing ? (await loadGroupTeamValues(db, existing.id)).analysis?.tags ?? [] : []
-  // An analysis records the tags it leaves the group with, including the effect of the match type it
-  // arrives with, so the upsert records a match type's effect only when no analysis runs.
-  const { id: billInternalId, isNew } = await upsertBill(db, msg.billId, upsertData, aiResult ? undefined : existing)
-  if (aiResult) {
-    // The group's tags after this analysis: its own when the bill is tracked or
-    // the group has no tracked analysis, the tracked bill's otherwise, so a
-    // pulled companion's analysis records no change to them.
-    const tagsAfter = (await loadGroupTeamValues(db, billInternalId)).analysis?.tags ?? []
-    await recordFieldChanges(db, [{ billId: billInternalId, field: 'tags', label: 'tags', old: tagsBefore, new: tagsAfter }], null)
-  }
+  const { id: billInternalId, isNew } = await upsertBill(db, msg.billId, upsertData)
   await syncBillSubjects(db, billInternalId, centralBill.state, centralBill.subjects ?? [])
+  await syncBillCommittees(db, billInternalId, centralBill.state, centralBill.committee, centralBill.referrals)
 
-  // bill_texts: upsert from normalized versions
-  for (const t of centralBill.texts) {
-    const link = t.links[0] ?? null
-    const altLink = t.links[1] ?? null
-    await db.insert(billTexts).values({
-      id: crypto.randomUUID(),
-      billId: billInternalId,
-      docId: t.docId,
-      type: t.note,
-      date: t.date,
-      mime: link?.mediaType ?? 'text/html',
-      textHash: '',
-      stateLink: link?.url ?? null,
-      altStateLink: altLink?.url ?? null,
-      createdAt: now,
-      updatedAt: now,
-    }).onConflictDoUpdate({
-      target: billTexts.docId,
-      set: { type: t.note, date: t.date, mime: link?.mediaType ?? 'text/html', stateLink: link?.url ?? null, altStateLink: altLink?.url ?? null, updatedAt: now },
-    })
-  }
-  // Central never drops a text except when a cutover moves the bill to another
-  // provider, which clears the old provider's. A text it no longer lists would
-  // only fail to open, so it goes here too. A text another run stored from a
-  // newer copy than this one is left alone.
-  await db.delete(billTexts).where(and(
-    eq(billTexts.billId, billInternalId),
-    sql`${billTexts.docId} NOT IN (SELECT value FROM json_each(${JSON.stringify(centralBill.texts.map(t => t.docId))}))`,
-    lt(billTexts.updatedAt, fetchedAt),
-  ))
+  await syncBillTexts(db, billInternalId, centralBill.texts, fetchedAt, now)
 
-  // Feed events: only for tracked bills (keyword or manual) with AI data and detected changes from central.
+  // Feed events: only for tracked bills (keyword or manual) and members of a companion group (a companion pulled
+  // in through its group has no match type, and its actions belong in the group's card, #381) with AI data and
+  // detected changes from central.
   // F5+B5: switched gate from `!existing.isStub` to `existing.matchType !== null` (canonical field).
-  if (!isNew && existing?.aiProcessedAt && existing.matchType !== null && queueChanges.length > 0) {
-    await db.insert(feedEvents).values({
-      id:       crypto.randomUUID(),
-      type:     'bill_updated',
-      billId:   billInternalId,
-      userId:   'system',
-      metadata: JSON.stringify({ changes: queueChanges }),
-    })
+  if (!isNew && existing?.aiProcessedAt && (existing.matchType !== null || existing.groupKey !== null) && queueChanges.length > 0) {
+    // With the day's no-priority updates row, which stands for this update while the bill has no
+    // priority: in one batch at one time, so the two share a day and land or fail together. The
+    // time is read now, not at the message's start (`now`, before the AI call): a digest or a
+    // seen mark between the two would otherwise sit after an update dated before it, and miss it.
+    const writtenAt = nowDb()
+    await db.batch([
+      db.insert(feedEvents).values({
+        id:        crypto.randomUUID(),
+        type:      'bill_updated',
+        billId:    billInternalId,
+        userId:    'system',
+        metadata:  JSON.stringify({ changes: queueChanges }),
+        createdAt: writtenAt,
+      }),
+      noteLegislativeEvent(db, billInternalId, writtenAt),
+    ])
   }
 
-  // New keyword-match feed event: passive, system actor, written once per bill. Shows
-  // in the "All fully analyzed bills" feed scope, and — once someone prioritizes the
-  // bill — in the default feed and nav-dot too, since those admit passive events on
-  // prioritized bills (see feed.ts / PASSIVE_EVENT_TYPES). Drives the new-match
-  // worklist/digest as well.
+  // New keyword-match feed event: passive, system actor, written once per bill. On an
+  // unprioritized bill it shows nowhere on the feed: a routine match is covered by the
+  // day's new-matches row (below), and a bulk match writes no row, so its event waits
+  // unseen. Once someone prioritizes the bill, its card (and the nav dot) takes the
+  // event, since the feed admits passive events on prioritized bills (see feed.ts /
+  // PASSIVE_EVENT_TYPES).
+  // The write-once checks (here and at `priorMatchEvent`) read it too.
   //
   // Write-once is enforced against the feed_events table itself, not against
   // `new_match_at`. That column is a *worklist* flag and things legitimately clear it
   // — the demo reset nulls it on every bill so a six-hourly reset doesn't present
   // months-old content as newly matched. When a cleared row is then reprocessed with a
-  // fresh AI result (setting a priority triggers exactly that, via backfillCalendar →
-  // central reprocess), isFirstKeywordMatch goes true a second time and a duplicate
+  // fresh AI result (an operator's re-run, or central's own redelivery; a visitor's
+  // priority change doesn't, since backfillCalendar skips on a demo), isFirstKeywordMatch
+  // goes true a second time and a duplicate
   // "New bill matching your keywords" event surfaces, timestamped now, on a bill that
   // by then has a priority — so it lands in the default feed and lights the nav dot.
   if (isFirstKeywordMatch) {
@@ -843,14 +925,15 @@ async function applyCentralBill(
     }
   }
 
-  // Mirror hearings for tracked bills (priority filtering happens at read time).
-  if (msg.calendar && (derivedMatchType !== null || existing?.priority != null)) {
-    await reconcileCalendar(db, billInternalId, msg, isNew, now)
+  // Mirror hearings for tracked bills and group members (priority filtering happens at read time, by the group's priority).
+  if (msg.calendar && (derivedMatchType !== null || existing?.priority != null || existing?.groupKey != null)) {
+    await reconcileCalendar(db, env, billInternalId, msg, isNew, now)
   }
 }
 
 async function reconcileCalendar(
   db: AppDb,
+  env: Env,
   billInternalId: string,
   msg: TenantQueueMessage,
   isNew: boolean,
@@ -859,16 +942,25 @@ async function reconcileCalendar(
   const block = msg.calendar
   if (!block) return
 
+  // A demo's hearings come only from its seed (disclosed fiction that central's
+  // calendar never lists), and the reset re-derives them. Reconciling against
+  // central cancels every one of them and rewrites any it does match, so a
+  // delivery leaves a demo's calendar alone (#884).
+  if (env.DEMO_MODE === 'true') return
+
   const incomingUids = new Set<string>()
   const changedUids = new Set<string>()
 
   // Upsert current events. The ICS SEQUENCE only ever rises: it bumps when an
-  // event's content changes (its event_hash) and when a cancelled event comes
-  // back, so calendar clients take the newer copy.
+  // event's date, time, location, description, or kind changes and when a
+  // cancelled event comes back, so calendar clients take the newer copy. A new
+  // event_hash alone is stored but is no change a member can see.
   for (const e of block.events) {
     const uid = hearingUid(msg.billId, e.identityKey, msg.tenantId)
     incomingUids.add(uid)
-    const existing = await db.select({ id: calendarEvents.id, sequence: calendarEvents.sequence, eventHash: calendarEvents.eventHash, status: calendarEvents.status })
+    const existing = await db.select({ id: calendarEvents.id, sequence: calendarEvents.sequence, eventHash: calendarEvents.eventHash, status: calendarEvents.status,
+      date: calendarEvents.date, time: calendarEvents.time, location: calendarEvents.location,
+      description: calendarEvents.description, kind: calendarEvents.kind })
       .from(calendarEvents).where(eq(calendarEvents.uid, uid)).get()
 
     // The body event shown in the entry's place (lib/bodyEvents.ts). A central
@@ -882,9 +974,11 @@ async function reconcileCalendar(
       })
       changedUids.add(uid)
     } else {
-      const hashChanged = (existing.eventHash ?? '') !== (e.eventHash ?? '')
+      const visibleChanged = (['date', 'time', 'location', 'description'] as const).some(k => (existing[k] ?? '') !== (e[k] ?? ''))
+        // A stored kind of null predates kinds, so filling it in is no change.
+        || (!!e.kind && !!existing.kind && existing.kind !== e.kind)
       const reconfirmed = existing.status === 'cancelled'
-      const bump = hashChanged || reconfirmed
+      const bump = visibleChanged || reconfirmed
       await db.update(calendarEvents).set({
         billId: billInternalId, status: 'confirmed', ...(e.kind ? { kind: e.kind } : {}), ...cover,
         date: e.date, time: e.time, location: e.location, description: e.description,
@@ -924,13 +1018,20 @@ async function reconcileCalendar(
       console.log('[calendar-reconcile] feed event', JSON.stringify({
         billId: msg.billId, tenantId: msg.tenantId, uid, changeType: ch.changeType,
       }))
-      await db.insert(feedEvents).values({
-        id: crypto.randomUUID(),
-        type: ch.changeType,
-        billId: billInternalId,
-        userId: 'system',
-        metadata: JSON.stringify({ date: ch.date, time: ch.time, location: ch.location, description: ch.description }),
-      })
+      // With the day's no-priority updates row, in one batch at one time read just now (as for
+      // bill_updated above, and for the same reason: never the message's start).
+      const writtenAt = nowDb()
+      await db.batch([
+        db.insert(feedEvents).values({
+          id: crypto.randomUUID(),
+          type: ch.changeType,
+          billId: billInternalId,
+          userId: 'system',
+          metadata: JSON.stringify({ date: ch.date, time: ch.time, location: ch.location, description: ch.description }),
+          createdAt: writtenAt,
+        }),
+        noteLegislativeEvent(db, billInternalId, writtenAt),
+      ])
     }
   }
 }
@@ -945,24 +1046,74 @@ function resolveSessionLabel(sessionId: string | null | undefined): string {
 }
 
 /**
- * Upsert a bill from central. Pass the bill as it was just read (`existing`) to
- * record the tags event for a match type that starts the bill matching: since
- * #554 a group's tags come from a tracked member first, so a bill that starts
- * matching can move them with no analysis to record it. A match type never
- * goes back to null here, so only null to matching can change a group's tags.
+ * Store the bill's texts as central lists them: upsert each, and drop one it
+ * no longer lists unless another run stored it from a newer copy than this
+ * one. Central never drops a text except when a cutover moves the bill to
+ * another provider, which clears the old provider's, and a text it no longer
+ * lists would only fail to open.
  */
+async function syncBillTexts(db: AppDb, billId: string, texts: CentralBill['texts'], fetchedAt: string, now: string): Promise<void> {
+  for (const t of texts) {
+    const link = t.links[0] ?? null
+    const altLink = t.links[1] ?? null
+    // '' when central sent none: an older central, or a document it has no hash for.
+    const textHash = typeof t.textHash === 'string' ? t.textHash : ''
+    await db.insert(billTexts).values({
+      id: crypto.randomUUID(),
+      billId,
+      docId: t.docId,
+      type: t.note,
+      date: t.date,
+      mime: link?.mediaType ?? 'text/html',
+      textHash,
+      stateLink: link?.url ?? null,
+      altStateLink: altLink?.url ?? null,
+      createdAt: now,
+      updatedAt: now,
+    }).onConflictDoUpdate({
+      target: billTexts.docId,
+      // An empty hash never replaces a known one: it means central sent none, not that the text changed.
+      set: { type: t.note, date: t.date, mime: link?.mediaType ?? 'text/html', textHash: sql`CASE WHEN ${textHash} = '' THEN ${billTexts.textHash} ELSE ${textHash} END`, stateLink: link?.url ?? null, altStateLink: altLink?.url ?? null, updatedAt: now },
+    })
+  }
+  await db.delete(billTexts).where(and(
+    eq(billTexts.billId, billId),
+    sql`${billTexts.docId} NOT IN (SELECT value FROM json_each(${JSON.stringify(texts.map(t => t.docId))}))`,
+    lt(billTexts.updatedAt, fetchedAt),
+  ))
+}
+
+/**
+ * A stub or metadata-only delivery of a bill in a companion group stores its
+ * texts too. Central sends a bill that didn't match only stubs when it
+ * changes, and a group's lead and a pulled lead's staleness are read from
+ * the instance's texts (lib/groupLead.ts, lib/companionAnalysis.ts). Only a
+ * grouped bill, after this delivery's regrouping, and only when central lists
+ * texts, so a stub never clears a bill's texts. It runs after the stub and
+ * metadata paths, whose provider-version handling it leaves alone.
+ */
+async function syncGroupedBillTexts(db: AppDb, externalId: string, centralBill: CentralBill, fetchedAt: string): Promise<void> {
+  const texts = centralBill.texts ?? []
+  if (texts.length === 0) return
+  const row = await db.select({ id: bills.id, groupKey: bills.groupKey }).from(bills).where(eq(bills.externalId, externalId)).get()
+  if (!row || row.groupKey === null) return
+  await syncBillTexts(db, row.id, texts, fetchedAt, nowDb())
+}
+
+/** Upsert a bill from central. */
 async function upsertBill(
   db: AppDb,
   externalId: string,
   data: Record<string, unknown>,
-  existing?: { id: string; matchType: 'keyword' | 'manual' | null; groupKey: string | null } | undefined,
 ): Promise<{ id: string; isNew: boolean }> {
-  const startsMatching = existing?.matchType === null && data.matchType != null && existing.groupKey !== null
-  // The event is advisory history: failing to read or write it is logged and never fails the delivery.
-  const tagsBefore = startsMatching ? await snapshotGroupTags(db, [existing]).catch(err => {
-    console.error(`[processor] reading group tags before the match type change failed for ${externalId}:`, err)
-    return null
-  }) : null
+  // Resolve the stored spelling again just before writing: release 2's migration can rename the
+  // row after the delivery began, and the write's conflict target is the spelling, so a stale one
+  // would insert a second row for the bill (#305).
+  const stored = await resolveStoredHandle(db, externalId)
+  if (stored !== externalId) {
+    externalId = stored
+    data = { ...data, externalId: stored }
+  }
   const id = crypto.randomUUID()
   const now = nowDb()
   // Exclude externalId from the update set (it's the conflict target) and handle matchType separately
@@ -983,10 +1134,5 @@ async function upsertBill(
     })
     .returning({ id: bills.id })
     .get()
-  if (tagsBefore) {
-    await recordGroupTagChanges(db, tagsBefore).catch(err => {
-      console.error(`[processor] recording group tag changes failed for ${externalId}:`, err)
-    })
-  }
   return { id: returned.id, isNew: returned.id === id }
 }

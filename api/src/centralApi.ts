@@ -10,6 +10,7 @@ import { runDigest } from './lib/digest'
 import { sendSampleEmail, isSampleEmailType, type SampleSendResult } from './lib/sampleEmails'
 import { readDeliveryProbe, type DeliveryProbeRecord } from './lib/deliveryProbe'
 import { verifyAi, type VerifyAiResult } from './lib/verifyAi'
+import { cachedClaimSourceCounts, type ClaimSourceCountsSnapshot } from './lib/claimSourceCounts'
 import type { Env } from './types'
 
 /**
@@ -45,12 +46,26 @@ export class CentralApi extends WorkerEntrypoint<Env> {
     return sendSampleEmail(this.env, getDb(this.env.DB), to, type)
   }
 
+  /**
+   * What this instance can read, for central to check before it sends. Central
+   * names bills to an instance by the neutral handle `bill:<n>` only when this
+   * says `neutralHandles` (#305, central lib/tenantHandles.ts). An older
+   * instance has no such method, and gets `legiscan:<n>`.
+   */
+  async capabilities(): Promise<{ neutralHandles: true }> {
+    return { neutralHandles: true }
+  }
+
   async deliveryProbe(): Promise<{ probe: DeliveryProbeRecord | null }> {
     return { probe: await readDeliveryProbe(getDb(this.env.DB)) }
   }
 
   async verifyAi(billId: string): Promise<VerifyAiResult> {
     return verifyAi(this.env, getDb(this.env.DB), billId)
+  }
+
+  async claimSourceCounts(): Promise<ClaimSourceCountsSnapshot> {
+    return cachedClaimSourceCounts(getDb(this.env.DB))
   }
 
   async unknownLoginAttempts(): Promise<Array<{ id: string; email: string; ipCountry: string | null; userAgent: string | null; createdAt: string }>> {

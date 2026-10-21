@@ -25,7 +25,7 @@ vi.mock('../lib/scrollUtils', () => ({ getScrollContainer: () => scroll }))
 vi.mock('../components/RichTextEditor', () => ({ RichTextEditor: () => null }))
 vi.mock('../components/PositionBadge', () => ({ PositionBadge: ({ position }: { position: string }) => <span>{position}</span> }))
 vi.mock('../hooks/useAuth', () => ({
-  useAuth: () => ({ user: { id: 'u1', email: 'a@b.c', name: 'Alice', role: 'member', subtitle: null, canVote: false }, loading: false }),
+  useAuth: () => ({ user: { id: 'u1', email: 'a@b.c', name: 'Alice', role: 'member', canVote: false }, loading: false }),
 }))
 vi.mock('../context/DemoContext', () => ({ useDemo: () => ({ demoMode: false, demoLocked: false, settled: true, demoResetAt: 'epoch-1' }) }))
 vi.mock('../context/SidebarRefreshContext', () => ({ useSidebarRefresh: () => vi.fn() }))
@@ -46,7 +46,7 @@ const BILL = {
   sponsor: null, sponsorParty: null, sponsorUrl: null, coSponsors: [],
   lastAction: 'Referred to Judiciary', lastActionDate: '2026-03-02',
   history: [{ date: '2026-03-02', action: 'Referred to Judiciary', chamber: 'S' }],
-  voteSummary: [], subjects: [], relatedBillIds: [], companionBillIds: [], texts: [], calendar: [], supplements: [],
+  voteSummary: [], subjects: [], relatedBillIds: [], texts: [], calendar: [], supplements: [],
   amendments: [], customFieldValues: {}, matchType: 'keyword' as const, isDraft: false, draftText: null,
   createdAt: '2025-01-01 00:00:00', updatedAt: '2025-01-01 00:00:00', centralSyncedAt: null, aiProcessedAt: null,
   aiSkipReason: null, lastAiTextDocId: null, textStatus: 'not_checked' as const, myVote: null, myNote: null,

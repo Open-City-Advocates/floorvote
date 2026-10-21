@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
-import { FilterDropdown, ActiveChip, FILTER_ANY, SubjectFilterDropdown, type SubjectGroup } from './FilterPanel'
+import { FilterDropdown, ActiveChip, SubjectFilterDropdown, type SubjectGroup } from './FilterPanel'
+import { FILTER_ANY } from '../../../../shared/billFilter'
+import { MAX_SUBJECT_FILTERS } from '../../../../shared/limits'
 
 // jsdom performs no layout, so every element's real getBoundingClientRect()
 // is all zeros — same limitation as the offsetHeight stub above, same fix:
@@ -60,14 +62,15 @@ function renderPanel(props: Partial<ComponentProps<typeof SubjectFilterDropdown>
 
 // SubjectFilterDropdown's option list is virtualized (@tanstack/react-virtual):
 // with staging heading toward ~13k subject terms, an unvirtualized list hangs
-// the UI. jsdom performs no layout, so the scroll container's real offsetHeight
-// is 0 and the virtualizer would compute a 0-row viewport and render nothing —
+// the UI. jsdom performs no layout, so the scroll container's real
+// clientHeight is 0 and the virtualizer would compute a 0-row viewport and render nothing —
 // not just for the large synthetic lists below, but for every existing small
 // list in this describe block too. Rather than mocking the virtualizer away
 // (which would make it impossible to assert that a 2000-option panel renders
-// only a handful of row nodes), stub offsetHeight on HTMLElement.prototype to a
+// only a handful of row nodes), stub clientHeight on HTMLElement.prototype to a
 // realistic pixel value so the real virtualizer computes a real, bounded range
-// — the same technique used in TanStack Virtual's own jsdom tests.
+// — the same technique used in TanStack Virtual's own jsdom tests. (Before
+// virtual-core 3.19 the viewport was read from offsetHeight; both are stubbed.)
 function makeSubjectGroups(spec: Record<string, number>): SubjectGroup[] {
   return Object.entries(spec).map(([state, count]) => ({
     state,
@@ -79,15 +82,19 @@ function makeSubjectGroups(spec: Record<string, number>): SubjectGroup[] {
   }))
 }
 
-let restoreOffsetHeight: (() => void) | undefined
+let restoreViewportHeight: (() => void) | undefined
 beforeAll(() => {
-  const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
-  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 600 })
-  restoreOffsetHeight = () => {
-    if (descriptor) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', descriptor)
+  const props = ['clientHeight', 'offsetHeight'] as const
+  const descriptors = props.map((prop) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop))
+  for (const prop of props) Object.defineProperty(HTMLElement.prototype, prop, { configurable: true, value: 600 })
+  restoreViewportHeight = () => {
+    props.forEach((prop, i) => {
+      const descriptor = descriptors[i]
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, prop, descriptor)
+    })
   }
 })
-afterAll(() => { restoreOffsetHeight?.() })
+afterAll(() => { restoreViewportHeight?.() })
 
 describe('FilterPanel primitives', () => {
   it('always-present dropdown has no top row — just options, nothing pre-checked', () => {
@@ -717,5 +724,114 @@ describe('SubjectFilterDropdown — viewport edge flip', () => {
     } finally {
       restore()
     }
+  })
+})
+
+// The API answers 400 past MAX_SUBJECT_FILTERS (#692), so the picker stops one
+// short of sending it there. 80 options per state, every other one selected, so
+// the virtualized window (the first couple of dozen rows) holds both checked
+// and unchecked options.
+describe('SubjectFilterDropdown — stops at the subject limit', () => {
+  const HINT = `You can pick up to ${MAX_SUBJECT_FILTERS} subjects.`
+  const everyOther = (state: string, n: number) => Array.from({ length: n }, (_, i) => `${state}:Subject ${i * 2}`)
+  const rows = () => screen.getAllByRole('checkbox') as HTMLInputElement[]
+  const unchecked = () => rows().filter(box => !box.checked)
+  const checked = () => rows().filter(box => box.checked)
+
+  function renderAt(selected: string[], onSubjectChange: (v: string[]) => void = () => {}, groups = makeSubjectGroups({ UT: 80 })) {
+    const utils = render(
+      <SubjectFilterDropdown subjectGroups={groups} selectedSubjects={selected} onSubjectChange={onSubjectChange} />,
+    )
+    fireEvent.click(screen.getByRole('button'))
+    const rerenderWith = (next: string[]) => utils.rerender(
+      <SubjectFilterDropdown subjectGroups={groups} selectedSubjects={next} onSubjectChange={onSubjectChange} />,
+    )
+    return { ...utils, rerenderWith }
+  }
+
+  it('lets the last allowed subject be picked: with one below the cap, nothing is disabled and no hint shows', () => {
+    const selected = everyOther('UT', MAX_SUBJECT_FILTERS - 1)
+    const onSubjectChange = vi.fn()
+    renderAt(selected, onSubjectChange)
+    expect(unchecked().length).toBeGreaterThan(0)
+    expect(unchecked().every(box => !box.disabled)).toBe(true)
+    expect(screen.queryByText(HINT)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Subject 1'))
+    expect(onSubjectChange).toHaveBeenCalledTimes(1)
+    expect(onSubjectChange.mock.calls[0][0]).toHaveLength(MAX_SUBJECT_FILTERS)
+  })
+
+  it('disables every unchecked option at the cap and says why', () => {
+    renderAt(everyOther('UT', MAX_SUBJECT_FILTERS))
+    expect(unchecked().length).toBeGreaterThan(0)
+    expect(unchecked().every(box => box.disabled)).toBe(true)
+    expect(screen.getByText(HINT)).toBeInTheDocument()
+  })
+
+  it('keeps the selected options enabled at the cap, so any of them can be unchecked', () => {
+    renderAt(everyOther('UT', MAX_SUBJECT_FILTERS))
+    expect(checked().length).toBeGreaterThan(0)
+    expect(checked().every(box => !box.disabled)).toBe(true)
+  })
+
+  it('does not select a 41st subject when a disabled option is clicked', () => {
+    const onSubjectChange = vi.fn()
+    renderAt(everyOther('UT', MAX_SUBJECT_FILTERS), onSubjectChange)
+    fireEvent.click(screen.getByText('Subject 1'))
+    expect(onSubjectChange).not.toHaveBeenCalled()
+  })
+
+  it('re-enables the rest and hides the hint once one of the 40 is unchecked', () => {
+    const selected = everyOther('UT', MAX_SUBJECT_FILTERS)
+    const onSubjectChange = vi.fn()
+    const { rerenderWith } = renderAt(selected, onSubjectChange)
+
+    fireEvent.click(screen.getByText('Subject 0'))
+    const next = onSubjectChange.mock.calls[0][0] as string[]
+    expect(next).toHaveLength(MAX_SUBJECT_FILTERS - 1)
+
+    rerenderWith(next)
+    expect(unchecked().every(box => !box.disabled)).toBe(true)
+    expect(screen.queryByText(HINT)).not.toBeInTheDocument()
+  })
+
+  it('counts selected subjects across all states, not per state', () => {
+    // 20 from each of two states: neither state is near 40 alone.
+    const selected = [...everyOther('NJ', MAX_SUBJECT_FILTERS / 2), ...everyOther('UT', MAX_SUBJECT_FILTERS / 2)]
+    renderAt(selected, () => {}, makeSubjectGroups({ NJ: 40, UT: 40 }))
+    expect(unchecked().length).toBeGreaterThan(0)
+    expect(unchecked().every(box => box.disabled)).toBe(true)
+    expect(screen.getByText(HINT)).toBeInTheDocument()
+  })
+
+  it('leaves the trigger count unchanged at the cap', () => {
+    renderAt(everyOther('UT', MAX_SUBJECT_FILTERS))
+    expect(screen.getByRole('button', { name: new RegExp(`\\(${MAX_SUBJECT_FILTERS}\\)$`) })).toBeInTheDocument()
+  })
+
+  it('keeps the options disabled while a search narrows the list, because the cap is on the selection', () => {
+    renderAt(everyOther('UT', MAX_SUBJECT_FILTERS))
+    fireEvent.change(screen.getByPlaceholderText(/search subjects/i), { target: { value: 'Subject 1' } })
+    expect(unchecked().length).toBeGreaterThan(0)
+    expect(unchecked().every(box => box.disabled)).toBe(true)
+  })
+
+  it('shows how far over a saved view or link already is, and still lets its subjects be unchecked', () => {
+    const over = MAX_SUBJECT_FILTERS + 3
+    const onSubjectChange = vi.fn()
+    const { rerenderWith } = renderAt(everyOther('UT', over), onSubjectChange)
+    expect(unchecked().every(box => box.disabled)).toBe(true)
+    expect(checked().every(box => !box.disabled)).toBe(true)
+    expect(screen.getByText(`${HINT} This filter has ${over}. Remove 3 to continue.`)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Subject 0'))
+    expect(onSubjectChange).toHaveBeenCalledTimes(1)
+    expect((onSubjectChange.mock.calls[0][0] as string[]).length).toBe(over - 1)
+
+    // Three removals later it is back at the cap: still full, but no overage to explain.
+    rerenderWith(everyOther('UT', MAX_SUBJECT_FILTERS))
+    expect(screen.getByText(HINT)).toBeInTheDocument()
+    expect(screen.queryByText(/This filter has/)).not.toBeInTheDocument()
   })
 })

@@ -81,25 +81,37 @@ export type NormalizedSession = {
 export type SortColumn = 'default' | 'priority' | 'status' | 'relevance' | 'position' | 'year' | 'session' | 'lastAction' | 'bill'
 export type SortDir = 'asc' | 'desc'
 
+import type { CommitteeInfo } from '../../lib/committeeGroups'
+
 export type FacetCounts = {
   status:   Record<string, number>
   /** By common stage key (shared/statusStages.ts). */
   stage:    Record<string, number>
+  /**
+   * For each status label with bills, the stage its bills sit in (or null) and the rank they sort by. Absent from an
+   * API that predates grouping Status by stage, which leaves the page on its two separate controls.
+   */
+  statusGroups?: Record<string, { stage: string | null; rank: number }>
   priority: Record<string, number>
-  session:  Record<string, number>
+  sessionName: Record<string, number>
   year:     Record<string, number>
   state:    Record<string, number>
   position: Record<string, number>
-  tags:     Record<string, number>
-  subjects: Record<string, number>
+  tag:      Record<string, number>
+  subject:  Record<string, number>
+  /** By central's committee id (#471). Absent from an API older than the Committee filter. */
+  committee?: Record<string, number>
+  /** Each committee counted, by id: its name, state, and chamber. */
+  committeeInfo?: CommitteeInfo
   /**
    * Every state that has subjects (suppressed ones excluded), whatever filters
-   * are active, unlike `subjects`. Absent = not known yet.
+   * are active, unlike `subject`. Absent = not known yet.
    */
   subjectStates?: string[]
   /** Every state the instance has bills in, whatever filters are active. Absent = not known yet. */
   billStates?: string[]
-  customFields: Record<string, Record<string, number>>
+  /** By custom field id, then by value. */
+  field: Record<string, Record<string, number>>
   myBillsCount: number
   newMatchesCount: number
   unvotedCount: number

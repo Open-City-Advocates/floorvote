@@ -3,18 +3,18 @@ import type { Context } from 'hono'
 import { requireAuth } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { users, bills, memberVotes, associationConfig, calendarEvents } from '../db/schema'
-import { count, eq, isNotNull, isNull, and, inArray, sql, gte, lte, or } from 'drizzle-orm'
+import { count, eq, isNotNull, isNull, and, inArray, sql, gte, lte, or, not } from 'drizzle-orm'
 import type { AppEnv } from '../types'
 import { visibleCalendarEvent } from '../lib/calendarVisibility'
 import { loadDateFieldEvents } from '../lib/dateFieldEvents'
 import { filedSlug } from '../lib/sessionSlug'
 import { centralFetch } from '../lib/centralFetch'
-import { parseHandle, toHandle } from '../../../shared/billHandle'
+import { chunkedForms, normalizeHandle, parseHandle, toHandle } from '../../../shared/billHandle'
 import { loadUpcomingDemoHearings } from '../lib/demoCalendar'
 import { myGroupVote } from '../lib/companionGroups'
 import { billsAs } from './billsApi/query'
 import { getNewMatchMinRelevance, newMatchWhere } from '../lib/newMatch'
-import { hasLoggedInWhere } from '../lib/loginHistory'
+import { pendingInviteWhere } from '../lib/pendingInvite'
 
 const statsRouter = new Hono<AppEnv>()
 
@@ -28,13 +28,13 @@ statsRouter.get('/', async (c) => {
   const in30 = new Date(Date.now() + CALENDAR_UPCOMING_DAYS * 86400_000).toISOString().slice(0, 10)
   const [billCount, memberCount, calUpcoming, dateFieldUpcoming] = await Promise.all([
     db.select({ count: count() }).from(bills).get(),
-    // Members = users who have accepted their invite (used a magic link) and are not deactivated.
-    // Deliberately NOT keyed on a live `sessions` row: those are ephemeral (deleted on logout,
-    // role/deactivation change, and expiry), which would undercount real members. Matches the
-    // `hasLoggedIn` definition the Members admin page uses for its "Active" status.
+    // Members = users who are not deactivated and not a pending invite, the same split the Members
+    // admin page shows. Deliberately NOT keyed on a live `sessions` row: those are ephemeral (deleted
+    // on logout, role/deactivation change, and expiry), which would undercount real members. Nor on a
+    // used magic link alone: a superadmin who signs in through central never uses one.
     db.select({ count: count() }).from(users).where(and(
       isNull(users.deactivatedAt),
-      hasLoggedInWhere(db),
+      not(pendingInviteWhere(db)),
     )).get(),
     db.select({ count: count() })
       .from(calendarEvents)
@@ -251,34 +251,38 @@ async function fetchUpcomingHearings(
 
   // Tenant bills store the central bill's handle as externalId.
   // Look up tenant rows, including summary/priority for the chip tooltip.
+  // A row may be stored under either spelling of the handle (#305), so look both up and key by the normalized one.
   const billExternalIds = [...new Set(centralResults.map(h => toHandle(h.billId)))]
 
   // Scope is fixed to prioritized bills only.
-  const billRows = await db
-    .select({
-      id: bills.id,
-      externalId: bills.externalId,
-      billNumber: bills.billNumber,
-      title: bills.title,
-      summary: bills.tenantSummary,
-      priority: bills.priority,
-      state: bills.state,
-      session: bills.session,
-      sessionSlug: bills.sessionSlug,
-      isDraft: bills.isDraft,
-      // The member's vote on the bill's companion group.
-      myVote: myGroupVote(bills.id, userId),
-    })
-    .from(bills)
-    .where(and(inArray(bills.externalId, billExternalIds), isNotNull(bills.priority)))
-    .all()
+  const billRows = []
+  for (const part of chunkedForms(billExternalIds)) {
+    billRows.push(...await db
+      .select({
+        id: bills.id,
+        externalId: bills.externalId,
+        billNumber: bills.billNumber,
+        title: bills.title,
+        summary: bills.tenantSummary,
+        priority: bills.priority,
+        state: bills.state,
+        session: bills.session,
+        sessionSlug: bills.sessionSlug,
+        isDraft: bills.isDraft,
+        // The member's vote on the bill's companion group.
+        myVote: myGroupVote(bills.id, userId),
+      })
+      .from(bills)
+      .where(and(inArray(bills.externalId, part), isNotNull(bills.priority)))
+      .all())
+  }
 
   if (billRows.length === 0) return { hearings: [], lookaheadDays }
 
   const billByExternal = new Map<string, HearingBill>()
   for (const row of billRows) {
     if (!row.externalId) continue
-    billByExternal.set(row.externalId, {
+    billByExternal.set(normalizeHandle(row.externalId), {
       id: row.id,
       billNumber: row.billNumber,
       title: row.title,
@@ -296,7 +300,7 @@ async function fetchUpcomingHearings(
   for (const h of centralResults) {
     // A deadline isn't a hearing. The calendar shows it, and this widget doesn't.
     if (h.kind === 'deadline') continue
-    const bill = billByExternal.get(toHandle(h.billId))
+    const bill = billByExternal.get(normalizeHandle(toHandle(h.billId)))
     if (!bill) continue
     // Composite key: same date+time+description+location = same hearing
     const hearingKey = `${h.date}|${h.time ?? ''}|${(h.description ?? '').trim()}|${(h.location ?? '').trim()}`

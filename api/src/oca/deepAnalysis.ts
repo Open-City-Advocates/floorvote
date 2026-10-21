@@ -11,6 +11,7 @@ const COUNCIL_SOURCES = ['body', 'council'] as const
 import { centralFetch } from '../lib/centralFetch'
 import { readConfigString } from '../lib/configValue'
 import { nowDb } from '../lib/dbTime'
+import { legacyHandle, parseHandle } from '../../../shared/billHandle'
 import { ASSOCIATION_NAME_PLACEHOLDER, buildDefaultAiContext, isAiConfigDefault } from '../../../shared/aiDefaults'
 import { DEEP_PROMPT_VERSION, billInstructions, hearingInstructions, type DeepKind } from '../../../shared/oca/deepAnalysis'
 import type { AppDb, Env } from '../types'
@@ -290,7 +291,7 @@ function parseJson<T>(s: string | null, fallback: T): T {
 /** A bill's text from central, for the worker's text download. */
 export async function fetchBillText(env: Env, externalId: string): Promise<{ type: 'html' | 'pdf'; content: string } | 'missing' | 'unavailable'> {
   try {
-    const res = await centralFetch(env, `/bills/${externalId}/text`)
+    const res = await centralFetch(env, `/bills/${legacyHandle(externalId)}/text`)
     if (res.status === 404) return 'missing'
     if (!res.ok) return 'unavailable'
     return await res.json() as { type: 'html' | 'pdf'; content: string }
@@ -305,15 +306,10 @@ type CentralVote = { id: string; motionText: string; date: string; result: strin
 /** How many tracked bills the voting record draws on, highest relevance first. */
 const VOTING_RECORD_BILLS = 40
 
-function numericId(externalId: string | null): number | null {
-  const m = /^legiscan:(\d+)$/.exec(externalId ?? '')
-  return m ? Number(m[1]) : null
-}
-
 /** Recorded votes (with each member's vote) for these bills, keyed by external id. */
 async function votesFor(env: Env, externalIds: string[]): Promise<Map<string, CentralVote[]>> {
   const out = new Map<string, CentralVote[]>()
-  const ids = externalIds.map(numericId).filter((n): n is number => n !== null)
+  const ids = externalIds.map(parseHandle).filter((n): n is number => n !== null)
   if (ids.length === 0) return out
   try {
     const res = await centralFetch(env, '/bills/rich-batch', {
@@ -321,7 +317,11 @@ async function votesFor(env: Env, externalIds: string[]): Promise<Map<string, Ce
     })
     if (!res.ok) return out
     const data = await res.json() as { byId: Record<string, { votes: CentralVote[] }> }
-    for (const [id, v] of Object.entries(data.byId ?? {})) if (v.votes?.length) out.set(`legiscan:${id}`, v.votes)
+    // Keyed by the caller's own handles, which may be in either spelling (shared/billHandle.ts).
+    for (const externalId of externalIds) {
+      const votes = data.byId?.[String(parseHandle(externalId))]?.votes
+      if (votes?.length) out.set(externalId, votes)
+    }
   } catch (err) {
     console.error('[deep] vote lookup failed', err)
   }
@@ -344,7 +344,7 @@ async function votingRecord(env: Env, db: AppDb, excludeId?: string) {
     .orderBy(sql`${bills.priority} IS NULL`, sql`${bills.relevanceScore} DESC`)
     .limit(VOTING_RECORD_BILLS * 2)
     .all()
-  const candidates = rows.filter(r => r.id !== excludeId && numericId(r.externalId) !== null)
+  const candidates = rows.filter(r => r.id !== excludeId && parseHandle(r.externalId) !== null)
   const votes = await votesFor(env, candidates.map(r => r.externalId!))
   return candidates.filter(r => votes.has(r.externalId!)).slice(0, VOTING_RECORD_BILLS).map(r => ({
     number: r.number, title: r.title, tags: parseJson<string[]>(r.tags, []), votes: compactVotes(votes.get(r.externalId!)),

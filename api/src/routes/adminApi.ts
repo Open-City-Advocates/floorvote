@@ -6,12 +6,13 @@ import { hasLoggedInSelect } from '../lib/loginHistory'
 import { pendingInviteBounces } from '../lib/inviteBounces'
 import { users, sessions, magicLinks, associationConfig, bills, comments, commentReactions, memberVotes, notes, feedEvents, officialPositions, roles, userRoles, authEvents } from '../db/schema'
 import { generateToken, hashToken } from '../lib/crypto'
-import { sendMagicLink } from '../lib/email'
+import { sendSignInLinkLogged } from '../lib/signInLink'
 import { registerWithCentral } from '../cron/sync'
 import { matchesKeywords, billMatchText } from '../lib/keywords'
 import { summarizeKeywordMatches } from '../lib/keywordMatchSummary'
 import { centralFetch } from '../lib/centralFetch'
-import { parseHandle } from '../../../shared/billHandle'
+import { legacyHandle, parseHandle } from '../../../shared/billHandle'
+import { resolveStoredHandle } from '../lib/storedHandle'
 import { isWildcardKeyword } from '../../../shared/keywords'
 import { ensureAssociationName } from '../lib/associationName'
 import { parseTaxonomyItems } from '../lib/taxonomy'
@@ -32,9 +33,9 @@ import { isPendingInvite, pendingInviteWhere } from '../lib/pendingInvite'
 import { isPreviouslyBounced, previouslyBouncedAddresses } from '../lib/bouncedAddresses'
 import { adminSendChecks, claimSend, releaseSend } from '../lib/adminSendLimits'
 import { mayChangeEmail, refuseSuperadmin, requestEmailChange } from '../lib/emailChange'
-import { recordGroupTagChanges, snapshotGroupTags } from '../lib/teamFields'
 import { centralEmail, type DeliveryStatus, type SuppressionStatus } from '../lib/centralEmail'
-import { userTitleSql } from '../lib/userTitle'
+import { AI_SETTING_KEYS, changedAiSettings, readAiSettingRecordFields, recordStatements } from '../lib/aiSettingAudit'
+import { readClaimLinksSetting, writeClaimLinksSetting } from '../lib/claimLinksSetting'
 
 export const adminApiRouter = new Hono<AppEnv>()
 
@@ -54,7 +55,7 @@ adminApiRouter.get('/members', async (c) => {
       email: users.email,
       name: users.name,
       role: users.role,
-      title: userTitleSql,
+      title: users.title,
       createdAt: users.createdAt,
       lastActive: users.lastActive,
       deactivatedAt: users.deactivatedAt,
@@ -133,8 +134,6 @@ adminApiRouter.get('/members', async (c) => {
       name: u.name,
       role: u.role,
       title: u.title,
-      // `subtitle` is the old name for `title`. Remove in the release after this one.
-      subtitle: u.title,
       createdAt: u.createdAt,
       lastActive: u.lastActive,
       deactivatedAt: u.deactivatedAt,
@@ -271,10 +270,11 @@ async function deliverLink(c: Context<AppEnv>, db: AppDb, target: { id: string; 
   })
 
   const url = `${c.env.APP_URL}/auth/verify?token=${encodeURIComponent(rawToken)}`
+  const sent = sendSignInLinkLogged(c.env, db, { to: target.email, link: linkType, url, userId: target.id })
   try {
-    c.executionCtx.waitUntil(sendMagicLink(target.email, url, c.env, linkType, db, target.id).catch(console.error))
+    c.executionCtx.waitUntil(sent)
   } catch {
-    sendMagicLink(target.email, url, c.env, linkType, db, target.id).catch(console.error)
+    // No ExecutionContext in test environments — fire and forget
   }
 }
 
@@ -805,6 +805,11 @@ adminApiRouter.get('/config', async (c) => {
     typeof result.position_label === 'string' ? result.position_label : null,
   )
   result.accountDeletionEnabled = await getAccountDeletionEnabled(db)
+  const claimLinks = await readClaimLinksSetting(db)
+  result.claim_links_enabled = claimLinks.enabled
+  result.claim_links_changed_at = claimLinks.changedAt
+  result.claim_links_changed_by = claimLinks.changedBy
+  Object.assign(result, await readAiSettingRecordFields(db))
   return c.json(result)
 })
 
@@ -817,6 +822,17 @@ adminApiRouter.put('/deletion-policy', requireOwner, async (c) => {
     .values({ key: ACCOUNT_DELETION_KEY, value: JSON.stringify(body.enabled) })
     .onConflictDoUpdate({ target: associationConfig.key, set: { value: sql`excluded.value` } })
   return c.json({ enabled: body.enabled })
+})
+
+// PUT /admin/claim-links — turn claim links on or off for the instance (#570).
+// Its own route rather than a config key, so the change always records the admin
+// and the time. On a demo instance the write guard refuses it, as it does the
+// other settings.
+adminApiRouter.put('/claim-links', async (c) => {
+  const body = await c.req.json<{ enabled?: unknown }>().catch(() => null)
+  if (!body || typeof body.enabled !== 'boolean') return c.json({ error: 'enabled (boolean) is required' }, 400)
+  const setting = await writeClaimLinksSetting(getDb(c.env.DB), body.enabled, c.get('user').id)
+  return c.json(setting)
 })
 
 // PUT /admin/config
@@ -868,20 +884,24 @@ adminApiRouter.put('/config', async (c) => {
   }
 
   const db = getDb(c.env.DB)
-  for (const key of Object.keys(body)) {
-    if (body[key] === null) {
-      await db.delete(associationConfig).where(eq(associationConfig.key, key))
-    } else {
-      const value = JSON.stringify(body[key])
-      await db
-        .insert(associationConfig)
-        .values({ key, value })
-        .onConflictDoUpdate({
-          target: associationConfig.key,
-          set: { value: sql`excluded.value` },
-        })
-    }
-  }
+  // Every write in one batch, so no AI setting's value can land without the
+  // record of who changed it (#602), and a save is all or nothing.
+  const current = new Map((await db.select().from(associationConfig).all()).map(r => [r.key, r.value]))
+  const changedAi = changedAiSettings(current, body)
+  // An AI setting saved with the value it already has is not written at all.
+  const writeKeys = Object.keys(body).filter(k => !(AI_SETTING_KEYS as readonly string[]).includes(k) || (changedAi as string[]).includes(k))
+  const writes: unknown[] = writeKeys.map((key) => {
+    if (body[key] === null) return db.delete(associationConfig).where(eq(associationConfig.key, key))
+    return db
+      .insert(associationConfig)
+      .values({ key, value: JSON.stringify(body[key]) })
+      .onConflictDoUpdate({
+        target: associationConfig.key,
+        set: { value: sql`excluded.value` },
+      })
+  })
+  writes.push(...recordStatements(db, changedAi, c.get('user').id))
+  if (writes.length > 0) await db.batch(writes as unknown as Parameters<typeof db.batch>[0])
 
   if ('keywords' in body) {
     // Await register so the subsequent keyword-resync sees updated central keyword_registry.
@@ -894,7 +914,7 @@ adminApiRouter.put('/config', async (c) => {
     }
   }
 
-  return c.json({ ok: true })
+  return c.json({ ok: true, ...(await readAiSettingRecordFields(db)) })
 })
 
 // POST /admin/keyword-resync — re-run AI on tenant bills that newly match current keywords.
@@ -997,10 +1017,6 @@ adminApiRouter.post('/keyword-resync', async (c) => {
     const toManual = staleBills.filter(b => engagedIds.has(b.id) || b.priority != null)
     const toDemote = staleBills.filter(b => !engagedIds.has(b.id) && b.priority == null)
 
-    // A group's tags come from a tracked member first (#554), so demoting a bill can move them, and no
-    // analysis records it. Protecting one as manual keeps it tracked, so it can't.
-    const tagsBefore = await snapshotGroupTags(db, toDemote)
-
     const updateStmts = [
       ...toManual.map(b => db.update(bills).set({ matchType: 'manual' }).where(eq(bills.id, b.id))),
       ...toDemote.map(b => db.update(bills).set({ matchType: null }).where(eq(bills.id, b.id))),
@@ -1013,8 +1029,8 @@ adminApiRouter.post('/keyword-resync', async (c) => {
     protectedAsManual = toManual.length
 
     const centralUpdates: Array<{ externalId: string; matchType: 'manual' | null }> = [
-      ...toManual.map(b => ({ externalId: b.externalId!, matchType: 'manual' as const })),
-      ...toDemote.map(b => ({ externalId: b.externalId!, matchType: null })),
+      ...toManual.map(b => ({ externalId: legacyHandle(b.externalId!), matchType: 'manual' as const })),
+      ...toDemote.map(b => ({ externalId: legacyHandle(b.externalId!), matchType: null })),
     ]
     try {
       const mtRes = await centralFetch(c.env, `/admin/update-bill-match-types/${c.env.TENANT_ID}`, {
@@ -1025,14 +1041,6 @@ adminApiRouter.post('/keyword-resync', async (c) => {
       if (!mtRes.ok) console.warn(`[keyword-resync] central update-bill-match-types returned ${mtRes.status}`)
     } catch (err) {
       console.error('[keyword-resync] central update-bill-match-types failed:', err)
-    }
-
-    // After central is told, and best-effort like it: the event is advisory history, so a failure to
-    // write it must not fail the route once the bills are demoted here.
-    try {
-      await recordGroupTagChanges(db, tagsBefore)
-    } catch (err) {
-      console.error('[keyword-resync] recording group tag changes failed:', err)
     }
   }
 
@@ -1055,7 +1063,7 @@ adminApiRouter.post('/keyword-resync-preview', async (c) => {
 
   if (keywords.length === 0) return c.json({ wouldAdd: 0, wouldDemote: 0, wouldProtect: 0 })
 
-  // wouldAdd: lightweight bills that are unprocessed and would now match
+  // wouldAdd: monitored bills that are unprocessed and would now match
   //
   // Under the match-all list the count must equal what /keyword-resync will queue: every
   // unprocessed bill with an externalId, including ones already marked keyword-matched
@@ -1131,7 +1139,8 @@ adminApiRouter.post('/keyword-match-summary', async (c) => {
 // POST /admin/reprocess-bill/:externalId — reprocess a single bill, forcing AI re-run
 adminApiRouter.post('/reprocess-bill/:externalId', async (c) => {
   if (!c.env.BILL_QUEUE) return c.json({ error: 'Queue not configured' }, 503)
-  const externalId = decodeURIComponent(c.req.param('externalId'))
+  // Either spelling names the bill; it is queued under the one this instance stores (#305).
+  const externalId = await resolveStoredHandle(getDb(c.env.DB), decodeURIComponent(c.req.param('externalId')))
   // A bill pulled in by its companion group keeps the match type central gave it (lib/companionAnalysis.ts).
   const bill = await getDb(c.env.DB).select({ id: bills.id }).from(bills).where(eq(bills.externalId, externalId)).get()
   const groupAnalysis = bill ? await isPulledByGroup(getDb(c.env.DB), bill.id) : false

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 
@@ -43,11 +43,11 @@ const facetsState = vi.hoisted(() => ({
 // later tick than the mount commit) and control what it eventually resolves
 // with. Defaults to an immediate empty list, matching every test that doesn't
 // care about saved views.
-const viewsState: { deferred: boolean; response: { views: Array<{ id: string; name: string; query: string; slug?: string; previousSlug?: string | null }> } } =
+const viewsState: { deferred: boolean; response: { views: Array<{ id: string; name: string; query: string; slug?: string; previousSlug?: string | null; subscribed?: boolean }> } } =
   { deferred: false, response: { views: [] } }
 let resolveViews: ((v: unknown) => void) | null = null
 
-// Lets a test hold the `/config/custom-fields` fetch open, so a `cf_` filter
+// Lets a test hold the `/config/custom-fields` fetch open, so a `field.` filter
 // or view can be active in the URL before customFieldDefs resolves — the
 // scenario the chip-label and useBillFilters re-resolution fixes are for.
 // Defaults to an immediate empty list, matching every test that doesn't care.
@@ -65,6 +65,17 @@ const overwriteCalls: Array<{ id: string; query: string | undefined }> = []
 // query a new saved view is created with — the "Save as view" counterpart to
 // overwriteCalls above.
 const saveViewCalls: Array<{ name: string | undefined; query: string | undefined }> = []
+
+// Records each POST /bills/bulk-delete body and lets a test shape the reply (default: every id deleted).
+// A preview (`preview: true`) is recorded apart, and by default counts the drafts and filed bills it
+// names from the bills the list shows, with no engagement.
+type BulkDeleteBody = { ids?: string[]; filter?: string; includeEngaged?: boolean; preview?: boolean }
+const bulkDeleteState = vi.hoisted(() => ({
+  bodies: [] as Array<BulkDeleteBody>,
+  previewBodies: [] as Array<BulkDeleteBody>,
+  respond: null as ((body: BulkDeleteBody) => unknown) | null,
+  preview: null as ((body: BulkDeleteBody) => unknown) | null,
+}))
 
 // Mutable so one test can opt into a locked demo tenant. Member votes are on the
 // server's demo allowlist, so handleVote must NOT consult demoLocked — see the
@@ -104,17 +115,17 @@ const BILLS = [
 const FACETS = {
   status: { '1': 1, '2': 1, '4': 1 },
   priority: {},
-  session: {},
+  sessionName: {},
   year: {},
   state: { RI: 3 },
   position: {},
-  tags: {},
-  subjects: { 'UT:Counties': 1 } as Record<string, number>,
+  tag: {},
+  subject: { 'UT:Counties': 1 } as Record<string, number>,
   // Unfiltered, unlike `subjects`: every state that has subjects at all.
   subjectStates: ['UT'] as string[] | undefined,
   // Unfiltered too: every state the instance has bills in, which is what * coverage means.
   billStates: ['UT'] as string[] | undefined,
-  customFields: {},
+  field: {},
   myBillsCount: 0,
   newMatchesCount: 0,
 }
@@ -122,7 +133,15 @@ const FACETS = {
 // What the instance covers, as GET /config reports it, handed to BillList
 // through ConfigContext. Null = config not loaded, which is what every test
 // that doesn't care about covered states gets.
-const configState: { value: { states: string[] } | null } = { value: null }
+const configState: { value: { states: string[]; modules?: Record<string, unknown> } | null } = { value: null }
+
+// #449: the member's own digest switch as GET /auth/me reports it, and what the envelope on a view row sent.
+const digestState = { memberOn: false }
+const digestCalls: Array<{ method: string; path: string; body: unknown }> = []
+
+// The signed-in user's role as GET /auth/me reports it. Defaults to an owner, which
+// is what every test that doesn't care about roles gets.
+const authState = vi.hoisted(() => ({ role: 'owner' as string }))
 
 vi.mock('../../lib/api', () => {
   class ApiError extends Error {
@@ -146,9 +165,13 @@ vi.mock('../../lib/api', () => {
       saveViewCalls.push({ name: body.name, query: body.query })
       return {} as T
     }
+    if (init?.method && (/^\/views\/[^/]+\/subscription$/.test(path) || path === '/users/me')) {
+      digestCalls.push({ method: init.method, path, body: JSON.parse(init.body as string) })
+      return {} as T
+    }
     if (path === '/auth/me') {
-      return { id: 'demo-user', email: 'demo@example.com', name: 'Demo', role: 'owner',
-        title: null, canVote: true, emailDigestEnabled: false, lastSeenFeed: null } as T
+      return { id: 'demo-user', email: 'demo@example.com', name: 'Demo', role: authState.role,
+        title: null, canVote: true, emailDigestEnabled: digestState.memberOn, lastSeenFeed: null } as T
     }
     if (path === '/config') return CONFIG as T
     if (path === '/users/me/bills') return [] as T
@@ -165,7 +188,26 @@ vi.mock('../../lib/api', () => {
       return viewsState.response as T
     }
     if (path.startsWith('/bills/facets')) return (facetsState.respond ? facetsState.respond(path) : FACETS) as T
+    if (init?.method === 'POST' && path === '/bills/bulk-delete') {
+      const body = JSON.parse(init.body as string) as BulkDeleteBody
+      const shown = (facetsState.bills ?? BILLS) as Array<{ id: string; isDraft?: boolean }>
+      if (body.preview) {
+        bulkDeleteState.previewBodies.push(body)
+        if (bulkDeleteState.preview) return bulkDeleteState.preview(body) as T
+        const named = body.ids ? shown.filter(b => body.ids!.includes(b.id)) : shown.filter(b => b.isDraft)
+        const drafts = named.filter(b => b.isDraft).length
+        const draftIds = named.filter(b => b.isDraft).map(b => b.id)
+        return { draftIds, drafts, filed: named.length - drafts, engagedDrafts: 0, engagement: { votes: 0, comments: 0, notes: 0, positions: 0 } } as T
+      }
+      bulkDeleteState.bodies.push(body)
+      const ids = body.ids ?? shown.filter(b => b.isDraft).map(b => b.id)
+      return (bulkDeleteState.respond ? bulkDeleteState.respond(body) : { deleted: ids, skipped: [] }) as T
+    }
+    // What the Add draft bill button reads when the page mounts: a multi-state tenant with no states yet.
+    if (path === '/bills/draft-defaults') return { billNumber: 'D1', year: 2026, tenantState: null } as T
+    if (path === '/bills/draft-states') return { states: [] } as T
     if (path === '/bills/bulk-dismiss' || path.endsWith('/triage-dismiss')) return {} as T
+    if (init?.method === 'PATCH' && path.endsWith('/priority')) return { priority: JSON.parse(init.body as string).priority } as T
     if (path.endsWith('/votes')) {
       // When a test wants the vote to fail, hold the rejection open (deferred) so
       // the optimistic count stays observable until the test triggers the failure
@@ -213,11 +255,13 @@ import { ApiError } from '../../lib/api'
 import { AuthProvider } from '../../context/AuthContext'
 import { SidebarRefreshProvider, useRegisterSidebarRefresh } from '../../context/SidebarRefreshContext'
 import { ConfigContext } from '../../context/ConfigContext'
+import { MAX_SUBJECT_FILTERS } from '../../../../shared/limits'
+import { expectClosedLabel } from '../../test/closedLabel'
 
 function Wrapper({ children }: { children: ReactNode }) {
   return (
     <MemoryRouter initialEntries={['/bills']}>
-      <ConfigContext value={{ config: configState.value, multiState: (configState.value?.states.length ?? 0) > 1, loading: false }}>
+      <ConfigContext value={{ config: configState.value as never, multiState: (configState.value?.states.length ?? 0) > 1, loading: false }}>
         <AuthProvider>
           <SidebarRefreshProvider>{children}</SidebarRefreshProvider>
           <LocationProbe />
@@ -246,6 +290,10 @@ beforeEach(() => {
   billsListError.value = null
   facetsState.respond = null
   facetsState.bills = null
+  bulkDeleteState.bodies.length = 0
+  bulkDeleteState.previewBodies.length = 0
+  bulkDeleteState.respond = null
+  bulkDeleteState.preview = null
   demoState.demoLocked = false
   demoState.demoMode = false
   demoState.settled = true
@@ -256,7 +304,10 @@ beforeEach(() => {
   customFieldsState.response = []
   resolveCustomFields = null
   configState.value = null
-  FACETS.subjects = { 'UT:Counties': 1 }
+  digestState.memberOn = false
+  digestCalls.length = 0
+  authState.role = 'owner'
+  FACETS.subject = { 'UT:Counties': 1 }
   FACETS.subjectStates = ['UT']
   FACETS.billStates = ['UT']
   document.body.classList.remove('nav-pending')
@@ -292,6 +343,74 @@ describe('BillList vote failure rollback', () => {
     await waitFor(() => expect(within(supportRow()).getByText('0')).toBeInTheDocument())
   })
 })
+
+describe('BillList Add draft bill button', () => {
+  it.each(['admin', 'owner'])('is shown to an %s', async role => {
+    authState.role = role
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByText('Early Voting Centers')
+    expect(await screen.findByRole('button', { name: 'Add draft bill' })).toBeInTheDocument()
+  })
+
+  it('sits in a header row that wraps, so a long error cannot push past a phone-width screen', async () => {
+    render(<BillList />, { wrapper: Wrapper })
+    const button = await screen.findByRole('button', { name: 'Add draft bill' })
+    const heading = screen.getByRole('heading', { level: 1, name: 'Bills' })
+    const row = heading.parentElement as HTMLElement
+    expect(row).toContainElement(button)
+    expect(row.style.flexWrap).toBe('wrap')
+  })
+
+  it('is not shown to a member who is not an admin', async () => {
+    authState.role = 'member'
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByText('Early Voting Centers')
+    // Absence only means something once the user has loaded: let /auth/me resolve and the page re-render.
+    await waitFor(() => expect(apiCalls).toContain('/auth/me'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(screen.queryByRole('button', { name: 'Add draft bill' })).toBeNull()
+  })
+
+  it('reads draft-defaults and the state list once when the page mounts, and creates nothing', async () => {
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByRole('button', { name: 'Add draft bill' })
+    await waitFor(() => expect(apiCalls.filter(p => p.startsWith('/bills/draft'))).toEqual(['/bills/draft-defaults', '/bills/draft-states']))
+    // Neither the create nor the full facets computation is paid for the menu.
+    expect(apiCalls).not.toContain('/bills/draft')
+  })
+
+  it('makes no draft request for a member who is not an admin', async () => {
+    authState.role = 'member'
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByText('Early Voting Centers')
+    await waitFor(() => expect(apiCalls).toContain('/auth/me'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(apiCalls.some(p => p.startsWith('/bills/draft'))).toBe(false)
+  })
+
+  it('matches the Views control in size and line box, and is lighter in weight, so the two share a baseline', async () => {
+    // A tenant with no saved views has no Views control to compare with.
+    viewsState.response = { views: [{ id: 'v1', name: 'Clerk bills', query: 'subject=UT%3AElections' }] }
+    render(<BillList />, { wrapper: Wrapper })
+    const add = await screen.findByRole('button', { name: 'Add draft bill' })
+    const views = await screen.findByRole('button', { name: /^Views$/ })
+    const a = getComputedStyle(add)
+    const v = getComputedStyle(views)
+    expect(a.fontSize).toBe(v.fontSize)
+    expect(a.fontFamily).toBe(v.fontFamily)
+    expect(a.lineHeight).toBe(v.lineHeight)
+    expect(a.paddingTop).toBe(v.paddingTop)
+    expect(a.paddingBottom).toBe(v.paddingBottom)
+    expect(Number(a.fontWeight)).toBeLessThan(Number(v.fontWeight))
+    expect(a.color).toBe(v.color)
+    // Both sit in the header's one flex row, which centers its items on a line.
+    const row = screen.getByRole('heading', { level: 1, name: 'Bills' }).parentElement as HTMLElement
+    expect(row).toContainElement(add)
+    expect(row).toContainElement(views)
+    expect(row.style.alignItems).toBe('center')
+  })
+})
+
 
 describe('BillList votes on a locked demo tenant', () => {
   // Pins the handler, not the button. BillRow.test.tsx covers the vote bar being
@@ -352,7 +471,7 @@ describe('BillList page', () => {
 
     it('is just the short text when every covered state has subjects', async () => {
       configState.value = { states: ['NJ', 'UT'] }
-      FACETS.subjects = { 'UT:Counties': 1, 'NJ:Elections': 2 }
+      FACETS.subject = { 'UT:Counties': 1, 'NJ:Elections': 2 }
       FACETS.subjectStates = ['NJ', 'UT']
       await hoverSubjectFilter()
       expect(await screen.findByText(SHORT)).toBeInTheDocument()
@@ -363,7 +482,7 @@ describe('BillList page', () => {
     // has subjects. The tooltip must go by subjectStates, not by the facet.
     it('is just the short text when a filter hides a state that does have subjects', async () => {
       configState.value = { states: ['NJ', 'UT'] }
-      FACETS.subjects = { 'UT:Counties': 1 }
+      FACETS.subject = { 'UT:Counties': 1 }
       FACETS.subjectStates = ['NJ', 'UT']
       await hoverSubjectFilter()
       expect(await screen.findByText(SHORT)).toBeInTheDocument()
@@ -420,7 +539,7 @@ describe('BillList page', () => {
     // a suppressed state lacks subjects as far as the tooltip can tell.
     it('adds the caveat when a covered state is suppressed (absent from subjectStates)', async () => {
       configState.value = { states: ['NJ', 'UT'] }
-      FACETS.subjects = { 'UT:Counties': 1 }
+      FACETS.subject = { 'UT:Counties': 1 }
       FACETS.subjectStates = ['UT']
       await hoverSubjectFilter()
       expect(await screen.findByText(CAVEAT)).toBeInTheDocument()
@@ -520,6 +639,48 @@ describe('BillList list-fetch failure', () => {
   })
 })
 
+// A bookmark or saved view that already holds more subjects than the API allows
+// (#692). The list 400s, so the page must say why inline, and the picker must
+// let the member take subjects off without offering more.
+describe('BillList with a link already over the subject limit', () => {
+  const HINT = `You can pick up to ${MAX_SUBJECT_FILTERS} subjects.`
+  const filler = (n: number) => Array.from({ length: n }, (_, i) => `UT:Filler ${i + 1}`)
+
+  it('keeps the error banner, then stops offering subjects until enough are removed', async () => {
+    FACETS.subject = { 'UT:Counties': 1, 'UT:Elections': 2 }
+    billsListError.value = `Too many subject filters. The maximum is ${MAX_SUBJECT_FILTERS}.`
+    const subjects = ['UT:Counties', ...filler(MAX_SUBJECT_FILTERS)] // one over
+    const search = subjects.map(s => `subject=${encodeURIComponent(s)}`).join('&')
+    render(
+      <MemoryRouter initialEntries={[`/bills?${search}`]}>
+        <AuthProvider>
+          <SidebarRefreshProvider><BillList /></SidebarRefreshProvider>
+          <LocationProbe />
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText(`Too many subject filters. The maximum is ${MAX_SUBJECT_FILTERS}.`)).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole('button', { name: new RegExp(`Subject.*\\(${MAX_SUBJECT_FILTERS + 1}\\)`) }))
+    expect(screen.getByText(`${HINT} This filter has ${MAX_SUBJECT_FILTERS + 1}. Remove 1 to continue.`)).toBeInTheDocument()
+    // The same names also label the active-filter chips, so look only inside the open picker.
+    const picker = () => within(screen.getByRole('group', { name: /subject/i }))
+    const option = (label: string) => picker().getByText(label).closest('label')!.querySelector('input') as HTMLInputElement
+    expect(option('Elections').disabled).toBe(true)
+
+    // Unchecking one subject leaves 40: allowed, but the picker is still full.
+    fireEvent.click(picker().getByText('Counties'))
+    await waitFor(() => {
+      const loc = screen.getByTestId('loc').textContent ?? ''
+      expect(new URLSearchParams(loc.split('?')[1]).getAll('subject')).toHaveLength(MAX_SUBJECT_FILTERS)
+    })
+    // The toolbar remounts on the new URL, which closes the picker; open it again.
+    fireEvent.click(await screen.findByRole('button', { name: new RegExp(`Subject.*\\(${MAX_SUBJECT_FILTERS}\\)`) }))
+    expect(screen.getByText(HINT)).toBeInTheDocument()
+    expect(option('Elections').disabled).toBe(true)
+  })
+})
+
 describe('BillList bookmarked view slug', () => {
   // Regression for: savedViews starts as [] and is populated by an async
   // /views fetch, so the stale-slug effect used to run during the mount
@@ -600,8 +761,8 @@ describe('BillList saved views — search interaction', () => {
 
 // Task 2: the mobile filter sheet's "Reset filters" button used to call a
 // hand-duplicated copy of useBillFilters' handleResetFilters that had
-// drifted — it missed setSearch, setUnvotedOnly, setSelectedTags,
-// setMatchAny, and setCfFilters, then raced its own setters with a trailing
+// drifted — it missed setSearch, setUnvoted, setTag,
+// setMatch, and setCfFilters, then raced its own setters with a trailing
 // setSearchParams({}). This is the test that actually proves the fix: it
 // drives the real sheet (not a mock) and asserts every URL param the old
 // copy left behind is gone, plus the search box the old copy never touched.
@@ -653,6 +814,74 @@ describe('BillList mobile filter sheet — reset', () => {
       expect(url.get('status')).toBeNull()
     })
     expect((screen.getByPlaceholderText('Search…') as HTMLInputElement).value).toBe('')
+  })
+})
+
+// #449: the envelope on a view row includes the view in the member's own digest. It is
+// offered only where the instance's digest is on, and asks first when the member's is off.
+describe('BillList saved views — include in the digest', () => {
+  const VIEW = { id: 'v1', name: 'Passed bills', query: 'status=4', slug: 'passed-bills', subscribed: false }
+  const digestOn = { states: ['RI'], modules: { 'email-digest': { enabled: true } } }
+
+  async function openMenu() {
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByText('Early Voting Centers')
+    fireEvent.click(await screen.findByRole('button', { name: /^views$/i }))
+    await screen.findByText('Passed bills')
+  }
+
+  it('offers no envelope when the admin has turned the digest off for the instance', async () => {
+    viewsState.response = { views: [VIEW] }
+    configState.value = { states: ['RI'], modules: { 'email-digest': { enabled: false } } }
+    await openMenu()
+    expect(screen.queryByRole('button', { name: /in your daily digest/i })).toBeNull()
+  })
+
+  it('offers an envelope when the instance digest is on, and the cadence follows its setting', async () => {
+    viewsState.response = { views: [VIEW] }
+    configState.value = { states: ['RI'], modules: { 'email-digest': { enabled: true, settings: { frequency: 'weekly' } } } }
+    await openMenu()
+    expect(screen.getByRole('button', { name: 'Include "Passed bills" in your weekly digest' })).toBeInTheDocument()
+  })
+
+  it('includes the view for a member whose digest is on: saves it and fills the envelope', async () => {
+    digestState.memberOn = true
+    viewsState.response = { views: [VIEW] }
+    configState.value = digestOn
+    await openMenu()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Include "Passed bills" in your daily digest' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove "Passed bills" from your daily digest' })).toHaveAttribute('aria-pressed', 'true'))
+    expect(digestCalls).toEqual([{ method: 'PUT', path: '/views/v1/subscription', body: { subscribed: true } }])
+  })
+
+  it('removes an included view the same way', async () => {
+    digestState.memberOn = true
+    viewsState.response = { views: [{ ...VIEW, subscribed: true }] }
+    configState.value = digestOn
+    await openMenu()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove "Passed bills" from your daily digest' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Include "Passed bills" in your daily digest' })).toHaveAttribute('aria-pressed', 'false'))
+    expect(digestCalls).toEqual([{ method: 'PUT', path: '/views/v1/subscription', body: { subscribed: false } }])
+  })
+
+  it('offers to turn the digest on for a member whose digest is off, then turns it on and includes the view', async () => {
+    viewsState.response = { views: [VIEW] }
+    configState.value = digestOn
+    await openMenu()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Include "Passed bills" in your daily digest' }))
+    expect(digestCalls).toEqual([])
+    fireEvent.click(screen.getByRole('button', { name: 'Turn on digest' }))
+
+    await waitFor(() => expect(digestCalls).toHaveLength(2))
+    expect(digestCalls).toEqual([
+      { method: 'PATCH', path: '/users/me', body: { emailDigestEnabled: true } },
+      { method: 'PUT', path: '/views/v1/subscription', body: { subscribed: true } },
+    ])
   })
 })
 
@@ -803,14 +1032,14 @@ describe('BillList search-term hint', () => {
   })
 })
 
-// Regression: a view whose query contains a cf_ (custom field) filter used to be
-// dropped on apply. cf_ params live in the URL rather than in hook state, so
+// Regression: a view whose query contains a field. (custom field) filter used to be
+// dropped on apply. field. params live in the URL rather than in hook state, so
 // applyView wrote them through a second setSearchParams call that raced the sync
-// effect — the view's cf_ constraint never reached the bills query, and the
+// effect — the view's field. constraint never reached the bills query, and the
 // self-comparison then failed, so the view was judged "diverged" instantly.
 describe('BillList saved views — applying a view from the switcher', () => {
-  it('applies a cf_ filter from the view, collapses the URL, and labels the switcher', async () => {
-    viewsState.response = { views: [{ id: 'v1', name: 'Passed bills', query: 'cf_acet_is_tracking=1&state=NJ&subject=NJ%3AState+Government%2C+Wagering%2C+Tourism+%26+Historic+Preservation' }] }
+  it('applies a field. filter from the view, collapses the URL, and labels the switcher', async () => {
+    viewsState.response = { views: [{ id: 'v1', name: 'Passed bills', query: 'field.acet_is_tracking=1&state=NJ&subject=NJ%3AState+Government%2C+Wagering%2C+Tourism+%26+Historic+Preservation' }] }
 
     render(
       <MemoryRouter initialEntries={['/bills']}>
@@ -835,12 +1064,12 @@ describe('BillList saved views — applying a view from the switcher', () => {
     })
     expect(screen.getByRole('button', { name: /passed bills/i })).toBeTruthy()
 
-    // The point of the fix isn't just a tidy URL — the view's cf_ filter must
+    // The point of the fix isn't just a tidy URL — the view's field. filter must
     // actually reach the bills query. Assert on the recorded /bills? request
     // (same style as the status=4 assertion above) rather than the URL, since
     // the URL legitimately collapses to the short ?view=v1 form.
     await waitFor(() => {
-      expect(apiCalls.some(c => c.startsWith('/bills?') && c.includes('cf_acet_is_tracking=1'))).toBe(true)
+      expect(apiCalls.some(c => c.startsWith('/bills?') && c.includes('field.acet_is_tracking=1'))).toBe(true)
     })
   })
 
@@ -1011,18 +1240,18 @@ describe('BillList saved views — legacy UUID bookmark', () => {
   })
 })
 
-// Regression: the active-filter chip for a cf_ filter resolved its custom field
-// def by id only, so a cf_ key that was still the raw slug (the URL/view form —
-// see useBillFilters' cf_ resolution) rendered as a raw chip like
+// Regression: the active-filter chip for a field. filter resolved its custom field
+// def by id only, so a field. key that was still the raw slug (the URL/view form —
+// see useBillFilters' field. resolution) rendered as a raw chip like
 // "acet_is_tracking: 1" instead of the field's display name. This covers both
 // the immediate case and customFieldDefs resolving after the chip has already
 // rendered once.
 describe('BillList active filter chips — custom fields', () => {
-  it('labels a cf_ chip with the field display name, including when defs arrive late', async () => {
+  it('labels a field. chip with the field display name, including when defs arrive late', async () => {
     customFieldsState.deferred = true
 
     render(
-      <MemoryRouter initialEntries={['/bills?cf_acet_is_tracking=1']}>
+      <MemoryRouter initialEntries={['/bills?field.acet_is_tracking=1']}>
         <AuthProvider>
           <SidebarRefreshProvider><BillList /></SidebarRefreshProvider>
           <LocationProbe />
@@ -1047,7 +1276,7 @@ describe('BillList active filter chips — custom fields', () => {
 })
 
 // Regression for #241: every filter change clears the bulk selection so a bulk
-// action never reaches bills that are no longer shown. cf_ filters were the
+// action never reaches bills that are no longer shown. field. filters were the
 // exception because the reset keys were a hand-written list that omitted them.
 describe('BillList bulk selection — custom-field filters', () => {
   async function renderWithSelection(initial: string) {
@@ -1069,25 +1298,57 @@ describe('BillList bulk selection — custom-field filters', () => {
   }
   const selectionGone = () => waitFor(() => expect(screen.queryByText('1 bill selected')).toBeNull())
 
-  it('adding a cf_ filter clears the selection', async () => {
+  it('adding a field. filter clears the selection', async () => {
     await renderWithSelection('/bills')
     fireEvent.click((await screen.findAllByRole('button', { name: /Phase/ }))[0])
     fireEvent.click(await screen.findByText('Early'))
     await selectionGone()
   })
 
-  it('changing a cf_ filter clears the selection', async () => {
-    await renderWithSelection('/bills?cf_phase=Early')
+  it('changing a field. filter clears the selection', async () => {
+    await renderWithSelection('/bills?field.phase=Early')
     fireEvent.click((await screen.findAllByRole('button', { name: /Phase/ }))[0])
     fireEvent.click(await screen.findByText('Late'))
     await selectionGone()
   })
 
-  it('removing a cf_ filter clears the selection', async () => {
-    await renderWithSelection('/bills?cf_phase=Early')
+  it('removing a field. filter clears the selection', async () => {
+    await renderWithSelection('/bills?field.phase=Early')
     fireEvent.click((await screen.findAllByRole('button', { name: /Phase/ }))[0])
     fireEvent.click(await screen.findByText('Early'))
     await selectionGone()
+  })
+})
+
+// The same for a built-in filter and for a saved view: every change is a change to the one bill filter value, and
+// the selection is keyed on that value, so none of them needs its own entry in a list of filters to clear it.
+describe('BillList bulk selection — one filter value', () => {
+  async function selected(initial: string) {
+    render(
+      <MemoryRouter initialEntries={[initial]}>
+        <AuthProvider>
+          <SidebarRefreshProvider><BillList /></SidebarRefreshProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+    await screen.findByText('Early Voting Centers')
+    const row = document.querySelector('.bill-row') as HTMLElement
+    fireEvent.mouseEnter(row)
+    fireEvent.click(await within(row).findByRole('checkbox'))
+    await screen.findByText('1 bill selected')
+  }
+  const selectionGone = () => waitFor(() => expect(screen.queryByText('1 bill selected')).toBeNull())
+
+  it('turning on a toggle clears the selection', async () => {
+    await selected('/bills')
+    fireEvent.click(screen.getAllByRole('button', { name: /My bills/ })[0])
+    await selectionGone()
+  })
+
+  it('keeps the selection when nothing about the filter changes', async () => {
+    await selected('/bills')
+    await new Promise(r => setTimeout(r, 50))
+    expect(screen.getByText('1 bill selected')).toBeInTheDocument()
   })
 })
 
@@ -1161,7 +1422,7 @@ describe('BillList active filter chips — relevance threshold alone', () => {
   it('renders the relevance chip when minRelevance is the only active filter', async () => {
     // Regression test: the chip-row render gate (index.tsx) is a separate
     // condition from buildActiveFilterGroups, and previously had no
-    // `filterMinRelevance > 0` term — so with no other filter active, the
+    // `minRelevance > 0` term — so with no other filter active, the
     // whole row (and this chip) failed to render at all, even though
     // buildActiveFilterGroups correctly produced a minRelevance group.
     render(
@@ -1240,7 +1501,7 @@ describe('BillList new-match dismiss — counts and sidebar chip', () => {
 
   it('keeps the newest request\'s count when a slower reply to an older request arrives last', async () => {
     let resolveSearchReply: ((v: unknown) => void) | null = null
-    facetsState.respond = (path) => new URLSearchParams(path.split('?')[1]).get('q') === 'foo'
+    facetsState.respond = (path) => new URLSearchParams(path.split('?')[1]).get('search') === 'foo'
       ? new Promise(res => { resolveSearchReply = res })
       : { ...FACETS, newMatchesCount: 61 }
 
@@ -1249,11 +1510,11 @@ describe('BillList new-match dismiss — counts and sidebar chip', () => {
     const search = screen.getByPlaceholderText('Search…')
 
     fireEvent.change(search, { target: { value: 'foo' } })
-    await waitFor(() => expect(apiCalls.some(c => c.startsWith('/bills/facets') && c.includes('q=foo'))).toBe(true))
+    await waitFor(() => expect(apiCalls.some(c => c.startsWith('/bills/facets') && c.includes('search=foo'))).toBe(true))
     // The search is cleared while the reply for "foo" is still in flight.
     const callsBeforeClear = apiCalls.length
     fireEvent.change(search, { target: { value: '' } })
-    await waitFor(() => expect(apiCalls.slice(callsBeforeClear).some(c => c.startsWith('/bills/facets') && !c.includes('q='))).toBe(true))
+    await waitFor(() => expect(apiCalls.slice(callsBeforeClear).some(c => c.startsWith('/bills/facets') && !c.includes('search='))).toBe(true))
 
     // Now the slow reply for the old search lands: 1 new match under "foo".
     resolveSearchReply!({ ...FACETS, newMatchesCount: 1 })
@@ -1265,7 +1526,7 @@ describe('BillList new-match dismiss — counts and sidebar chip', () => {
 
   it('offers no dismiss count for new filters until the facet reply for them lands', async () => {
     let resolveSearchReply: ((v: unknown) => void) | null = null
-    facetsState.respond = (path) => new URLSearchParams(path.split('?')[1]).get('q') === 'foo'
+    facetsState.respond = (path) => new URLSearchParams(path.split('?')[1]).get('search') === 'foo'
       ? new Promise(res => { resolveSearchReply = res })
       : { ...FACETS, newMatchesCount: 61 }
 
@@ -1273,10 +1534,10 @@ describe('BillList new-match dismiss — counts and sidebar chip', () => {
     await screen.findByText('Early Voting Centers')
 
     fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'foo' } })
-    await waitFor(() => expect(apiCalls.some(c => c.startsWith('/bills/facets') && c.includes('q=foo'))).toBe(true))
+    await waitFor(() => expect(apiCalls.some(c => c.startsWith('/bills/facets') && c.includes('search=foo'))).toBe(true))
 
     // The reply for "foo" is still in flight, so 61 describes the old filters,
-    // but the dismiss request would carry q=foo.
+    // but the dismiss request would carry search=foo.
     fireEvent.click(await screen.findByTitle('Select all matching filters'))
     expect(screen.queryByRole('button', { name: /Dismiss new matches/ })).toBeNull()
 
@@ -1320,9 +1581,258 @@ describe('BillList new-match dismiss — counts and sidebar chip', () => {
     await screen.findByText('Fresh Match')
     refresh.mockClear()
 
-    fireEvent.click((await screen.findAllByTitle('Reviewed — no priority'))[0])
+    fireEvent.change((await screen.findAllByRole('combobox', { name: /priority/i }))[0], { target: { value: 'dismiss' } })
 
     await waitFor(() => expect(apiCalls).toContain('/bills/bill-new/triage-dismiss'))
     await waitFor(() => expect(refresh).toHaveBeenCalled())
+  })
+
+  it('turns the row\'s amber dropdown back into a plain "Set priority" after Dismiss', async () => {
+    facetsState.bills = [NEW_MATCH]
+    renderWithSidebarSpy()
+    await screen.findByText('Fresh Match')
+    const selects = () => screen.getAllByRole('combobox', { name: /priority/i })
+    expectClosedLabel(selects()[0], 'New · Set priority')
+
+    fireEvent.change(selects()[0], { target: { value: 'dismiss' } })
+
+    await waitFor(() => expectClosedLabel(selects()[0], 'Set priority'))
+    expect(screen.queryByText('New · Set priority')).toBeNull()
+  })
+
+  it('clears the new-match state when a priority is chosen from the dropdown', async () => {
+    facetsState.bills = [NEW_MATCH]
+    const refresh = renderWithSidebarSpy()
+    await screen.findByText('Fresh Match')
+    refresh.mockClear()
+
+    fireEvent.change(screen.getAllByRole('combobox', { name: /priority/i })[0], { target: { value: 'medium' } })
+
+    await waitFor(() => expect(apiCalls).toContain('/bills/bill-new/priority'))
+    await waitFor(() => expect(screen.getAllByRole('combobox', { name: /priority/i })[0]).toHaveDisplayValue('Medium Priority'))
+    expect(screen.queryByText('New · Set priority')).toBeNull()
+    expect(apiCalls).not.toContain('/bills/bill-new/triage-dismiss')
+  })
+})
+
+// The header's columns sit over the rows': one grid template, and the same
+// horizontal padding, so the Priority header is over the Priority control.
+describe('BillList column header alignment', () => {
+  it('uses the rows\' grid template and horizontal padding', async () => {
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByText('Early Voting Centers')
+    const header = document.querySelector('.bill-list-header-row') as HTMLElement
+    const row = document.querySelector('.bill-row-grid') as HTMLElement
+    expect(header.style.gridTemplateColumns).toBe('12px minmax(0,1fr) 170px 140px')
+    expect(header.style.gridTemplateColumns).toBe(row.style.gridTemplateColumns)
+    expect(header.style.gap).toBe(row.style.gap)
+    // The header's own box holds the padding the row holds on its own element.
+    const padded = header.parentElement as HTMLElement
+    expect(row.style.padding).toBe('12px 28px 12px 8px')
+    expect(padded.style.paddingLeft).toBe('8px')
+    expect(padded.style.paddingRight).toBe('28px')
+    expect(padded.style.paddingRight).toBe(row.style.paddingRight)
+    expect(padded.style.paddingLeft).toBe(row.style.paddingLeft)
+  })
+
+  it('has its Priority header in the last track and its Position header in the one before', async () => {
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByText('Early Voting Centers')
+    const header = document.querySelector('.bill-list-header-row') as HTMLElement
+    const children = [...header.children]
+    expect(children).toHaveLength(4)
+    expect(children[2]).toHaveClass('bill-col-position')
+    expect(children[3]).toHaveTextContent(/^Priority/)
+  })
+})
+
+describe('BillList delete selected drafts', () => {
+  const DRAFT_A = makeBill({ id: 'draft-a', billNumber: 'DRAFT 1', title: 'First Draft', matchType: 'manual', isDraft: true })
+  const DRAFT_B = makeBill({ id: 'draft-b', billNumber: 'DRAFT 2', title: 'Second Draft', matchType: 'manual', isDraft: true })
+  const FILED = makeBill({ id: 'filed-1', billNumber: 'HB 9', title: 'Filed Bill', matchType: 'manual', isDraft: false })
+
+  function renderWithSidebarSpy(entry = '/bills') {
+    const refresh = vi.fn()
+    function SidebarProbe() {
+      useRegisterSidebarRefresh(refresh)
+      return null
+    }
+    render(
+      <MemoryRouter initialEntries={[entry]}>
+        <AuthProvider>
+          <SidebarRefreshProvider><SidebarProbe /><BillList /></SidebarRefreshProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+    return refresh
+  }
+
+  async function select(title: string) {
+    const row = (await screen.findByText(title)).closest('.bill-row') as HTMLElement
+    fireEvent.mouseEnter(row)
+    fireEvent.click(await within(row).findByRole('checkbox'))
+  }
+
+  it('removes the deleted drafts from the list and the selection, and keeps the selected filed bill selected', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    facetsState.bills = [DRAFT_A, FILED, DRAFT_B]
+    const refresh = renderWithSidebarSpy()
+    await select('First Draft')
+    await select('Filed Bill')
+    refresh.mockClear()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(1\)/ }))
+
+    await waitFor(() => expect(screen.queryByText('First Draft')).toBeNull())
+    expect(bulkDeleteState.bodies).toEqual([{ ids: ['draft-a'] }])
+    // The unselected draft and the selected filed bill are untouched.
+    expect(screen.getByText('Second Draft')).toBeInTheDocument()
+    expect(screen.getByText('Filed Bill')).toBeInTheDocument()
+    // The selection shrank to the filed bill: the bar now offers no delete, and counts one bill.
+    expect(screen.queryByRole('button', { name: /Delete drafts/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /Apply to 1 bill/ })).toBeInTheDocument()
+    // The sidebar's draft count and the Drafts chip are refetched.
+    await waitFor(() => expect(refresh).toHaveBeenCalled())
+  })
+
+  it('leaves the bar once the last selected bill was a deleted draft', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    facetsState.bills = [DRAFT_A, DRAFT_B]
+    renderWithSidebarSpy()
+    await select('First Draft')
+    await select('Second Draft')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(2\)/ }))
+
+    await waitFor(() => expect(screen.queryByText('First Draft')).toBeNull())
+    expect(screen.queryByText('Second Draft')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Apply to/ })).toBeNull()
+  })
+
+  it('keeps a draft the server refused in the list and selected, and shows why', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    facetsState.bills = [DRAFT_A, DRAFT_B]
+    bulkDeleteState.respond = () => ({ deleted: ['draft-a'], skipped: [{ id: 'draft-b', reason: 'engaged' }] })
+    renderWithSidebarSpy()
+    await select('First Draft')
+    await select('Second Draft')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(2\)/ }))
+
+    await waitFor(() => expect(screen.queryByText('First Draft')).toBeNull())
+    expect(screen.getByText('Second Draft')).toBeInTheDocument()
+    expect(await screen.findByText(/1 draft was kept: it gained votes/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Delete drafts \(1\)/ })).toBeInTheDocument()
+  })
+
+  it('removes a draft another admin already deleted, as well as the ones it deleted', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    facetsState.bills = [DRAFT_A, DRAFT_B]
+    bulkDeleteState.respond = () => ({ deleted: ['draft-a'], skipped: [{ id: 'draft-b', reason: 'not_found' }] })
+    renderWithSidebarSpy()
+    await select('First Draft')
+    await select('Second Draft')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(2\)/ }))
+
+    await waitFor(() => expect(screen.queryByText('First Draft')).toBeNull())
+    expect(screen.queryByText('Second Draft')).toBeNull()
+  })
+
+  it('leaves the list and the selection as they were when cancelled', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    facetsState.bills = [DRAFT_A, FILED]
+    renderWithSidebarSpy()
+    await select('First Draft')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(1\)/ }))
+
+    await waitFor(() => expect(window.confirm).toHaveBeenCalled())
+    expect(bulkDeleteState.bodies).toEqual([])
+    expect(screen.getByText('First Draft')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Delete drafts \(1\)/ })).toBeInTheDocument()
+  })
+
+  it('sends includeEngaged when the preview finds work on the selected drafts', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    facetsState.bills = [DRAFT_A, DRAFT_B]
+    bulkDeleteState.preview = () => ({ draftIds: ['draft-a'], drafts: 1, filed: 0, engagedDrafts: 1, engagement: { votes: 2, comments: 0, notes: 0, positions: 0 } })
+    renderWithSidebarSpy()
+    await select('First Draft')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(1\)/ }))
+
+    await waitFor(() => expect(screen.queryByText('First Draft')).toBeNull())
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Your team's 2 votes on it will be deleted too."))
+    expect(bulkDeleteState.bodies).toEqual([{ ids: ['draft-a'], includeEngaged: true }])
+  })
+
+  describe('with every bill matching the Drafts filter selected', () => {
+    it('offers Delete drafts, counted by the preview, and deletes the drafts it counted', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      facetsState.bills = [DRAFT_A, DRAFT_B]
+      renderWithSidebarSpy('/bills?drafts=1')
+      await screen.findByText('First Draft')
+
+      fireEvent.click(await screen.findByTitle('Select all matching filters'))
+      fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(2\)/ }))
+
+      await waitFor(() => expect(screen.queryByText('First Draft')).toBeNull())
+      expect(screen.queryByText('Second Draft')).toBeNull()
+      expect(window.confirm).toHaveBeenCalledWith("Delete 2 draft bills? This can't be undone.")
+      expect(bulkDeleteState.bodies).toEqual([{ ids: ['draft-a', 'draft-b'] }])
+      expect(bulkDeleteState.previewBodies[0]).toEqual({ filter: 'drafts=1', preview: true })
+      // Every draft it held is gone, so the selection ends with it.
+      expect(screen.queryByRole('button', { name: /Apply to/ })).toBeNull()
+    })
+
+    it('offers no Delete drafts when the Drafts filter is off', async () => {
+      facetsState.bills = [DRAFT_A, FILED]
+      renderWithSidebarSpy()
+      await screen.findByText('First Draft')
+
+      fireEvent.click(await screen.findByTitle('Select all matching filters'))
+
+      expect(await screen.findByRole('button', { name: /Apply to/ })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Delete drafts/ })).toBeNull()
+      expect(bulkDeleteState.previewBodies).toEqual([])
+    })
+
+    it('deletes nothing when cancelled', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(false)
+      facetsState.bills = [DRAFT_A, DRAFT_B]
+      renderWithSidebarSpy('/bills?drafts=1')
+      await screen.findByText('First Draft')
+
+      fireEvent.click(await screen.findByTitle('Select all matching filters'))
+      fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(2\)/ }))
+
+      await waitFor(() => expect(window.confirm).toHaveBeenCalled())
+      expect(bulkDeleteState.bodies).toEqual([])
+      expect(screen.getByText('First Draft')).toBeInTheDocument()
+    })
+  })
+
+  it('shows a member no bulk bar and so no delete button', async () => {
+    authState.role = 'member'
+    facetsState.bills = [DRAFT_A]
+    render(<BillList />, { wrapper: Wrapper })
+    await screen.findByText('First Draft')
+    expect(screen.queryByRole('button', { name: /Delete drafts/ })).toBeNull()
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+  })
+
+  it('disables the button in a locked demo and sends nothing', async () => {
+    demoState.demoLocked = true
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    facetsState.bills = [DRAFT_A]
+    renderWithSidebarSpy()
+    await select('First Draft')
+
+    const btn = await screen.findByRole('button', { name: /Delete drafts \(1\)/ })
+    expect(btn).toBeDisabled()
+    expect(btn).toHaveAttribute('title', 'Locked in demo mode')
+    fireEvent.click(btn)
+    expect(bulkDeleteState.bodies).toEqual([])
   })
 })

@@ -6,7 +6,8 @@ import { eq, inArray, exists, and } from 'drizzle-orm'
 import { activeUser } from './accountDeletion'
 import { billUrl } from '../../../shared/sessionSlug'
 import { PRODUCT_NAME } from '../../../shared/brand'
-import { sendBatch, resolveAssocName } from './email'
+import { senderFor, resolveAssocName } from './email'
+import type { NotificationMessage } from '../../../shared/emailSender'
 import { color, fontSize, fontWeight, radius } from '../../../shared/tokens'
 import { buildBillCardModel } from '../../../shared/billCardModel'
 import { MENTION_STYLE } from '../../../shared/mentionStyle'
@@ -14,7 +15,6 @@ import { renderBillCardOpen, BILL_CARD_CLOSE, renderCommentRow, formatEmailDateT
 import { renderEmailShell, emailButton, emailFooterLink } from './emailShell'
 import { sanitizeCommentHtml } from './sanitizeHtml'
 import { displayName } from './displayName'
-import { userTitleSql } from './userTitle'
 
 /** @mention emails are on unless an admin explicitly disabled them. */
 export async function mentionEmailsEnabled(db: ReturnType<typeof getDb>): Promise<boolean> {
@@ -453,7 +453,7 @@ async function sendMentionEmails(
 ): Promise<void> {
   const db = getDb(env.DB)
   const [author] = await db
-    .select({ name: users.name, email: users.email, title: userTitleSql })
+    .select({ name: users.name, email: users.email, title: users.title })
     .from(users)
     .where(eq(users.id, authorUserId))
     .all()
@@ -492,7 +492,7 @@ async function sendMentionEmails(
 
   console.log(`[mentions] sending email to ${recipients.length} recipient(s) for bill ${bill.billNumber}`)
 
-  const emailObjects = recipients.map(recipient => {
+  const messages = recipients.map((recipient): NotificationMessage => {
     const target = targets.find(t => t.userId === recipient.id)
     const via = target?.via ?? 'user'
     // `html` is sendMentionEmails's raw-tiptap comment param — passed through to
@@ -513,8 +513,9 @@ async function sendMentionEmails(
       : via === 'admins'
         ? `[${bill.billNumber}] The admins were mentioned in a comment`
         : `[${bill.billNumber}] You were mentioned in a comment`
-    return { to: [recipient.email], subject, html: rendered }
+    return { purpose: 'notification', to: [recipient.email], subject, html: rendered }
   })
 
-  await sendBatch(env, emailObjects, `mentions ${bill.billNumber}`, db)
+  const { sent, failed } = await senderFor(env, db).sendBatch(messages)
+  console.log(`[mentions ${bill.billNumber}] sent ${sent}, failed ${failed}`)
 }

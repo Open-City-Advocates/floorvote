@@ -1,4 +1,4 @@
-import { eq, and, isNull, sql } from 'drizzle-orm'
+import { eq, and, isNull, isNotNull, sql } from 'drizzle-orm'
 import { DEFAULT_PROVIDER_ID, findProvider, getProvider, type CentralMeasure, type MeasureRef, type Provider } from '../providers'
 import {
   bills, billHistory, billSponsors, billTexts, billSupplements, billAmendments,
@@ -14,12 +14,14 @@ import { carriedPeopleIds, measureWithCarriedPeople } from '../lib/carriedIds'
 import { clearProviderData } from '../lib/cutover'
 import { calendarCoverage } from '../lib/bodyEvents'
 import type { Env, Db, IngestorMessage, BillMessage, MatchProvenance, NotificationMessage, CalendarBlock } from '../types'
-import { personRow } from '../lib/people'
+import { insertMissingPeople, personRow } from '../lib/people'
+import { startsWithPdfMagic } from '../lib/storedPdf'
 import { deleteOtherRollCalls, knownRollCallIds } from '../lib/billRollCalls'
 import { writeMemberVotes, type RollCallMemberVotes } from '../lib/rollCallVotes'
 import { loadVoteDataset, VOTE_DATASET_DEFER_SECONDS, VOTE_DATASET_RETRY_SECONDS } from '../cron/vote-datasets'
 import { nowDb } from '../lib/dbTime'
 import { providerContext } from '../lib/providerContext'
+import { ingestQueueForId } from '../lib/providerRouting'
 import { deliverToTenant } from '../lib/tenantDelivery'
 import { safeFetch } from '../lib/safeFetch'
 import { toHandle } from '../lib/billHandle'
@@ -48,7 +50,7 @@ export async function processIngestorQueue(
     if (body.kind === 'vote-dataset') {
       try {
         if (datasetLoaded) {
-          await env.INGESTOR_QUEUE.send(body, { delaySeconds: VOTE_DATASET_DEFER_SECONDS })
+          await ingestQueueForId(body.providerId, env).send(body, { delaySeconds: VOTE_DATASET_DEFER_SECONDS })
         } else {
           datasetLoaded = true
           await loadVoteDataset(body, env, db)
@@ -71,14 +73,25 @@ export async function processIngestorQueue(
   }
 }
 
+/** Fetches of a document's text for a changed hash that fail this many times in a row are left for a forced refetch. */
+const HASH_REFETCH_ATTEMPTS = 3
+
+/** The failed attempts recorded on a document's `fetch_error` for this hash, else 0. */
+function hashRefetchAttempts(fetchError: string | null, hash: string): number {
+  const m = /^hash-refetch (\S+) attempt (\d+):/.exec(fetchError ?? '')
+  return m && m[1] === hash ? Number(m[2]) : 0
+}
+
 async function processBill(msg: BillMessage, env: Env, db: Db): Promise<void> {
   const forceMetadata = msg.forceMetadata ?? false
   const forceAI = msg.forceAI ?? false
   const interactive = msg.interactive ?? false
   // The provider that wrote the bill, by its row's `provider` column, and its
   // session, in one read. A bill central has no row for is the default's.
-  const known = await db.select({ provider: bills.provider, sessionId: bills.sessionId, carriedFrom: bills.carriedFrom })
-    .from(bills).where(eq(bills.billId, msg.billId)).get()
+  const known = await db.select({
+    provider: bills.provider, sessionId: bills.sessionId, carriedFrom: bills.carriedFrom,
+    textsFetchedAt: bills.textsFetchedAt, detailHash: bills.detailHash,
+  }).from(bills).where(eq(bills.billId, msg.billId)).get()
   const provider = getProvider(known?.provider ?? DEFAULT_PROVIDER_ID)
 
   // A moved bill's message from a provider it has since moved off, or an
@@ -91,6 +104,22 @@ async function processBill(msg: BillMessage, env: Env, db: Db): Promise<void> {
   if (msg.firstIngestFor && !known?.carriedFrom) {
     console.log(`[processor-ls] bill ${msg.billId} already had its first ${msg.firstIngestFor} ingest; skipped`)
     return
+  }
+  // An ingestAll first full ingest (cron/sync.ts): a copy whose bill has had
+  // one since is skipped, and frees the bill's slot in the provider's budget.
+  // Otherwise the run counts a try and frees the bill for later passes, once
+  // per queued message, whatever its retries.
+  if (msg.firstFullIngest && known) {
+    if (known.textsFetchedAt !== null || known.detailHash !== null) {
+      console.log(`[processor-ls] bill ${msg.billId} already had its first full ingest; skipped`)
+      await db.update(bills).set({ firstIngestQueuedAt: null })
+        .where(and(eq(bills.billId, msg.billId), isNotNull(bills.firstIngestQueuedAt)))
+      return
+    }
+    await db.update(bills).set({
+      firstIngestTries: sql`COALESCE(${bills.firstIngestTries}, 0) + 1`,
+      firstIngestQueuedAt: null,
+    }).where(and(eq(bills.billId, msg.billId), isNotNull(bills.firstIngestQueuedAt)))
   }
 
   if (msg.calendarRecheck !== undefined) {
@@ -129,6 +158,7 @@ async function processBill(msg: BillMessage, env: Env, db: Db): Promise<void> {
     forceMetadata, forceAI, interactive,
     forceTextRefetch: msg.forceTextRefetch ?? false,
     matchProvenance: msg.matchProvenance,
+    firstFullIngest: msg.firstFullIngest,
   })
 }
 
@@ -183,6 +213,8 @@ export type IngestOptions = {
   forceTextRefetch?: boolean
   /** The new keyword matches the ingest brings instances (BillMessage.matchProvenance). */
   matchProvenance?: Record<string, MatchProvenance>
+  /** BillMessage.firstFullIngest: quiet while the bill has had no full ingest. */
+  firstFullIngest?: boolean
 }
 
 /**
@@ -207,10 +239,16 @@ export async function ingestMeasure(
     .select({
       changeHash: bills.changeHash, status: bills.status, title: bills.title, description: bills.description,
       provider: bills.provider, carriedFrom: bills.carriedFrom, carriedWaits: bills.carriedWaits,
+      textsFetchedAt: bills.textsFetchedAt, detailHash: bills.detailHash,
     })
     .from(bills)
     .where(eq(bills.billId, measure.bill_id))
     .get()
+  // The first full ingest an ingestAll pass queued, of a bill that still has
+  // had none (BillMessage.firstFullIngest). Its data is all new to instances,
+  // as a new bill's is, so nothing is reported as a change.
+  const quietFirst = !!opts.firstFullIngest && !!existingBillRow
+    && existingBillRow.textsFetchedAt === null && existingBillRow.detailHash === null
 
   // A cutover moved the bill to another provider while this ingest ran: the
   // bill's new provider writes it now, so this one writes nothing.
@@ -245,6 +283,12 @@ export async function ingestMeasure(
   let detectedChanges: ChangeRecord[] = []
   // Logged, but not sent to instances (lib/detect-changes.ts).
   let companionChanges: CompanionChange[] = []
+  let textHashChanged = false
+  // Documents fetched again for a changed hash, and those whose old hash stays because that failed.
+  const refetchedDocs = new Set<number>()
+  const keptHashes = new Map<number, string>()
+  // A refetch that failed with attempts left: the bill's stored change hash is cleared, so the next sync pass queues it again.
+  let holdBackChangeHash = false
   let calendarChanges: CalendarChange[] = []
   let priorCalendar: CalendarRow[] = []
 
@@ -252,7 +296,7 @@ export async function ingestMeasure(
     // Read before-snapshot from child tables
     const [historyRows, textRows, supplementRows, amendmentRows, voteRows, sponsorRows, priorCalRows, priorSasts] = await Promise.all([
       db.select({ seq: billHistory.seq }).from(billHistory).where(eq(billHistory.billId, bill.bill_id)).all(),
-      db.select({ docId: billTexts.docId }).from(billTexts).where(eq(billTexts.billId, bill.bill_id)).all(),
+      db.select({ docId: billTexts.docId, textHash: billTexts.textHash, r2Key: billTexts.r2Key, fetchError: billTexts.fetchError }).from(billTexts).where(eq(billTexts.billId, bill.bill_id)).all(),
       db.select({ supplementId: billSupplements.supplementId }).from(billSupplements).where(eq(billSupplements.billId, bill.bill_id)).all(),
       db.select({ amendmentId: billAmendments.amendmentId }).from(billAmendments).where(eq(billAmendments.billId, bill.bill_id)).all(),
       db.select({
@@ -294,7 +338,56 @@ export async function ingestMeasure(
     }
 
     detectedChanges = detectChanges(snapshot, bill, provider)
+    // A document whose provider hash changed under the same doc id is no change a
+    // member reads, so it has no record. But instances compare it with their
+    // claim sources' pins (#603) and fetch a bill only when `updated_at` moved,
+    // so it moves that. An empty hash on either side is no signal.
+    //
+    // The hash must describe the bytes served, so a stored copy is fetched again
+    // before anything moves. When that fails the old hash stays with the old
+    // bytes, `updated_at` does not move for it, and the next ingest tries again.
+    const storedByDoc = new Map(textRows.map(t => [t.docId, t]))
+    for (const t of bill.texts ?? []) {
+      const was = storedByDoc.get(t.doc_id)
+      if (!was?.textHash || !t.text_hash || was.textHash === t.text_hash) continue
+      if (!was.r2Key) {
+        // Nothing stored to disagree with: the download below takes the new hash.
+        textHashChanged = true
+        continue
+      }
+      const before = hashRefetchAttempts(was.fetchError, t.text_hash)
+      if (!forceTextRefetch && before >= HASH_REFETCH_ATTEMPTS) {
+        // Gave up on this hash: the old pair stays, for a forced refetch.
+        keptHashes.set(t.doc_id, was.textHash)
+        continue
+      }
+      // The copy is stored under a key of its own, and the row takes the key and
+      // the hash in one statement, so no reader sees one without the other and
+      // the text cache (keyed on the r2 key) never serves the old body for it.
+      if (t.state_link && await downloadTextToR2(bill.bill_id, t.doc_id, t.state_link, t.mime, provider, env, db, t.text_size ?? null, t.text_hash, t.text_hash)) {
+        textHashChanged = true
+        refetchedDocs.add(t.doc_id)
+        const fresh = await db.select({ r2Key: billTexts.r2Key }).from(billTexts).where(eq(billTexts.docId, t.doc_id)).get()
+        if (fresh?.r2Key && fresh.r2Key !== was.r2Key) await env.BILLS_BUCKET.delete(was.r2Key).catch(() => {})
+        continue
+      }
+      keptHashes.set(t.doc_id, was.textHash)
+      const row = await db.select({ fetchError: billTexts.fetchError }).from(billTexts).where(eq(billTexts.docId, t.doc_id)).get()
+      const attempt = before + 1
+      await db.update(billTexts)
+        .set({ fetchError: `hash-refetch ${t.text_hash} attempt ${attempt}: ${row?.fetchError ?? 'no state_link'}` })
+        .where(eq(billTexts.docId, t.doc_id))
+      if (attempt >= HASH_REFETCH_ATTEMPTS) {
+        console.warn(`[processor-ls] giving up refetching doc ${t.doc_id} of bill ${bill.bill_id} for its new text hash after ${attempt} attempts; a newer hash or POST /admin/refetch-bill-text/:billId lifts the cap`)
+      } else {
+        holdBackChangeHash = true
+      }
+    }
     companionChanges = detectCompanionChanges(priorSasts, bill, provider)
+  }
+  if (quietFirst) {
+    detectedChanges = []
+    companionChanges = []
   }
 
   // This pull's effect on the bill's calendar. A new bill's entries are all
@@ -312,7 +405,7 @@ export async function ingestMeasure(
     calendarPlan = null
   } else {
     calendarPlan = planCalendarPull(provider, bill.bill_id, priorCalendar, bill.calendar, bill.change_hash, now)
-    if (existingBillRow) calendarChanges = calendarPlan.changes
+    if (existingBillRow && !quietFirst) calendarChanges = calendarPlan.changes
   }
   // --- End change detection ---
 
@@ -348,10 +441,12 @@ export async function ingestMeasure(
     updatedAt:          now,
     createdAt:          now,
     textsFetchedAt:     now,
+    // The change the detail is fetched at (0041): the stub refresh reads the detail as stale once the sync moves past it.
+    detailHash:         bill.change_hash,
   }).onConflictDoUpdate({
     target: bills.billId,
     set: {
-      changeHash:         bill.change_hash,
+      changeHash:         holdBackChangeHash ? '' : bill.change_hash,
       // A bill first inserted from a masterlist (which carries no type) keeps the
       // column default 'B' until this runs, so write the type on every ingest.
       billType:           bill.bill_type,
@@ -369,8 +464,13 @@ export async function ingestMeasure(
       currentBodyId:      bill.current_body_id,
       // A cutover's first ingest changes the bill's data without reporting a
       // change, so instances still see it moved and fetch it again.
-      updatedAt:          detectedChanges.length > 0 || carriedFrom ? now : sql`updated_at`,
-      textsFetchedAt:     now,
+      // So is a quiet first full ingest.
+      updatedAt:          detectedChanges.length > 0 || textHashChanged || carriedFrom || quietFirst ? now : sql`updated_at`,
+      // A quiet first full ingest stamps both only once everything below is
+      // written (after the roll calls), so one that fails partway is retried
+      // as quiet as it began.
+      textsFetchedAt:     quietFirst ? null : now,
+      detailHash:         quietFirst ? null : holdBackChangeHash ? '' : bill.change_hash,
     },
     setWhere: eq(bills.provider, provider.id),
   }).returning({ billId: bills.billId })
@@ -432,6 +532,12 @@ export async function ingestMeasure(
     })
   }
 
+  // People the measure names besides its sponsors (the members who voted, say): added where central
+  // has no row for them, and never written over a row it has, whose fields a sponsor record filled.
+  if (bill.people && bill.people.length > 0) {
+    await insertMissingPeople(db, bill.people.map(p => ({ ...personRow(p, bill.state_id ?? null), provider: provider.id })))
+  }
+
   await db.delete(billSasts).where(eq(billSasts.billId, bill.bill_id))
   for (const s of bill.sasts ?? []) {
     await db.insert(billSasts).values({
@@ -475,7 +581,7 @@ export async function ingestMeasure(
       date: t.date, type: t.type, typeId: t.type_id,
       mime: t.mime, mimeId: t.mime_id,
       url: t.url || null, stateLink: t.state_link || null,
-      textSize: t.text_size || null, textHash: t.text_hash || null,
+      textSize: t.text_size || null, textHash: keptHashes.get(t.doc_id) ?? (t.text_hash || null),
       altBillText: t.alt_bill_text ?? 0,
       altMime: t.alt_mime || null, altMimeId: t.alt_mime_id || null,
       altStateLink: t.alt_state_link || null,
@@ -485,7 +591,7 @@ export async function ingestMeasure(
       set: {
         date: t.date, type: t.type,
         mime: t.mime, stateLink: t.state_link || null,
-        textSize: t.text_size || null, textHash: t.text_hash || null,
+        textSize: t.text_size || null, textHash: keptHashes.get(t.doc_id) ?? (t.text_hash || null),
         altBillText: t.alt_bill_text ?? 0,
         altStateLink: t.alt_state_link || null,
       },
@@ -494,7 +600,7 @@ export async function ingestMeasure(
     // Download text if not already in R2
     const stored = await db.select({ r2Key: billTexts.r2Key })
       .from(billTexts).where(eq(billTexts.docId, t.doc_id)).get()
-    if ((forceTextRefetch || !stored?.r2Key) && t.state_link) {
+    if ((forceTextRefetch || !stored?.r2Key) && t.state_link && !refetchedDocs.has(t.doc_id) && !keptHashes.has(t.doc_id)) {
       await downloadTextToR2(bill.bill_id, t.doc_id, t.state_link, t.mime, provider, env, db, t.text_size ?? null, t.text_hash ?? null)
     }
   }
@@ -620,6 +726,12 @@ export async function ingestMeasure(
   // thousands, and one query each would pass D1's per-invocation query limit.
   if (memberVotes.length > 0) await writeMemberVotes(env.DB, memberVotes, { replace: true })
 
+  if (quietFirst) {
+    await db.update(bills)
+      .set({ textsFetchedAt: now, detailHash: holdBackChangeHash ? '' : bill.change_hash })
+      .where(and(eq(bills.billId, bill.bill_id), eq(bills.provider, provider.id)))
+  }
+
   // Only once everything above is written does a cutover's first ingest stop
   // being one, so an ingest that fails partway is retried as quiet as it began.
   // An undo that landed after this ingest's upsert gave the bill back to its
@@ -706,8 +818,7 @@ export function validateTextPayload(
   const bytes = new Uint8Array(body)
   if (bytes.byteLength === 0) return 'empty response body'
 
-  const head = new TextDecoder('latin1').decode(bytes.slice(0, 5))
-  if (mime.includes('pdf') && head !== '%PDF-') {
+  if (mime.includes('pdf') && !startsWithPdfMagic(bytes)) {
     const peek = new TextDecoder('latin1').decode(bytes.slice(0, 60)).replace(/\s+/g, ' ')
     return `expected a PDF, got ${JSON.stringify(peek)}`
   }
@@ -766,9 +877,13 @@ async function downloadTextToR2(
   db: Db,
   declaredSize: number | null = null,
   declaredHash: string | null = null,
-): Promise<void> {
+  /** A refetch for a changed hash: the copy goes under a key naming it, and the row takes the hash with the key. */
+  newVersion: string | null = null,
+): Promise<boolean> {
   const ext = mime.includes('pdf') ? 'pdf' : 'html'
-  const r2Key = `bills/legiscan-${billId}/texts/${docId}.${ext}`
+  const r2Key = newVersion
+    ? `bills/legiscan-${billId}/texts/${docId}-${newVersion.replace(/[^A-Za-z0-9]/g, '').slice(0, 40)}.${ext}`
+    : `bills/legiscan-${billId}/texts/${docId}.${ext}`
   const attemptedAt = nowDb()
 
   // Attempt 1: the state's own link, with a browser UA.
@@ -831,7 +946,7 @@ async function downloadTextToR2(
     await db.update(billTexts)
       .set({ fetchError: failure, fetchAttemptedAt: attemptedAt })
       .where(eq(billTexts.docId, docId))
-    return
+    return false
   }
 
   // Server often omits charset; sniff from HTML meta tag so browsers decode correctly
@@ -844,8 +959,9 @@ async function downloadTextToR2(
     httpMetadata: { contentType },
   })
   await db.update(billTexts)
-    .set({ r2Key, fetchError: null, fetchAttemptedAt: attemptedAt })
+    .set({ r2Key, fetchError: null, fetchAttemptedAt: attemptedAt, ...(newVersion ? { textHash: newVersion } : {}) })
     .where(eq(billTexts.docId, docId))
+  return true
 }
 
 /**

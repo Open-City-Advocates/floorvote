@@ -1,11 +1,12 @@
-import { and, eq, ne, isNotNull, gte, lt, exists, or, sql } from 'drizzle-orm'
+import { and, eq, ne, isNull, isNotNull, gte, lt, exists, or, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/sqlite-core'
 import { calendarEvents, calendarEventBills, bills, users, sessions, associationConfig } from '../db/schema'
-import { renderWeekAheadEmail, type WeekAheadEvent, type WeekAheadDay } from './weekAheadEmail'
-import { sendBatch, unsubscribeHeaders } from './email'
+import { renderWeekAheadEmail, capBodyEvents, fitToBudget, type WeekAheadEvent, type WeekAheadDay } from './weekAheadEmail'
+import { senderFor, unsubscribeHeaders } from './email'
 import { nowDb } from './dbTime'
 import { prioritizedBillEntry, billEntryGroupKey } from './calendarVisibility'
 import { loadDateFieldEvents } from './dateFieldEvents'
+import { groupHasPriority, loadGroupPriorities, priorityWorn } from './teamFields'
 import type { AppDb, Env } from '../types'
 import { isModuleEnabled, getModuleSetting } from '../../../shared/modules'
 import { PRODUCT_NAME } from '../../../shared/brand'
@@ -55,9 +56,9 @@ export async function runWeekAhead(env: Env, db: AppDb): Promise<void> {
   // agenda bills, so one with a prioritized bill on the agenda is in. The
   // instance's event rules never hide those (lib/eventRules.ts), but a bill
   // prioritized since the rules last ran would wait an hour without this. So
-  // is any body event the rules select (rule_match 1). With no rules every
-  // body event shows on the calendar, but only those with a prioritized bill
-  // reach the email, so a state's whole calendar never floods it.
+  // is any body event the calendar shows: one the rules select (rule_match 1),
+  // or every one while the instance has no rules (rule_match null, "All
+  // events"), so the email lists what the calendar does (#420).
   const linkedBills = alias(bills, 'linked_bills')
   const rows = await db
     .select({
@@ -79,12 +80,14 @@ export async function runWeekAhead(env: Env, db: AppDb): Promise<void> {
       ownBillTitle: bills.title,
       ownBillIsDraft: bills.isDraft,
       ownBillPriority: bills.priority,
+      ownBillGroupKey: bills.groupKey,
       linkedBillId: calendarEventBills.billId,
       linkedBillNumber: linkedBills.billNumber,
       linkedBillState: linkedBills.state,
       linkedBillTitle: linkedBills.title,
       linkedBillIsDraft: linkedBills.isDraft,
       linkedBillPriority: linkedBills.priority,
+      linkedBillGroupKey: linkedBills.groupKey,
     })
     .from(calendarEvents)
     .leftJoin(bills, eq(bills.id, calendarEvents.billId))
@@ -99,20 +102,21 @@ export async function runWeekAhead(env: Env, db: AppDb): Promise<void> {
         or(
           and(prioritizedBillEntry, sql`${calendarEvents.kind} IS NOT 'deadline'`),
           eq(calendarEvents.source, 'custom'),
-          and(eq(calendarEvents.source, 'body'), eq(calendarEvents.ruleMatch, 1)),
+          and(eq(calendarEvents.source, 'body'), or(isNull(calendarEvents.ruleMatch), eq(calendarEvents.ruleMatch, 1))),
           exists(
             db.select({ _: sql`1` })
               .from(calendarEventBills)
               .innerJoin(bills, eq(bills.id, calendarEventBills.billId))
               .where(and(
                 eq(calendarEventBills.eventId, calendarEvents.id),
-                isNotNull(bills.priority),
+                // A companion group has one priority: a linked bill qualifies through any member.
+                groupHasPriority(bills),
               ))
           ),
         ),
       ),
     )
-    .orderBy(calendarEvents.date, calendarEvents.time)
+    .orderBy(calendarEvents.date, calendarEvents.time, calendarEvents.id)
     .all()
 
   // Date custom fields on prioritized bills (#342): all-day, and projected
@@ -126,6 +130,8 @@ export async function runWeekAhead(env: Env, db: AppDb): Promise<void> {
   // Group rows by event, then events by date. Bill entries for the same real
   // meeting on several bills are one event carrying every bill, as the
   // calendar page shows them.
+  // A companion group's bills wear the group's priority, whichever member holds it.
+  const groupPriorities = await loadGroupPriorities(db, rows.flatMap(r => [r.ownBillGroupKey, r.linkedBillGroupKey]))
   const eventMap = new Map<string, WeekAheadEvent>()
   const eventDateMap = new Map<string, string>()  // eventId → date
   const meetingIds = new Map<string, string>()  // bill entry group key → eventId
@@ -161,8 +167,8 @@ export async function runWeekAhead(env: Env, db: AppDb): Promise<void> {
     }
     const ev = eventMap.get(eventId)!
     const bill = row.linkedBillId
-      ? { id: row.linkedBillId, number: row.linkedBillNumber, state: row.linkedBillState, title: row.linkedBillTitle, isDraft: row.linkedBillIsDraft, priority: row.linkedBillPriority }
-      : { id: row.ownBillId, number: row.ownBillNumber, state: row.ownBillState, title: row.ownBillTitle, isDraft: row.ownBillIsDraft, priority: row.ownBillPriority }
+      ? { id: row.linkedBillId, number: row.linkedBillNumber, state: row.linkedBillState, title: row.linkedBillTitle, isDraft: row.linkedBillIsDraft, priority: priorityWorn({ priority: row.linkedBillPriority, groupKey: row.linkedBillGroupKey }, groupPriorities) }
+      : { id: row.ownBillId, number: row.ownBillNumber, state: row.ownBillState, title: row.ownBillTitle, isDraft: row.ownBillIsDraft, priority: priorityWorn({ priority: row.ownBillPriority, groupKey: row.ownBillGroupKey }, groupPriorities) }
     if (bill.id && !ev.bills.some(b => b.id === bill.id)) {
       ev.bills.push({
         id: bill.id,
@@ -184,11 +190,14 @@ export async function runWeekAhead(env: Env, db: AppDb): Promise<void> {
     dayEventMap.get(d)!.push(ev)
   }
 
-  const days: WeekAheadDay[] = dateOrder
+  const allDays: WeekAheadDay[] = dateOrder
     .filter(d => dayEventMap.has(d))
     .map(d => ({ date: d, label: formatDayLabel(d), events: dayEventMap.get(d)! }))
 
-  if (days.length === 0) return
+  if (allDays.length === 0) return
+
+  // Keep the email under Gmail's clip (#675): the calendar has the rest.
+  const capped = capBodyEvents(allDays)
 
   // Recipients: opted-in users with active sessions
   const recipients = await db.select({ email: users.email }).from(users)
@@ -203,19 +212,20 @@ export async function runWeekAhead(env: Env, db: AppDb): Promise<void> {
   let assocName = PRODUCT_NAME
   if (nameRow?.value) { try { assocName = JSON.parse(nameRow.value) } catch { assocName = nameRow.value } }
 
+  // Then under its byte budget for the kinds the cap leaves alone (#774).
+  const { days, omitted } = fitToBudget(capped.days, capped.omitted,
+    (d, o) => renderWeekAheadEmail({ days: d, assocName, appUrl: env.APP_URL, omitted: o }))
+
   const firstDay = days[0].label.split(', ').slice(1).join(', ')
   const lastDay = days[days.length - 1].label.split(', ').slice(1).join(', ')
   const range = firstDay === lastDay ? firstDay : `${firstDay}–${lastDay}`
   const subject = `${assocName}: Your week ahead — ${range}`
-  const html = renderWeekAheadEmail({ days, assocName, appUrl: env.APP_URL })
+  const html = renderWeekAheadEmail({ days, assocName, appUrl: env.APP_URL, omitted })
 
   const headers = unsubscribeHeaders(env.APP_URL, 'setting-week-ahead')
-  await sendBatch(
-    env,
-    recipients.map(r => ({ to: [r.email], subject, html, headers })),
-    'week-ahead',
-    db,
-    { bulk: true },
+  const { sent, failed } = await senderFor(env, db).sendBatch(
+    recipients.map(r => ({ purpose: 'bulk' as const, to: [r.email], subject, html, headers })),
   )
+  console.log(`[week-ahead] sent ${sent}, failed ${failed}`)
   await stampLastWeekAhead(db, nowDb())
 }

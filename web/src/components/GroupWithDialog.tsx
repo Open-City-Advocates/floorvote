@@ -5,7 +5,7 @@ import { FORM_LABEL } from '../lib/textStyles'
 import { Dialog } from './ui/Dialog'
 import { BillPicker, type BillOption } from './BillPicker'
 import { MissingRequiredReason, useRequiredSubmit } from './RequiredField'
-import { undoSplitsConfirmText } from '../lib/splitConfirm'
+import { groupByHand } from '../lib/groupByHand'
 
 /**
  * "Group with…" from the bill page's overflow menu (admins): pick another bill
@@ -13,9 +13,11 @@ import { undoSplitsConfirmText } from '../lib/splitConfirm'
  * **Group override** in CONTEXT.md). The picker offers the instance's tracked
  * bills, less drafts and the bills already in this one's group.
  */
-export function GroupWithDialog({ billId, billNumber, groupBillIds, onGrouped, onClose }: {
+export function GroupWithDialog({ billId, billNumber, groupBillIds, shares, onGrouped, onClose }: {
   billId: string
   billNumber: string
+  /** What grouped bills share, e.g. "comments, votes, team position, and priority" (groupSharedThings). */
+  shares: string
   /** The bills already in this bill's group, this one included. */
   groupBillIds: readonly string[]
   onGrouped: () => void
@@ -43,14 +45,9 @@ export function GroupWithDialog({ billId, billNumber, groupBillIds, onGrouped, o
     setError(null)
     try {
       // Grouping a bill again with one it was split from undoes that split and the others between the two
-      // groups. Say which first, as the split confirmation does, and write nothing if declined.
-      const { undoneSplits = [] } = await apiFetch<{ undoneSplits?: Array<[{ billNumber: string }, { billNumber: string }]> }>(
-        `/bills/${billId}/group-preview?withBillId=${encodeURIComponent(target)}`)
-      if (undoneSplits.length > 0) {
-        const withNumber = options.find(o => o.id === target)?.billNumber ?? 'the bill picked'
-        if (!window.confirm(undoSplitsConfirmText(billNumber, withNumber, undoneSplits))) { setSaving(false); return }
-      }
-      await apiFetch(`/bills/${billId}/group`, { method: 'POST', body: JSON.stringify({ withBillId: target }) })
+      // groups. groupByHand says which first, as the split confirmation does, and writes nothing if declined.
+      const withNumber = options.find(o => o.id === target)?.billNumber ?? 'the bill picked'
+      if (!await groupByHand(billId, billNumber, target, withNumber)) { setSaving(false); return }
       onGrouped()
     } catch (err) {
       // A refusal says why (already one group, or two bills split apart, and how to undo the split).
@@ -75,7 +72,7 @@ export function GroupWithDialog({ billId, billNumber, groupBillIds, onGrouped, o
         Group {billNumber} with another bill
       </div>
       <p style={{ fontSize: fontSize.sm, color: color.textSecondary, margin: '0 0 14px', lineHeight: 1.5 }}>
-        Grouped bills share one discussion, one vote per member, and the team's position, priority, and fields.
+        Grouped bills share {shares}.
         Each keeps its own page. The grouping holds through later updates from the legislature. Splitting a
         bill from its group later takes it out of the whole group, not only away from the bill picked here.
       </p>

@@ -3,31 +3,33 @@ import { requireAdmin, type DashEnv } from '../lib/adminAuth'
 import { drizzle } from 'drizzle-orm/d1'
 import { sql, eq, gte, desc, inArray, isNull, and } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { DEFAULT_FULL_HOURS_ET, DEFAULT_RAW_HOURS_ET } from '../lib/sync-schedule'
+import { DEFAULT_RAW_HOURS_ET, defaultFullHours } from '../lib/sync-schedule'
+import { findProvider } from '../providers'
+import { isSnapshotProvider } from '../cron/sync-snapshots'
 import { getSettingNumber } from '../lib/settings'
 import { nowDb } from '../lib/dbTime'
 import { fetchAiUsage } from '../lib/aiGatewayAnalytics'
+import { legiscanCallsOnly, legiscanCallsThisMonth, monthStartDb } from '../lib/legiscanBudget'
+import { resolveTenantRpc } from '../lib/tenantRpc'
+import { loadStateRows } from '../lib/stateRows'
 
-// Other providers' calls are logged to api_call_log too (callType '<provider
-// id>:<operation>', such as 'lims:Members'), but they are not LegiScan calls.
-// Every dashboard query uses this filter, so the dashboard shows only LegiScan
-// calls and they never count against the LegiScan monthly budget. LegiScan's own operation names
-// (getBill, getMasterListRaw, ...) have no colon.
-const legiscanCallsOnly = sql`${schema.apiCallLog.callType} NOT LIKE '%:%'`
+// Every dashboard query of api_call_log uses legiscanCallsOnly
+// (lib/legiscanBudget.ts), so the dashboard shows only LegiScan calls and other
+// providers' calls never count against the LegiScan monthly budget.
 
 export const dashRoutes = new Hono<DashEnv>()
 
 dashRoutes.use('*', requireAdmin())
 
-function parseHoursOrDefault(json: string | null, fallback: number[]): { hours: number[]; isDefault: boolean } {
-  if (!json) return { hours: fallback, isDefault: true }
+function parseHoursOrDefault(json: string | null, fallback: readonly number[]): { hours: number[]; isDefault: boolean } {
+  if (!json) return { hours: [...fallback], isDefault: true }
   try {
     const arr = JSON.parse(json)
     if (Array.isArray(arr) && arr.every(n => Number.isInteger(n) && n >= 0 && n < 24)) {
       return { hours: arr, isDefault: false }
     }
   } catch {}
-  return { hours: fallback, isDefault: true }
+  return { hours: [...fallback], isDefault: true }
 }
 
 function normalizeHours(input: unknown): number[] | null {
@@ -65,21 +67,15 @@ dashRoutes.get('/overview', async (c) => {
     .where(isNull(schema.billTenants.matchType))
     .get()
 
-  // API budget: count of api_call_log this month
-  const monthStart = new Date()
-  monthStart.setUTCDate(1)
-  monthStart.setUTCHours(0, 0, 0, 0)
-  const apiUsedRow = await db
-    .select({ n: sql<number>`COUNT(*)` })
-    .from(schema.apiCallLog)
-    .where(and(gte(schema.apiCallLog.loggedAt, monthStart.toISOString()), legiscanCallsOnly))
-    .get()
-  const apiUsed = Number(apiUsedRow?.n ?? 0)
+  // API budget: this month's LegiScan calls, the count the stub refresh's budget floor reads too.
+  const apiUsed = await legiscanCallsThisMonth(db)
 
   // Last sync (per-state syncs; we pick the most recent)
+  // A pass that failed is a row in the log and not a sync.
   const lastSync = await db
     .select()
     .from(schema.sessionSyncLog)
+    .where(eq(schema.sessionSyncLog.status, 'ok'))
     .orderBy(desc(schema.sessionSyncLog.syncedAt))
     .limit(1)
     .get()
@@ -169,8 +165,13 @@ dashRoutes.get('/sync/sessions', async (c) => {
     .all()
 
   const shape = (r: typeof allSessions[number]) => {
-    const full = parseHoursOrDefault(r.fullSyncHoursEt, DEFAULT_FULL_HOURS_ET)
-    const raw = parseHoursOrDefault(r.rawSyncHoursEt, DEFAULT_RAW_HOURS_ET)
+    const provider = findProvider(r.provider)
+    const fullDefault = defaultFullHours(provider)
+    const full = parseHoursOrDefault(r.fullSyncHoursEt, fullDefault)
+    const snapshot = isSnapshotProvider(provider)
+    // A snapshot provider has no raw pass, so it has no raw hours to default.
+    const rawDefault = snapshot ? [] : DEFAULT_RAW_HOURS_ET
+    const raw = parseHoursOrDefault(r.rawSyncHoursEt, rawDefault)
     return {
       sessionId: r.sessionId,
       state: r.state,
@@ -180,6 +181,9 @@ dashRoutes.get('/sync/sessions', async (c) => {
       lastSyncedAt: r.lastSyncedAt,
       fullSyncHours: full.hours,
       fullSyncIsDefault: full.isDefault,
+      defaultFullHours: [...fullDefault],
+      defaultRawHours: rawDefault,
+      snapshot,
       rawSyncHours: raw.hours,
       rawSyncIsDefault: raw.isDefault,
       syncEnabled: r.syncEnabled,
@@ -280,7 +284,7 @@ dashRoutes.get('/sync/states', async (c) => {
     const lastSync = await db
       .select({ at: schema.sessionSyncLog.syncedAt })
       .from(schema.sessionSyncLog)
-      .where(eq(schema.sessionSyncLog.state, state))
+      .where(and(eq(schema.sessionSyncLog.state, state), eq(schema.sessionSyncLog.status, 'ok')))
       .orderBy(desc(schema.sessionSyncLog.syncedAt))
       .limit(1)
       .get()
@@ -310,20 +314,20 @@ dashRoutes.get('/sync/states', async (c) => {
   return c.json({ data: { states: result }, meta: { generatedAt: new Date().toISOString() } })
 })
 
+// One row per state central covers: its provider and health (lib/stateRows.ts).
+// Read only, behind the same requireAdmin as the rest of the dashboard.
+dashRoutes.get('/states', async (c) => {
+  const db = drizzle(c.env.DB, { schema })
+  return c.json({ data: { states: await loadStateRows(db, c.env) }, meta: { generatedAt: new Date().toISOString() } })
+})
+
 dashRoutes.get('/sync/api-budget', async (c) => {
   const db = drizzle(c.env.DB, { schema })
   const legiscanLimit = await getSettingNumber(db, 'legiscan_monthly_limit', 10000)
   const days = Math.min(Number(c.req.query('days') ?? 30), 90)
 
   // Monthly total
-  const monthStart = new Date()
-  monthStart.setUTCDate(1)
-  monthStart.setUTCHours(0, 0, 0, 0)
-  const mtdRow = await db
-    .select({ n: sql<number>`COUNT(*)` })
-    .from(schema.apiCallLog)
-    .where(and(gte(schema.apiCallLog.loggedAt, monthStart.toISOString()), legiscanCallsOnly))
-    .get()
+  const mtd = await legiscanCallsThisMonth(db)
 
   // Daily series: last `days` days
   const since = new Date()
@@ -355,7 +359,7 @@ dashRoutes.get('/sync/api-budget', async (c) => {
       calls: sql<number>`COUNT(*)`,
     })
     .from(schema.apiCallLog)
-    .where(and(gte(schema.apiCallLog.loggedAt, monthStart.toISOString()), legiscanCallsOnly))
+    .where(and(gte(schema.apiCallLog.loggedAt, monthStartDb(new Date())), legiscanCallsOnly))
     .groupBy(schema.apiCallLog.callType)
     .orderBy(desc(sql`COUNT(*)`))
     .limit(10)
@@ -385,7 +389,7 @@ dashRoutes.get('/sync/api-budget', async (c) => {
 
   return c.json({
     data: {
-      monthToDate: Number(mtdRow?.n ?? 0),
+      monthToDate: mtd,
       limit: legiscanLimit,
       daily,
       topCalls: topCalls.map(r => ({ callType: r.callType, calls: Number(r.calls) })),
@@ -422,6 +426,8 @@ dashRoutes.get('/sync/ticks', async (c) => {
       billsChecked: schema.sessionSyncLog.billsChecked,
       billsChanged: schema.sessionSyncLog.billsChanged,
       billsQueued: schema.sessionSyncLog.billsQueued,
+      status: schema.sessionSyncLog.status,
+      error: schema.sessionSyncLog.error,
     })
     .from(schema.sessionSyncLog)
     .orderBy(desc(schema.sessionSyncLog.syncedAt))
@@ -658,6 +664,26 @@ dashRoutes.get('/tenants/:id', async (c) => {
   })
 })
 
+// How well one instance's claim links resolve (#573): counts of its stored claim
+// sources by status, and two signals about analyses that stored none. Asked of
+// the instance over its service binding, as the unknown-login list is, so
+// central stores nothing and the instance's members have no way to read it. The
+// instance reuses its scan for a while and returns when it ran (`computedAt`).
+dashRoutes.get('/tenants/:id/claim-sources', async (c) => {
+  const id = c.req.param('id')
+  const db = drizzle(c.env.DB, { schema })
+  const tenant = await db.select({ id: schema.tenants.tenantId }).from(schema.tenants).where(eq(schema.tenants.tenantId, id)).get()
+  if (!tenant) return c.json({ error: { code: 'not_found', message: 'Tenant not found' } }, 404)
+  const rpc = resolveTenantRpc(c.env, id)
+  if (!rpc) return c.json({ error: { code: 'not_bound', message: 'Tenant is not bound to central, so its summary citation counts cannot be read' } }, 501)
+  try {
+    return c.json({ data: await rpc.claimSourceCounts(), meta: { generatedAt: new Date().toISOString() } })
+  } catch (err) {
+    // Includes an instance from before this feature, whose entrypoint has no such method.
+    return c.json({ error: { code: 'tenant_call_failed', message: err instanceof Error ? err.message : 'tenant call failed' } }, 502)
+  }
+})
+
 dashRoutes.get('/activity', async (c) => {
   const db = drizzle(c.env.DB, { schema })
   const limit = Math.min(Number(c.req.query('limit') ?? 50), 200)
@@ -847,6 +873,8 @@ dashRoutes.get('/sync/ticks/:id/changes', async (c) => {
     .from(schema.sessionSyncLog)
     .where(and(
       eq(schema.sessionSyncLog.sessionId, tick.sessionId),
+      // A failed pass queued nothing, so it doesn't end the window the ok pass's changes land in.
+      eq(schema.sessionSyncLog.status, 'ok'),
       gte(schema.sessionSyncLog.syncedAt, tick.syncedAt),
       sql`${schema.sessionSyncLog.id} != ${id}`,
     ))

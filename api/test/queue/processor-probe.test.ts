@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
-import { resetDb, applyMigrations } from '../helpers'
+import { clearDb } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { processCentralNotification, processQueue } from '../../src/queue/processor'
 import worker from '../../src/index'
@@ -20,8 +20,7 @@ const probe = (over: Partial<TenantQueueMessage> = {}): TenantQueueMessage =>
 let fetchMock: ReturnType<typeof vi.fn>
 
 beforeEach(async () => {
-  await resetDb()
-  await applyMigrations()
+  await clearDb()
   vi.clearAllMocks()
   fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ billId: 'legiscan:42', title: 'A bill', number: 'HB 1' }), { status: 200 }))
   vi.stubGlobal('fetch', fetchMock)
@@ -33,6 +32,15 @@ describe('delivery probe message', () => {
     await processCentralNotification(probe(), testEnv, db)
     expect(await readDeliveryProbe(db)).toMatchObject({ nonce: 'nonce-1', billId: 'legiscan:42', readStatus: 200 })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/api/bills/legiscan:42')
+  })
+
+  // Release 2 of #305: a capable instance is probed with `bill:<n>`. It records
+  // the handle as central sent it, and still reads the bill back by the legacy one.
+  it.each(['bill:42', 'legiscan:42'])('records a %s probe under the handle central sent', async (handle) => {
+    const db = getDb(env.DB)
+    await processCentralNotification(probe({ billId: handle }), testEnv, db)
+    expect(await readDeliveryProbe(db)).toMatchObject({ nonce: 'nonce-1', billId: handle, readStatus: 200 })
     expect(String(fetchMock.mock.calls[0][0])).toContain('/api/bills/legiscan:42')
   })
 

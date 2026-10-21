@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SELF } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill } from '../helpers'
+import { clearDb, seedUser, seedSession, seedBill } from '../helpers'
 import { centralFetch } from '../../src/lib/centralFetch'
 
 vi.mock('../../src/lib/centralFetch', () => ({
@@ -20,8 +20,7 @@ describe('GET /api/bills/:id: related bills', () => {
   let token: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     token = await seedSession(await seedUser({ email: 'member@x.com', role: 'member' }))
     vi.mocked(centralFetch).mockReset()
   })
@@ -57,5 +56,15 @@ describe('GET /api/bills/:id: related bills', () => {
     const id = await seedBill({ id: 'a192', billNumber: 'A192', externalId: 'legiscan:121', state: 'NJ', relatedBillIds: ['S2'] })
     vi.mocked(centralFetch).mockRejectedValue(new Error('central unreachable'))
     expect((await relatedOf(id))[0]).toMatchObject({ billNumber: 'S2', kind: 'related' })
+  })
+
+  it('links 60 related bills held under either spelling, past D1\'s 100-bind limit (#305)', async () => {
+    const id = await seedBill({ id: 'a1', billNumber: 'A1', externalId: 'legiscan:101', state: 'NJ' })
+    const numbers = Array.from({ length: 60 }, (_, i) => 5000 + i)
+    for (const n of numbers) await seedBill({ id: `r${n}`, billNumber: `R${n}`, externalId: n % 2 ? `bill:${n}` : `legiscan:${n}`, state: 'NJ', session: '2026', sessionSlug: '2026-regular' })
+    centralServes(numbers.map(n => ({ identifier: `R${n}`, sastBillId: n, session: '1', relationType: 'same-as', kind: 'related' })))
+    const related = await relatedOf(id) as Array<{ billNumber: string; route: { id: string } | null }>
+    expect(related).toHaveLength(60)
+    expect(related.every(r => r.route?.id === `r${r.billNumber.slice(1)}`)).toBe(true)
   })
 })

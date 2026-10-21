@@ -4,7 +4,7 @@ description: "How to add a data provider to FloorVote: the provider model, the r
 
 # Adding a data provider
 
-LegiScan supplies FloorVote's bill data for every state. A **provider** is an adapter that reads a legislature's own feed instead. DC, Maryland, and Virginia have providers today. You can add one for your state by copying a template directory, following this page, and testing the way maintainers do. You won't touch tenant, web, or pipeline code.
+LegiScan supplies FloorVote's bill data for every state. A **provider** is an adapter that reads a legislature's own feed instead. DC, Maryland, Virginia, and Congress have providers today. You can add one for your state by copying a template directory, following this page, and testing the way maintainers do. You won't touch tenant, web, or pipeline code.
 
 The [State coverage](/contributing/state-coverage) page lists the providers that exist and who maintains them. It lists what the code supports, not which provider a given deployment uses.
 
@@ -13,7 +13,7 @@ The [State coverage](/contributing/state-coverage) page lists the providers that
 A provider knows one API and how to map what it returns into FloorVote's shapes. Central, the shared data service, does everything else: deciding what to sync and when, writing to the database, matching keywords, and notifying instances. Two things hold that line:
 
 - ESLint lets provider code import only its own directory and [`providers/sdk.ts`](https://github.com/floorvote/floorvote/blob/main/central/src/providers/sdk.ts), and lets the rest of central reach a provider only through the registry (`providers/index.ts`). `npm run lint` in `central/` enforces both.
-- A provider's `env` holds only the keys it declares in `envKeys`, such as its API key. It never holds central's database, buckets, or queues.
+- A provider's `env` holds only the keys it declares in `envKeys`, such as its API key. It never holds central's database, buckets, or queues. What a provider keeps between runs goes through `ctx.cache`, small text entries of its own that central stores for it.
 
 Instances never call a legislative API. They read central, so a new provider changes nothing for them.
 
@@ -25,7 +25,7 @@ The interface and every shape that crosses the boundary are documented in [`prov
 
 Every provider maps into the shapes LegiScan introduced: the same bill, session, sponsor, history, vote, text, and calendar fields. If your feed has something those shapes can hold, map it there. A bill from your provider then works with search, keyword matching, notifications, and AI summaries exactly as a LegiScan bill does.
 
-A field only your feed publishes goes in **extras**: display-only values the bill page shows under your provider's name, such as Maryland's chapter number or the statutes a bill affects. Extras are never sorted, filtered, matched, or sent to AI. If a field needs any of that, or a second provider publishes it too, it becomes a shared column instead, and that is a change to central, discussed in an issue first.
+A field only your feed publishes goes in **extras**: display-only values the bill page shows, such as Maryland's chapter number or the statutes a bill affects. Each extra says where, with a `placement`: in the meta row at the top of the page (`meta`), as a full-width line under it (`detail`), as plain text beside the bill's body label (`flag`), or in the "Additional information" fold-out (`panel`, the default). Extras are never sorted, filtered, matched, or sent to AI. If a field needs any of that, or a second provider publishes it too, it becomes a shared column instead, and that is a change to central, discussed in an issue first.
 
 ### Official feeds only
 
@@ -33,7 +33,7 @@ Read the legislature's own API or its published data files. Parsing HTML pages i
 
 ### Fail closed
 
-When the feed is down, answers with an error, or sends a shape the mapping doesn't read, throw. Central then changes nothing from that answer, and the job fails and alerts. Never treat a bad answer as an empty one:
+When the feed is down, answers with an error, or sends a shape the mapping doesn't read, throw. Central then changes nothing from that answer, and the pass fails. The hourly job emails the operators once a session has failed four passes in a row, so a blip that the next pass reads past stays quiet. Never treat a bad answer as an empty one:
 
 - A missing key is not an empty value. A key the feed renamed would otherwise strip that field from every bill on its next ingest.
 - An empty list means nothing new, never that bills were removed.
@@ -45,7 +45,7 @@ Adding a provider to the registry doesn't change any deployment. A state syncs f
 
 ### Official codes, never LegiScan's
 
-Each provider writes its own status codes, in a block no other provider uses: LegiScan 0 through 12, LIMS the 100s, Maryland's MGA the 200s, Virginia's LIS the 300s. Take the next free hundred.
+Each provider writes its own status codes, in a block no other provider uses: LegiScan 0 through 12, LIMS the 100s, Maryland's MGA the 200s, Virginia's LIS the 300s, Congress's GovInfo the 400s. Take the next free hundred.
 
 ### Every text carries a hash
 
@@ -65,10 +65,12 @@ By default core only upserts a bill's roll calls on ingest, so a roll call you s
 
 Providers sync one of two ways:
 
-- **Snapshot.** The feed has no modified-since filter and no cheap change list, so each pass reads a session's records whole. You implement `snapshot` and `toEntry`, and central stores each changed record, hashes it, and hands it back for the ingest. DC, Maryland, and Virginia work this way, and so does the template.
+- **Snapshot.** The feed has no modified-since filter and no cheap change list, so each pass reads a session's records whole. You implement `snapshot` and `toEntry`, and central stores each changed record, hashes it, and hands it back for the ingest. DC, Maryland, Virginia, and Congress work this way, and so does the template.
 - **Listing.** The API can list changes cheaply. You implement `listMeasures` and `listChangeHashes`, as LegiScan does.
 
 Most legislatures publish a file or an API without change filters, so start with a snapshot.
+
+A snapshot provider whose feed can say what changed since its last read can return only those records: set `partial: true` on the snapshot. Central hands the provider the ETag of the last snapshot a pass finished (`SnapshotSession.etag`, which can hold any watermark you choose), replaces the stored records the partial snapshot names, by bill id, and runs the pass on every stored record, so matching and retries work as for a full read. A record you leave out stays as it is, and central never removes one. When `etag` is null (a session's first read, a forced run, or a new claim), read in full: a partial snapshot answering a null ETag fails the pass, and nothing is written. Congress's GovInfo provider (`providers/govinfo/changes.ts`) is an example: its ETag holds a watermark, and between daily full reads it downloads only the files its feed's listings say changed since.
 
 ## Start from the template
 
@@ -108,7 +110,7 @@ Central sends the credit to each instance along with the states you own for it, 
 
 - **Statuses.** Every code the mapping writes to `bills.status` needs a label, a stage from the shared status stages (or none, for a notice outside the legislative path), a rank, a terminal flag, and an explainer. Labels and ranks are unique within your provider.
 - **Bill types** and **calendar event types**, each with a label. An event type also names its kind: hearing, markup, meeting, or deadline.
-- **Extras**, each with a label, an optional explainer, and a display type: text, date, link, or identifier.
+- **Extras**, each with a label, an optional explainer, a display type (text, date, link, or identifier), and an optional placement (`meta`, `detail`, `flag`, or `panel`). Use `meta` for a short fact, `detail` for a long list, and `flag` for a yes-or-no fact whose value is "Yes", and leave the placement out for anything that belongs in the fold-out. Don't extra a value the timeline or calendar already shows on the same day. A fork that ships central before its page sees every extra in the fold-out until its page updates.
 - **Relationships**, if your feed links bills to each other. Map each relationship label your mapping writes (the `type` of a `sasts` entry) to one of three kinds: `identical` (the same bill filed twice, usually one in each chamber), `package` (different bills the legislature moves together), or `related`. A label you leave out is `related`, so a feed that publishes nothing worth grouping needs no section. Map a label `identical` only where it names the same bill twice, since identical companions are the ones that can share a discussion. Write the label as the feed publishes it. The match is by name, never by type id, and ignores case, spacing, and hyphens. Where a label means something else in one state, give that state its own entry under `states`, as LegiScan does for Michigan's "Same As," which tie-bars different bills. Central keeps the raw relationships and attaches the kind when it serves a bill, so changing a mapping needs no re-ingest.
 
 Explainers appear next to real bills, so keep them factual and cite the legislature's own guide to its process. Changing a status's stage or rank after launch changes how bills already in instances sort and filter, so it ships with a one-time metadata resend. [`docs/internal/sync-pipeline.md`](https://github.com/floorvote/floorvote/blob/main/docs/internal/sync-pipeline.md) explains how.
@@ -158,7 +160,7 @@ it('syncs Maryland once claimed', async () => {
 })
 ```
 
-The LIMS, Maryland, and Virginia tests all use it, and the [template's test](https://github.com/floorvote/floorvote/blob/main/central/test/cron/template-provider.test.ts) is the smallest example. [`mga-provider.test.ts`](https://github.com/floorvote/floorvote/blob/main/central/test/cron/mga-provider.test.ts) is a full one. At a minimum, test that your provider:
+The LIMS, Maryland, Virginia, and Congress tests all use it, and the [template's test](https://github.com/floorvote/floorvote/blob/main/central/test/cron/template-provider.test.ts) is the smallest example. [`mga-provider.test.ts`](https://github.com/floorvote/floorvote/blob/main/central/test/cron/mga-provider.test.ts) is a full one. At a minimum, test that your provider:
 
 - stays off until an operator claims the state
 - syncs a claimed state, serves its bills through the bill API, and queues notifications for an instance that matches
@@ -204,9 +206,13 @@ curl -X POST "$CENTRAL/api/admin/state-providers/MD" \
   -d '{"provider":"mga"}'
 ```
 
-Central refuses the claim when the provider doesn't serve that state or isn't configured, and when the state's current provider has bills that instances track. Moving those bills without orphaning anyone's links takes a cutover, a separate operation that matches bills across providers and moves each matched bill onto the new provider's data, keeping its id so instances' links stay as they are. A new deployment, or a state no instance covers yet, can switch at once. A state whose provider later loses its key goes unsynced rather than falling back to LegiScan, since a fallback would duplicate every tracked bill.
+Central refuses the claim when the provider doesn't serve that state or isn't configured, and when the state's current provider has bills that instances track. Moving those bills without orphaning anyone's links takes a cutover, a separate operation that matches bills across providers and moves each matched bill onto the new provider's data, keeping its id so instances' links stay as they are. A new deployment, or a state no instance covers yet, can switch at once. A state whose provider later loses its key goes unsynced rather than falling back to LegiScan, since a fallback would duplicate every tracked bill. Congress has its own walkthrough, with a deadline for a deployment that already tracks it: [Congress from GovInfo](/self-hosting/congress).
 
-You don't write any of this as a contributor. It matters for two reasons: your provider should work for a state that is claimed at launch, and it should keep every bill's id stable across passes, since cutover and calendar subscriptions depend on that.
+A provider's bills queue for ingest on `INGESTOR_QUEUE`, the queue LegiScan's bills use, unless the provider declares `ingestQueue` (the env key of a queue binding, such as `MGA_INGESTOR_QUEUE`) and the operator has bound it. Declare one when your API can't take concurrent calls, or when a state's first sync or a cutover queues thousands of bills. Without its own queue, that backlog holds up every LegiScan ingest behind it. When a provider that declares one is claimed, the operator **binds its queue before claiming or cutting over a large state**: create the queue in Cloudflare, uncomment the provider's producer and consumer in their `central/wrangler.toml` (copied from `wrangler.example.toml`) at `max_concurrency = 1`, and deploy central before claiming. If the binding is missing, the provider still works on the shared queue, only slower for everyone. Add your provider's commented binding and consumer to `central/wrangler.example.toml`, next to the others, with a one-line reason for its concurrency.
+
+A snapshot provider's sessions run a full pass at LegiScan's three hours a day (5, 13, and 23 ET) unless the provider declares `fullHoursEt`, the hours its sessions use when an admin hasn't overridden them on Settings. Declare every hour (`EVERY_HOUR_ET` from the SDK) only when an unchanged pass is cheap: a conditional request that answers 304, or a few calls. Admin Settings shows the declared hours as "Default."
+
+You don't write any of this as a contributor, beyond that declaration. It matters for two reasons: your provider should work for a state that is claimed at launch, and it should keep every bill's id stable across passes, since cutover and calendar subscriptions depend on that.
 
 ## Where the internals live
 

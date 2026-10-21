@@ -45,8 +45,9 @@ import type { Db, Env } from '../types'
  *   on the same date and of the same kind keeps the identity, and so the
  *   calendar UID, instances already have. The rest of the old entries are
  *   cancelled once, and the new provider's other entries arrive as new.
- * - **Legislators** are matched on name, chamber, and district, and keep
- *   their person ids (`cutover_people`, applied by lib/carriedIds.ts).
+ * - **Legislators** are matched by Bioguide id where both providers have
+ *   one, and otherwise on name, chamber, and district, and keep their person
+ *   ids (`cutover_people`, applied by lib/carriedIds.ts).
  * - **The losing provider's sessions** in the state are marked ended, since
  *   nothing syncs them any more.
  * - **Ownership** (`state_providers`) flips in the batch's last statement,
@@ -147,6 +148,9 @@ const READ_CHUNK = 5_000
  * hold, which only the cutover mints. `knownIds` answers the same way, so a
  * key the plan handed a placeholder is known from then on, as it would be once minted.
  */
+/** The cache keys a provider keeps so an alert isn't sent twice, which a plan never writes. */
+const ALERT_KEYS = 'alerted/'
+
 async function planContext(provider: Provider, env: Env, db: Db) {
   const base = providerContext(provider, env, db, { reason: 'cutover' })
   const known = new Map<string, number>()
@@ -181,6 +185,18 @@ async function planContext(provider: Provider, env: Env, db: Db) {
       return out
     },
     people: () => (held ??= base.people()),
+    // A plan reads the provider's cache, and its writes stand. The calendar preview reads only the meetings
+    // govinfo has already cached and writes no meeting entries, since nothing in a plan asks the Congress.gov API
+    // for any. The plan's snapshot does still write and drop govinfo's own bookkeeping, such as its snapshot digest.
+    // The entries a provider keeps to stop an alert repeating (`alerted/...`) are real state about real alerts:
+    // a plan must neither set one, which would silence the next real alert, nor clear one.
+    cache: {
+      list: prefix => base.cache.list(prefix),
+      put: entries => base.cache.put(Object.fromEntries(Object.entries(entries).filter(([k]) => !k.startsWith(ALERT_KEYS)))),
+      drop: keys => base.cache.drop(keys.filter(k => !k.startsWith(ALERT_KEYS))),
+    },
+    // A plan is a dry run: what a provider would alert on is logged, and no one is emailed.
+    alert: async ({ subject }) => { console.warn(`[cutover] plan for ${provider.id}: alert not sent: ${subject}`) },
   }
   return { ctx, provisional }
 }
@@ -401,7 +417,7 @@ export async function planCutover(
   // provider's listings and the sponsors of the measures read above.
   const oldPeople: OldPerson[] = await db.select({
     id: people.peopleId, name: people.name, firstName: people.firstName, lastName: people.lastName,
-    role: people.role, roleId: people.roleId, district: people.district,
+    role: people.role, roleId: people.roleId, district: people.district, bioguideId: people.bioguideId,
   })
     .from(people)
     .where(and(eq(people.provider, from.id), inArray(people.stateId,
@@ -410,15 +426,15 @@ export async function planCutover(
     .all()
   const newPeople = new Map<number, NewPerson>()
   for (const p of listedPeople) {
-    newPeople.set(p.people_id, { id: p.people_id, name: p.name, firstName: p.first_name, lastName: p.last_name, role: p.role, roleId: p.role_id })
+    newPeople.set(p.people_id, { id: p.people_id, name: p.name, firstName: p.first_name, lastName: p.last_name, role: p.role, roleId: p.role_id, bioguideId: p.bioguide_id })
   }
   for (const measure of measures.values()) {
     for (const s of measure.sponsors ?? []) {
       if (!s.people_id) continue
       const known = newPeople.get(s.people_id)
       newPeople.set(s.people_id, known
-        ? { ...known, district: known.district || s.district || null }
-        : { id: s.people_id, name: s.name, firstName: s.first_name, lastName: s.last_name, role: s.role, roleId: s.role_id, district: s.district || null })
+        ? { ...known, district: known.district || s.district || null, bioguideId: known.bioguideId || s.bioguide_id || null }
+        : { id: s.people_id, name: s.name, firstName: s.first_name, lastName: s.last_name, role: s.role, roleId: s.role_id, district: s.district || null, bioguideId: s.bioguide_id || null })
     }
   }
   const matchedPeople = matchPeople(oldPeople, [...newPeople.values()])
@@ -722,12 +738,18 @@ export function cutoverReport(plan: CutoverPlan) {
     people: {
       matched: plan.people.matched.length,
       weak: plan.people.matched.filter(m => m.weak).length,
+      bioguide: plan.people.matched.filter(m => m.on.includes('bioguide')).length,
       list: plan.people.matched.map(m => ({ personId: String(m.from.id), name: m.from.name, as: m.to.name, nameMatch: m.name, on: m.on, weak: m.weak })),
       ambiguous: plan.people.ambiguous.map(a => ({ name: a.person.name, candidates: a.candidates.map(c => ({ personId: String(c.id), name: c.name })) })),
       unmatched: {
         old: plan.people.unmatchedFrom.map(p => ({ personId: String(p.id), name: p.name })),
         new: plan.people.unmatchedTo.map(p => ({ name: p.name })),
       },
+      // Bioguide ids people on one side share. None of them matched by it, nor by name where the other side has it too.
+      sharedBioguide: plan.people.sharedBioguide.map(s => ({
+        side: s.side, bioguideId: s.bioguideId,
+        people: s.people.map(p => (s.side === 'old' ? { personId: String(p.id), name: p.name } : { name: p.name })),
+      })),
     },
   }
 }

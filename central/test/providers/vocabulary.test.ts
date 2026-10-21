@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { PROVIDERS, getProvider } from '../../src/providers'
 import { stagePosition } from '../../../shared/statusStages'
-import { EXTRA_DISPLAYS } from '../../../shared/providerExtras'
+import { EXTRA_DISPLAYS, EXTRA_PLACEMENTS } from '../../../shared/providerExtras'
 import { CALENDAR_KINDS } from '../../../shared/calendarKinds'
 import { RELATIONSHIP_KINDS } from '../../../shared/relationshipKinds'
 import { limsStatusCode } from '../../src/providers/lims/map'
@@ -53,6 +53,19 @@ describe.each([...PROVIDERS, example].map(p => [p.id, p] as const))('%s vocabula
     }
   })
 
+  it('gives each extra a placement the bill page knows, or none, which means the panel', () => {
+    for (const e of Object.values(provider.vocabulary.extras ?? {})) {
+      if (e.placement !== undefined) expect(EXTRA_PLACEMENTS, e.label).toContain(e.placement)
+    }
+  })
+
+  it('shows an extra flag only when its value could be "Yes"', () => {
+    // A flag's value is "Yes" (anything else falls back to a meta item), so its label names the thing that is true.
+    for (const e of Object.values(provider.vocabulary.extras ?? {})) {
+      if (e.placement === 'flag') expect(e.label.trim(), e.label).not.toMatch(/[:?]$/)
+    }
+  })
+
   it('maps each relationship label to one of the three kinds, with state overrides keyed by state', () => {
     const r = provider.vocabulary.relationships
     if (!r) return
@@ -77,6 +90,25 @@ describe('the codes each provider writes', () => {
   it('covers every code the Maryland and Virginia mappings derive', () => {
     expect(codes('mga')).toEqual([201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216])
     expect(codes('lis')).toEqual([301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312])
+  })
+
+  it('covers the eleven statuses the GovInfo derivation writes, in the 400s', () => {
+    expect(codes('govinfo')).toEqual([401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411])
+    const statuses = getProvider('govinfo').vocabulary.statuses
+    expect(Object.values(statuses).map(s => s.label)).toEqual([
+      'Introduced', 'In committee', 'Reported', 'Passed House', 'Passed Senate', 'Passed both chambers',
+      'Presented to the President', 'Failed', 'Vetoed', 'Became law', 'Agreed to',
+    ])
+    // A law and an agreed-to resolution are done. Everything else can still move, a failed vote and a veto included.
+    expect(Object.values(statuses).filter(s => s.terminal).map(s => s.label)).toEqual(['Became law', 'Agreed to'])
+  })
+
+  it('declares the four GovInfo bill types and the four extras later tickets fill', () => {
+    const v = getProvider('govinfo').vocabulary
+    expect(Object.keys(v.billTypes).sort()).toEqual(['B', 'CR', 'JR', 'R'])
+    expect(Object.fromEntries(Object.entries(v.extras ?? {}).map(([k, e]) => [k, e.display]))).toEqual({
+      summary: 'text', publicLaw: 'identifier', policyArea: 'text', costEstimate: 'link',
+    })
   })
 
   it('reads each of LIMS\'s 16 statuses, and no status, by the name LIMS gives it', () => {
@@ -109,6 +141,15 @@ describe('the relationship labels each provider maps', () => {
 
   it('maps Maryland\'s "Cross-filed" to identical', () => {
     expect(relationships('mga')?.default).toMatchObject({ 'Cross-filed': 'identical' })
+  })
+
+  it('maps Congress\'s "Identical bill" to identical, and its other labels to related', () => {
+    expect(relationships('govinfo')?.default).toMatchObject({
+      'Identical bill': 'identical',
+      'Related bill': 'related',
+      'Procedurally related': 'related',
+    })
+    expect(Object.entries(relationships('govinfo')!.default).filter(([, k]) => k === 'identical').map(([l]) => l)).toEqual(['Identical bill'])
   })
 })
 
@@ -156,5 +197,44 @@ describe('the instances\' legacy status table', () => {
       if (s.stage === null || legiscanLabels.has(s.label)) continue
       expect(LEGACY_STATUS_ORDER[s.label], s.label).toEqual({ stage: s.stage, rank: s.rank })
     }
+  })
+})
+
+describe('where each provider\'s extras go on the bill page', () => {
+  const placements = (id: string) => {
+    const by: Record<string, string[]> = { meta: [], detail: [], flag: [], panel: [] }
+    for (const [key, e] of Object.entries(getProvider(id).vocabulary.extras ?? {})) by[e.placement ?? 'panel'].push(key)
+    return by
+  }
+
+  it('declares Maryland\'s chapter and between-chambers step as meta, statutes as detail, and both flags with the flag placement', () => {
+    expect(placements('mga')).toEqual({
+      meta: ['chapter', 'chamberInteraction'], detail: ['statutes'], flag: ['emergency', 'constitutionalAmendment'], panel: [],
+    })
+  })
+
+  it('declares Virginia\'s chapter as meta, the emergency flag with the flag placement, and the summaries in the panel, latest stage first', () => {
+    expect(placements('lis')).toEqual({
+      meta: ['chapter'], detail: [], flag: ['emergency'],
+      panel: ['summaryPassed', 'summaryPassedSenate', 'summaryPassedHouse', 'summaryIntroduced'],
+    })
+  })
+
+  it('declares DC\'s numbers, requester, withdrawal, and effective date as meta, and its comment committees as detail', () => {
+    expect(placements('lims')).toEqual({
+      meta: ['lawNumber', 'actNumber', 'resolutionNumber', 'requestedBy', 'lawEffective', 'withdrawnBy'],
+      detail: ['commentCommittees'], flag: [], panel: [],
+    })
+  })
+
+  it('no longer declares the ten DC dates that repeat the timeline', () => {
+    const keys = Object.keys(getProvider('lims').vocabulary.extras ?? {})
+    for (const gone of ['sentToMayor', 'mayorDeadline', 'signedByMayor', 'vetoedByMayor', 'enacted', 'actExpires', 'sentToCongress', 'projectedLawDate', 'lawExpires', 'withdrawnOn']) {
+      expect(keys, gone).not.toContain(gone)
+    }
+  })
+
+  it('offers exactly the four placements the ticket defines', () => {
+    expect(EXTRA_PLACEMENTS).toEqual(['meta', 'detail', 'flag', 'panel'])
   })
 })

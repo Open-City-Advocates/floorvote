@@ -9,7 +9,7 @@ A tenant is one team's instance: a single Cloudflare Worker + D1 database + queu
 Throughout, replace `[slug]` with a lowercase identifier for the team (e.g. `org-nj`) and `[STATE]` with its two-letter abbreviation.
 
 > [!TIP]
-> **Shortcut:** `scripts/new-instance.sh` automates every step below — it creates the database and queue, appends the config block, deploys, sets the secret, binds the tenant on central, registers it, optionally seeds history, and creates the first user, then [verifies the instance end to end](#verify-the-instance-end-to-end). Use `--from-step N` to resume after a failure. The manual steps below are the reference, and worth reading once before your first run.
+> **Shortcut:** `scripts/new-instance.sh` automates every step below — it creates the database, the queue, and the bucket for comment attachments, appends the config block, deploys, sets the secret, binds the tenant on central, registers it, optionally seeds history, and creates the first user, then [verifies the instance end to end](#verify-the-instance-end-to-end). Use `--from-step N` to resume after a failure, and `--no-attachments` to leave comment attachments off. The manual steps below are the reference, and worth reading once before your first run.
 
 > [!NOTE]
 > **Renamed resources?** The commands below name every Cloudflare resource `floorvote-…` — the worker, the D1 database, the queues, and the shared `floorvote-dlq`. If your deployment uses a different resource prefix (anything other than the default `floorvote`), substitute it consistently everywhere you see `floorvote-` below — **and** make sure it matches the `TENANT_QUEUE_PREFIX` set on your central service. Otherwise central looks for a queue that doesn't exist, silently creates a phantom with no consumer, and the tenant receives no bills.
@@ -68,6 +68,16 @@ npx wrangler queues create floorvote-dlq
 
 Later tenants reuse the same one; running this again for a second tenant is harmless but unnecessary.
 
+## Step 2b: Create a bucket for comment attachments (optional)
+
+Members can attach files to comments once the instance has a bucket bound. Skip this step, and the bucket block in Step 3, to leave attachments off.
+
+```bash
+npx wrangler r2 bucket create floorvote-[slug]-files
+```
+
+A new bucket is private, and should stay that way: don't turn on public access or an `r2.dev` URL. Files go to and from it through the instance's Worker, so it needs no CORS rule and no API token.
+
 ## Step 3: Add a config block to `api/wrangler.toml`
 
 Copy the `CF_ACCOUNT_ID`, `CF_AIG_GATEWAY`, `CENTRAL_API_URL`, and `SUPERADMIN_JWT_PUBLIC_KEY` values from an existing tenant block — they're identical across every tenant. See `api/wrangler.example.toml` for a documented template.
@@ -113,7 +123,9 @@ OPERATOR_NAME = "Your Operator Name"
 # optional — footer link
 OPERATOR_URL = "https://example.org"
 
-# optional — feedback recipient(s), and who users are told to ask for source
+# optional — feedback recipient(s), and who users are told to ask for source.
+# Comma-separated bare addresses. An entry that isn't a valid address is logged
+# and skipped, so feedback still reaches the rest.
 OPERATOR_CONTACT_EMAILS = "support@example.org"
 
 # optional — where your source is published. If you modify FloorVote and run it
@@ -139,9 +151,13 @@ CF_AIG_GATEWAY = "<your-gateway-slug>"
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_THINKING_BUDGET = "0"
 
+# which email provider is tried first: "cloudflare" or "resend". With both
+# configured, the other is the fallback (see "Optional fallbacks" below).
 EMAIL_PROVIDER = "cloudflare"
 
-# who gets cron-failure and email outage alerts
+# who gets cron-failure and email outage alerts. Comma-separated bare addresses
+# (not "Name <address>"). An entry that isn't a valid address is logged and
+# skipped, so the alert still reaches the rest.
 ALERT_EMAILS = "ops@example.org"
 
 # the domain this team is served on
@@ -166,6 +182,11 @@ database_name = "floorvote-[slug]"
 database_id = "<database-id-from-step-1>"
 migrations_dir = "migrations"
 
+# Comment attachments: the bucket from Step 2b. Leave this out to keep them off.
+[[env.[slug].r2_buckets]]
+binding = "ATTACHMENTS_BUCKET"
+bucket_name = "floorvote-[slug]-files"
+
 [[env.[slug].queues.producers]]
 binding = "BILL_QUEUE"
 queue = "floorvote-[slug]-queue"
@@ -184,6 +205,17 @@ name = "LOGIN_RATE_LIMITER"
 namespace_id = "<unique-integer>"
   [env.[slug].ratelimits.simple]
   limit = 10
+  period = 60
+
+# One-click mute link in reply emails — 120 requests per 60s per IP. Mail
+# providers send many members' unsubscribes from a few IPs, so it gets a higher
+# limit than login. Optional: without it the mute link uses LOGIN_RATE_LIMITER.
+# Needs its own unique namespace_id, different from the login limiter's.
+[[env.[slug].ratelimits]]
+name = "MUTE_LINK_RATE_LIMITER"
+namespace_id = "<another-unique-integer>"
+  [env.[slug].ratelimits.simple]
+  limit = 120
   period = 60
 
 # Object-level authorization. Central reads `props.tenantId` — a per-binding value
@@ -218,6 +250,15 @@ The `entrypoint = "TenantApi"` on the `CENTRAL` binding is what lets outbound te
 
 > [!TIP]
 > To show your organization's logo in the app, add a file named exactly `web/public/operator-logo.svg` before you deploy, since the deploy builds it in. If it's absent, no logo renders (and a harmless `404` for `/operator-logo.svg` in the browser network log is expected).
+>
+> The app has a light and a dark color mode, so you can add a second, optional file, `web/public/operator-logo-dark.svg`, for the dark one. In dark mode the app uses the dark file when it's there and falls back to `operator-logo.svg` when it isn't, so a deployment with only the regular file keeps working. Light mode needs the regular file: with only a dark file, light mode shows no logo. The logo follows the mode the reader is in, whether they chose Light or Dark on their profile or left it on System, and it swaps if their device switches while the app is open.
+>
+> | File | Shown on | Keep contrast against |
+> |------|----------|-----------------------|
+> | `web/public/operator-logo.svg` | Light mode (and dark mode, when there is no dark file) | A light background |
+> | `web/public/operator-logo-dark.svg` (optional) | Dark mode | A dark background |
+>
+> A logo drawn for a light page, with gray or dark text, can nearly vanish on the dark background, so check each file against the background it appears on. If you ship only the regular file, make sure it stays legible on both. A missing dark file also shows as a harmless `404` in the browser network log.
 
 `api/wrangler.toml` is gitignored because it holds your account and database IDs, so don't commit it. That also leaves it with no version history, so keep a copy somewhere safe: set `WRANGLER_BACKUP_DIR` and `npm run deploy:tenant` copies it there after each deploy.
 
@@ -254,18 +295,31 @@ npm run deploy:tenant -- [slug]
 
 This builds the frontend, applies pending migrations, and deploys the worker. Never run `wrangler deploy --env [slug]` directly — that skips the build and migrations.
 
-## Step 6: Set the tenant secret
+## Step 6: Set the tenant secrets
 
-Set this **after** the first deploy — `wrangler secret put` errors if the worker doesn't exist yet. From `api/`, **only `CF_AIG_TOKEN` is required** — paste the same value you used for your last tenant:
+Set these **after** the first deploy — `wrangler secret put` errors if the worker doesn't exist yet. From `api/`, `CF_AIG_TOKEN` is always required — paste the same value you used for your last tenant:
 
 ```bash
 npx wrangler secret put CF_AIG_TOKEN --env [slug]
 ```
 
+If you set `TURNSTILE_SITE_KEY` in Step 3, also set the matching secret now, from the same Turnstile widget as your other tenants:
+
+```bash
+npx wrangler secret put TURNSTILE_SECRET_KEY --env [slug]
+```
+
+> [!WARNING]
+> **Don't set one half without the other.** With only the sitekey, the login page shows the Turnstile widget but the server never checks it, so the protection is silently off. With only the secret, every login is rejected, because no widget sends a token. `scripts/new-instance.sh` sets the secret for you whenever the sitekey is set.
+
 > [!TIP]
 > **Optional fallbacks.** `GEMINI_API_KEY` is only read if you flip `AI_GATEWAY_ENABLED` to `"false"`. You don't set `LEGISCAN_API_KEY` on a tenant — only central calls LegiScan.
 >
-> **`RESEND_API_KEY` is worth setting even on Cloudflare Email Service**, and is required if you set `EMAIL_PROVIDER="resend"`. With both providers configured, login and invite links that the primary fails to send are retried through the other one: Resend when the primary is Cloudflare and `RESEND_API_KEY` is set, Cloudflare when the primary is Resend and the `EMAIL` binding exists. The hourly email-health check alerts `ALERT_EMAILS` through the other provider first, then the primary. With only one provider configured, there is no fallback, and the alert goes through the same provider that is failing. `EMAIL_FROM` must be verified on both providers for fallback to work. Digests and week-ahead mail never fall back.
+> **`RESEND_API_KEY` is worth setting even on Cloudflare Email Service**, and is required if you set `EMAIL_PROVIDER="resend"`. The `EMAIL` binding goes first only with `EMAIL_PROVIDER="cloudflare"`. Otherwise Resend goes first and needs `RESEND_API_KEY`, and a bound `EMAIL` binding is the fallback. With both configured, an email the first provider fails to send is retried once through the other one: Resend when the first is Cloudflare, Cloudflare when the first is Resend.
+>
+> **Which emails fall back.** Sign-in, account, notification, and operator email falls back. That covers login and invite links, the email-change emails, mention and reply emails, and mail to operators and admins (feedback, invite-bounce notices, job alerts, and sample emails). Digests and week-ahead mail never do, so an outage on the first provider can't push a whole recipient list onto the second and use up its quota. An address that can't receive mail (it bounced or reported spam) is never retried through the other provider either.
+>
+> The hourly email-health check alerts `ALERT_EMAILS` through the healthy provider first, then the failing one. With only one provider configured, there is no fallback, and the alert goes through the same provider that is failing. `EMAIL_FROM` must be verified on both providers for fallback to work.
 
 ## Step 7: Bind the tenant on central
 
@@ -281,7 +335,7 @@ entrypoint = "CentralApi"
 Then redeploy central so the binding resolves:
 
 ```bash
-cd central && npm run deploy:legiscan
+cd central && npm run deploy:central
 ```
 
 ## Step 8: Register the tenant with central
@@ -328,7 +382,7 @@ They then log in with a magic link sent to that email address.
 
 Now switch from the terminal to a browser. Go to your instance at the `APP_URL` from your Step 3 config block — `https://[slug].[your-domain]` (the custom domain from Step 9). There's no password: enter the founding owner's email from Step 10 and the app emails you a magic link; click it to sign in, then open **Settings → Config**. A new instance starts with no keywords and no AI instructions, so there are two ways to proceed from here:
 
-- **Path 1 (recommended — explore first).** Leave the AI fields and keywords blank, seed the session in Step 12, and every bill arrives as a free monitor stub with no AI cost. Browse and search the real corpus, then come back here and fill in both sections — **and save both, in either order**: keywords in the Bill keywords section, saved with **Save keywords and sync** (this is the button that queues the newly-matching bills for full analysis); and AI context, relevance question, and tag taxonomy in the AI instructions section, saved separately with **Save AI instructions**. Saving only one leaves the other on its blank default — in particular, writing AI instructions and clicking only **Save keywords and sync** leaves those instructions unsaved, silently falling back to the generic default. The free exploration window ends the moment you save the keywords — from then on, re-tuning keywords or instructions means paying for AI a second time on whatever newly matches.
+- **Path 1 (recommended — explore first).** Leave the AI fields and keywords blank, seed the session in Step 12, and every bill arrives as a monitored bill with no AI cost. Browse and search the real corpus, then come back here and fill in both sections — **and save both, in either order**: keywords in the Bill keywords section, saved with **Save keywords and sync** (this is the button that queues the newly matching bills for analysis); and AI context, relevance question, and tag taxonomy in the AI instructions section, saved separately with **Save AI instructions**. Saving only one leaves the other on its blank default — in particular, writing AI instructions and clicking only **Save keywords and sync** leaves those instructions unsaved, silently falling back to the generic default. The free exploration window ends the moment you save the keywords — from then on, re-tuning keywords or instructions means paying for AI a second time on whatever newly matches.
 - **Path 2 (keywords already known).** Write the config now, before seeding, so the Step 12 seed produces AI summaries on its first pass. Use the `wrangler d1 execute` block below to set it directly, or fill in the same fields in **Settings → Config** and save.
 
 You can set these fields directly in the database if you prefer (from `api/`). They live in the `association_config` table:
@@ -352,18 +406,18 @@ wrangler d1 execute floorvote-[slug] --remote --env [slug] \
 
 Each key is a row, so `INSERT OR REPLACE` also works for a key you set earlier, such as `state_coverage` in Step 4b.
 
-**What blank means.** An unset `ai_context`, `relevance_question`, or `tag_taxonomy` falls back to a generic default that names the association and still works — nothing breaks. Unset `keywords` is different: it means no bill matches, so nothing gets a full AI summary — central still links every bill to the team as a free monitor stub (see [When do bills start flowing in?](#when-do-bills-start-flowing-in) below), but none of them get analyzed until you set keywords and sync. To widen what gets analyzed, write broader keywords covering your real scope, or manually promote specific bills once they are in view as stubs. Bear in mind that keyword matching runs on a bill's title, its abstract, and its bill number (so `hb 1019` or `hb*` track a bill or a prefix), and many states copy the title into the abstract verbatim — so in practice you are often matching against six or seven words, and broad keywords buy less coverage than they appear to. The [keyword rules](/overview/what-can-it-do#set-keywords-for-the-topics-you-care-about) (whole words by default, `*` to widen, `#` for a digit) are the same ones the Settings hint describes.
+**What blank means.** An unset `ai_context`, `relevance_question`, or `tag_taxonomy` falls back to a generic default that names the association and still works — nothing breaks. Unset `keywords` is different: it means no bill matches, so no bill is analyzed — central still links every bill to the team as a monitored bill, at no AI cost (see [When do bills start flowing in?](#when-do-bills-start-flowing-in) below), but none are analyzed until you set keywords and sync. To widen what gets analyzed, write broader keywords covering your real scope, or manually promote specific bills once they are in view as monitored bills. Bear in mind that keyword matching runs on a bill's title, its abstract, and its bill number (so `hb 1019` or `hb*` track a bill or a prefix), and many states copy the title into the abstract verbatim — so in practice you are often matching against six or seven words, and broad keywords buy less coverage than they appear to. The keyword rules (whole words by default, `*` to widen, `#` for a digit) are the ones the Settings hint describes.
 
 To analyze every bill instead, set the keywords to a single `*`. That is a keyword, not the `["*"]` in `state_coverage`, which means every state. It works only as the sole keyword: in a longer list it is ignored, since it would make every other keyword redundant. Saving it asks for confirmation and shows how many bills it would queue, and every one of them costs AI usage, so treat it as a cost decision.
 
-While you're here, set **What you call your group** under **Labels** (team, association, coalition, or a word of your own) — it drives the labels on the positions section. When you later change your AI instructions, **Save AI instructions** asks whether to apply them to bills that are already analyzed: prioritized bills only, all analyzed bills, or only future bill texts.
+While you're here, set **What you call your group** under **Labels** (team, association, coalition, or a word of your own) — it drives the labels on the positions section. When you later change your AI instructions, **Save AI instructions** asks whether to apply them to bills that are already analyzed: prioritized bills only, all analyzed bills, or only future bill texts. Under the bill summary instructions, **Summary citations** is on by default and saves as soon as you toggle it. Turning it on offers to re-run AI on prioritized or all analyzed bills, since existing summaries get citations only when re-analyzed. Turned off, new analyses don't ask the model for citations and links already stored show as plain text, and turned back on, stored links show again. (A bill re-analyzed while it's off loses its stored links.) See [how much it costs](/overview/how-much-does-it-cost#ai-bill-summaries) for what the citations add per analysis.
 
 ## Step 12: Seed the active session(s)
 
-Seeding loads a whole legislative session into the team at once — bills matching its keywords get full AI summaries, and the rest come in as lightweight "monitor" stubs (no AI cost). This means the team mirrors the full session from day one.
+Seeding loads a whole legislative session into the team at once — bills matching its keywords are analyzed, and the rest come in as monitored bills (no AI cost). This means the team mirrors the full session from day one.
 
 > [!TIP]
-> **No keywords yet is the expected case (Path 1 from Step 11).** Seeding uses whatever keywords are already synced to central to decide which bills get full AI versus a stub — with none set, every bill comes in as a stub, which is exactly the free-exploration state Path 1 wants. Save both sections when you're ready, as Step 11 describes.
+> **No keywords yet is the expected case (Path 1 from Step 11).** Seeding uses whatever keywords are already synced to central to decide which bills are analyzed — with none set, every bill comes in as a monitored bill, which is exactly the free-exploration state Path 1 wants. Save both sections when you're ready, as Step 11 describes.
 
 There are two paths, depending on whether central already has the state's bills.
 
@@ -445,6 +499,18 @@ The `--tenant` flag links the bills and updates the team's `state_coverage` — 
 >
 > Start a big state somewhere it can run unattended — a terminal you can leave open, `tmux`, or a background run with output going to a log. Seeding is idempotent, so if a run dies partway, re-run the same command and it picks up rather than duplicating.
 
+> [!NOTE]
+> **Central's sync waits for the seed.** When the seeder creates a session, it creates it with sync off, so central's hourly sync doesn't spend LegiScan calls on bills the seeder is about to load. It turns sync on only after the bills have loaded and, with `--tenant`, the link step has finished. A seed that stops partway, or that skips bill files it can't read, leaves the session's sync off. Re-run the same command and sync comes on when that run completes. A session central already had keeps its sync setting.
+>
+> If you give up on a seed and want central to sync the session anyway, run this command, which turns sync on and clears the seeder's marker for the session:
+>
+> ```bash
+> npx wrangler d1 execute <central-db> --remote --env legiscan \
+>   --command "UPDATE sessions SET sync_enabled = 1 WHERE session_id = [sessionId]; DELETE FROM settings WHERE key = 'seed_pending_session:[sessionId]'"
+> ```
+>
+> You can also tick **sync enabled** on the session's row under **Sync schedules** on central's admin dashboard **Settings** page and click **Save**. That leaves the seeder's `seed_pending_session:` marker in place, though. If you later turn sync off for the session and then a seed of it completes, the seed turns sync back on. The command above avoids that.
+
 > [!TIP]
 > **Watching a long seed.** The seeder prints a running count. On a terminal that's an in-place counter; when stdout isn't a terminal (backgrounded, or piped to `tee`) it switches to one line per batch so a log file shows real progress. To check from another shell, count the rows in central directly:
 >
@@ -492,23 +558,57 @@ It runs five checks, each cheap and none visible to the team's members, and prin
 | **AI analysis** | The instance analyzes one stored bill end to end through your AI Gateway. Off by default when run by hand, since it costs one model call (`new-instance.sh` turns it on). Reported as `skipped` when the instance has no AI configured. Nothing is saved, so no bill is left tracked. |
 | **Email** | A sample digest goes to the operator: the first address in the instance's `ALERT_EMAILS`, or `--to <email>`. It never sends a sign-in link, and never goes to the instance's owner or members. Works with either email provider, and is `skipped` if there is no address to send to. |
 
+Above the checks, an `info` line says whether comment attachments are on, and with which bucket. It reads the instance's `ATTACHMENTS_BUCKET` binding in `api/wrangler.toml`, so it reflects your config rather than the running instance, and an instance without attachments still passes.
+
 Run it after you have redeployed central and the instance on the same release: if either is older than the script, it says so and tells you to redeploy, and central refuses to send the delivery probe to an instance that would not understand it. None of it calls LegiScan. A failure names the check and its likely cause, for example *Central has no binding for this instance: did central redeploy after the binding step?* When `new-instance.sh` runs it, a failure also prints the `--from-step` command to resume from, and the script exits non-zero. Run by hand, it exits non-zero on any failure.
 
 The script reads the same configuration `new-instance.sh` does (`scripts/.env.ops`, `central/.dev.vars`), so a deployment with its own `RESOURCE_PREFIX`, domain, and central needs no flags. Pass `--central-url`, `--admin-secret`, `--app-url`, `--worker-url`, or `--prefix` to override any of it, and run `./scripts/verify-instance.sh --help` for the rest. By default it expects the build to be this checkout's commit; if the instance was deployed from another, pass `--expect-build <sha>` (or `--expect-build any`).
+
+## The optional setup report
+
+FloorVote is self-hosted, so the project never sees an install. To learn whether setup works and which step trips people up, `scripts/new-instance.sh` can send one anonymous note when it ends. It asks once, before it preflights, and the answer defaults to No:
+
+```text
+Send an anonymous setup report? [y/N]
+```
+
+Before you answer it prints exactly what it would send, and if you say yes it prints the report again as it goes out. The whole report is these four fields:
+
+```json
+{
+  "event": "tenant_setup",
+  "outcome": "verified",
+  "step": "verify",
+  "version": "2026-10-21"
+}
+```
+
+- `outcome` is `verified` when the run passes [verification](#verify-the-instance-end-to-end), `unverified` when the instance is provisioned but verification fails, or `failed` when a step fails.
+- `step` is the script's name for the step the run ended on, such as `verify`, `bind`, or `preflight`, never a number.
+- `version` is the date of your checkout's latest commit. It says how current your copy is, and it is a date rather than a commit hash so that a fork's own history can't be traced back to it.
+
+It never includes your slug, states, team name, admin name or email, Cloudflare account ID, or any URL. The counter stores only these four fields: no IP address, user agent, or country. Cloudflare, which hosts floorvote.org, sees the connection like any web host, and its request logs may hold connection details for a short time.
+
+The script sends nothing unless you agree:
+
+- **No terminal, no question.** Run from CI, an agent, or any shell without a terminal on stdin, it doesn't ask and doesn't send, unless you have set `FLOORVOTE_INSTALL_PING=yes`.
+- **Answer once.** Set `FLOORVOTE_INSTALL_PING=yes` or `FLOORVOTE_INSTALL_PING=no` in your environment or in `scripts/.env.ops`, and it stops asking. A value in the environment wins over the file. If you run setup for your own team's deployment often, set it to `no`.
+- **Preflight and Ctrl-C.** `--preflight-only` never sends, and neither does a run you interrupt with Ctrl-C.
+- **It can't break setup.** The report goes out with a five-second limit and its response is discarded. If you're offline, or the site is down, the run's result and exit code are the same as without it.
 
 ## When do bills start flowing in?
 
 Registration stores the team's keywords and state coverage and provisions its queue, but doesn't itself queue any bills. Delivery is driven by the hourly **central cron**, and timing depends on whether central already tracks the state:
 
-- **State already tracked by another team:** the next full-sync pass links this team's bills and queues the keyword matches. Full passes run three times a day, so within ~10 hours — no seeding required.
+- **State already tracked by another team:** the next full-sync pass links this team's bills and queues the keyword matches. Full passes run three times a day for LegiScan states and for Congress when it syncs from GovInfo, and hourly for Maryland, Virginia, and DC, so within ~10 hours for the first two and within the hour for the others — no seeding required.
 - **Brand-new state, not seeded:** central discovers the session on its once-a-day pass, then bills flow — worst case ~24 hours.
 - **Want bills immediately:** run the seed in Step 12.
 
-Non-keyword bills arrive as lightweight monitor stubs; keyword and manually-added bills get full AI summaries.
+Non-keyword bills arrive as monitored bills; keyword and manually added bills are analyzed.
 
 ## Hiding subjects
 
-Bills show the subject terms their legislature assigned them whenever their provider supplies them (see [Subjects](/overview/what-can-it-do#subjects)). If a state's terms are too coarse to be useful, you can hide them. There is no settings screen for this: set the `subjects_suppressed_states` row of `association_config` to a JSON list of state codes, or `["*"]` for every state:
+Bills show the subject terms their legislature assigned them whenever their provider supplies them, and the Bills page has a Subject filter. If a state's terms are too coarse to be useful, you can hide them. There is no settings screen for this: set the `subjects_suppressed_states` row of `association_config` to a JSON list of state codes, or `["*"]` for every state:
 
 ```bash
 npx wrangler d1 execute floorvote-[slug] --remote --env [slug] \

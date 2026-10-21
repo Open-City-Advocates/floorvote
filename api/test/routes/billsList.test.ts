@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { env } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill } from '../helpers'
+import { clearDb, seedUser, seedSession, seedBill } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { billSubjects, associationConfig } from '../../src/db/schema'
 import { app } from '../../src/index'
@@ -33,7 +33,7 @@ type ListBody = {
 }
 
 type FacetsBody = {
-  subjects: Record<string, number>
+  subject: Record<string, number>
   subjectStates: string[]
   billStates?: string[]
 }
@@ -42,8 +42,7 @@ describe('GET /bills — subject filtering', () => {
   let token: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const userId = await seedUser()
     token = await seedSession(userId)
   })
@@ -137,9 +136,9 @@ describe('GET /bills — subject filtering', () => {
     const res = await app.request('/api/bills/facets', { headers: { Cookie: `session=${token}` } }, env)
     const body = await res.json() as FacetsBody
 
-    expect(body.subjects['UT:Election Law']).toBe(2)
-    expect(body.subjects['UT:Referenda']).toBe(1)
-    expect(body.subjects['NJ:Education']).toBe(1)
+    expect(body.subject['UT:Election Law']).toBe(2)
+    expect(body.subject['UT:Referenda']).toBe(1)
+    expect(body.subject['NJ:Education']).toBe(1)
   })
 
   // subjectStates answers "which states have subjects at all", so the web app
@@ -154,7 +153,7 @@ describe('GET /bills — subject filtering', () => {
     const res = await app.request('/api/bills/facets?state=UT', { headers: { Cookie: `session=${token}` } }, env)
     const body = await res.json() as FacetsBody
 
-    expect(body.subjects['NJ:Education']).toBeUndefined()
+    expect(body.subject['NJ:Education']).toBeUndefined()
     expect(body.subjectStates).toEqual(['NJ', 'UT'])
   })
 
@@ -179,8 +178,7 @@ describe('GET /bills — subject suppression', () => {
   let token: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const userId = await seedUser()
     token = await seedSession(userId)
   })
@@ -196,8 +194,8 @@ describe('GET /bills — subject suppression', () => {
     const res = await app.request('/api/bills/facets', { headers: { Cookie: `session=${token}` } }, env)
     const body = await res.json() as FacetsBody
 
-    expect(body.subjects['NJ:State and Local Government']).toBeUndefined()
-    expect(body.subjects['UT:Election Administration']).toBe(1)
+    expect(body.subject['NJ:State and Local Government']).toBeUndefined()
+    expect(body.subject['UT:Election Administration']).toBe(1)
   })
 
   it('subjectStates leaves out a suppressed state', async () => {
@@ -265,8 +263,7 @@ describe('GET /bills/facets — billStates', () => {
   let token: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     clearBillStatesCache()
     token = await seedSession(await seedUser())
   })
@@ -391,7 +388,7 @@ describe('GET /bills/facets — billStates', () => {
       const { state, env: counted } = countingEnv()
       expect((await facets(counted)).billStates).toEqual(['UT'])
       expect((await facets(counted, '?state=UT')).billStates).toEqual(['UT'])
-      expect((await facets(counted, '?q=anything')).billStates).toEqual(['UT'])
+      expect((await facets(counted, '?search=anything')).billStates).toEqual(['UT'])
       expect(state.stateReads).toBe(1)
     })
 

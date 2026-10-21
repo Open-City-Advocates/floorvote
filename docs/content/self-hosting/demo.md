@@ -30,12 +30,32 @@ The server is the enforcement point. `DEMO_WRITE_ALLOWLIST` in `api/src/middlewa
 
 Because auto-login hands every visitor a session with no interaction, those writes are anonymous by construction, so two limits sit behind them: allowed writes are rate-limited per client IP (the optional `DEMO_WRITE_RATE_LIMITER` binding — see `api/wrangler.example.toml`; without it the check fails open), and any one bill accepts at most 60 live comments. A visitor never meets either — the busiest seeded bill carries 8 comments — but together they keep a script from growing the tenant between resets. Reactions need no such limit: a reaction must be one of the eight emojis the picker offers, so the chips one comment can carry are bounded at eight by construction.
 
+Reads have no limit in the app: the guard passes every `GET` straight through, so a script looping over bill texts, exports, or filtered lists is never metered. If your demo is public, add a Cloudflare [rate limiting rule](https://developers.cloudflare.com/waf/rate-limiting-rules/) scoped to the demo's hostname. It runs before the Worker, so a blocked request costs nothing. Keep it generous: one page load fans out to about ten API calls, and a group demo from one office shares one IP, so something like 300–600 requests a minute per IP fits. On the Free plan that's 50–100 requests per 10 seconds, the only counting period offered. Scope the rule to the demo's hostname rather than turning on zone-wide Bot Fight Mode, which on the Free plan challenges every non-browser client in the zone. That includes the calendar apps polling your other tenants' iCal feeds and the link-preview fetchers that unfurl shared links.
+
 Refused: deleting comments, inviting or removing members, creating or renaming roles, bill-list bulk actions, calendar event creation, edits, deletion, restore, import and subscribe, draft-bill editing and link-and-merge, account deactivation and deletion, and logout.
 
 Two deliberate exceptions to the pattern:
 
 - **Module toggles still work.** The sidebar's **Customize widgets** panel — the admin-only link pinned above the user section — is live, so visitors can turn the optional widgets on and see what they do. The reset puts them back to the seeded state.
 - **The Feedback link is hidden, not disabled.** It's the one control removed outright rather than greyed out — a shared demo login can't produce feedback anyone could act on.
+
+## Running AI on a demo
+
+A demo tenant never calls the model, so its bills carry no summaries or citations until an operator asks for one analysis. Send central's targeted reprocess a direct call with the admin secret and `operatorAi`:
+
+```bash
+curl -X POST "$CENTRAL/api/tenants/reprocess/<tenant-id>" \
+  -H "x-admin-secret: $ADMIN_SECRET" -H "content-type: application/json" \
+  -d '{"billIds": [12345, 12346], "operatorAi": true}'
+```
+
+`billIds` are central's bill ids for bills the demo already tracks, and `operatorAi` is honored only with `billIds`. Central honors it only on a direct call like this one. A request that arrives through a tenant's service binding, which is everything a demo visitor can reach, has the flag dropped, so no visitor can cause a model call.
+
+Run it after the demo's first reset, so the analysis reads the seed's AI instructions, and again whenever those instructions change.
+
+### Seeding a demo's bills
+
+Seed each covered state's full session (`scripts/seed-legiscan.ts --from-dir` with the whole bulk dataset and `--tenant`), not a slice of it. A seed's companion-bill comments land only when both bills of a pair are in the tenant, and a companion that doesn't match the keywords arrives only as part of its full session, because a demo never pulls companions on its own.
 
 ## Choosing the demo content
 
@@ -52,7 +72,13 @@ Leave `DEMO_SEED` out and the tenant gets `lake-michigan`, a Great Lakes water p
 
 The seed writes `ai_context`, `relevance_question`, `tag_taxonomy`, and `keywords` itself on every reset, so a demo tenant's content comes entirely from its seed module — there's no separate configuration step.
 
-A seed also carries its saved views, three named bill-list filters written for that demo's audience. The view switcher shows nothing on an instance with no views, so without them a visitor would never see the feature. Every reset deletes all of a demo's saved views and writes the seed's back, so a view added, changed, or removed between resets does not survive. Each view stores the bill list's own query string, and each combines several filters the way a team would (for example, a custom field plus an official position). At most one is an OR view: `match=any` across two or more filter dimensions, the OR group operator. Write views from what the seed itself installs (priorities, positions, custom field values), so each returns bills whatever the AI tagged. Do not filter on a subject: a seed writes none, a bill page shows subjects as the legislature's, and an operator can hide them for a whole tenant. A test checks that every view returns at least one bill, that each dimension of the OR view does on its own, and that no view uses a subject.
+A seed also carries the team field changes its bills show as activity lines in the comment thread: who set a priority, official position, or custom field, from what to what, and how many days ago. Every reset deletes all of a demo's field changes, including the ones visitors made by changing a priority, position, or custom field, and writes the seed's back, so a thread never keeps a line about a change the page no longer shows. The reset also deletes the `grouped` and `split` events that record companion groups, so a demo shows no grouping line: such a line is dated when the group formed, while the seeded comments are re-dated on every reset, so it would drift out of step with them and then vanish. The groups themselves are not touched. Write each field's changes so its newest one ends on the value the seed sets for it. A change on a bill the tenant doesn't have is skipped, like the rest of a seed's bill rows.
+
+A seed can also engage the companion side of a group. Lake Michigan carries comments, reactions, member votes, and a note on the identical companions of four tracked bills (Wisconsin AB131 and SB56, and the federal HB284 and HB6668), so once those companions are delivered into the tenant, each group's page shows comments from both bills in one thread, the line that says comments and votes are shared with the companion, and the companion badges. Until a companion is in the tenant, its rows are skipped, like the rest of a seed's bill rows. A demo also hides the title-matched suggestion, the line an admin's bill page shows when another bill looks like a companion, so a reset never leaves one for a visitor to act on.
+
+A seed can also carry activity on bills with no priority (`noPriorityEvents`), so the feed shows its daily row ("Updates on N bills with no priority"). A demo's central runs no crons, so the other bills it delivers never move on their own. Lake Michigan gives twelve of them a handful of their own real actions (each verbatim from the bill's stored history, shown on a recent day, in the order the bill took them). The reset writes those events, then one `no_priority_updates` row for each UTC day they were stored on, at the day's first event, as the queue processor does. A day gets a row only if the tenant holds one of its bills and has analyzed it, and a delivered bill is analyzed only when it matches the demo's keywords, so a seed picks bills that do (a test runs the keyword matcher on each). These bills have no priority, comment, vote, or position, so each lands in the row and none gets a card of its own. Write them to the feed's rhythm: the row never leads a day, rows come about one for every three to five of the team's cards, most days have two or more bills, and an occasional day has one, which the feed draws as that bill's full card.
+
+A seed also carries its saved views, four named bill-list filters written for that demo's audience. The view switcher shows nothing on an instance with no views, so without them a visitor would never see the feature. Every reset deletes all of a demo's saved views and writes the seed's back, so a view added, changed, or removed between resets does not survive. Each view stores the bill list's own query string, and each combines several filters the way a team would (for example, a custom field plus an official position). At most one is an OR view: `match=any` across two or more filter dimensions, the OR group operator. Write views from what the seed itself installs (priorities, positions, custom field values), so each returns bills whatever the AI tagged. Do not filter on a subject: a seed writes none, a bill page shows subjects as the legislature's, and an operator can hide them for a whole tenant. A test checks that every view returns at least one bill, that each dimension of the OR view does on its own, and that no view uses a subject.
 
 ### Adding another demo
 
@@ -63,7 +89,7 @@ A seed also carries its saved views, three named bill-list filters written for t
 
 ## Wiring a demo site into the deploy smoke check
 
-The central deploy ends with an optional post-deploy smoke check (`smoke:legiscan`) that exercises the bill-text path end to end through the tenant-to-central binding — the one path that quietly returns 403 if the deny-by-default surface (`central/src/lib/tenantSurface.ts`) is missing an allowlist entry. It's **opt-in via `SMOKE_BASE_URL`**:
+The central deploy ends with an optional post-deploy smoke check (`smoke:central`) that exercises the bill-text path end to end through the tenant-to-central binding — the one path that quietly returns 403 if the deny-by-default surface (`central/src/lib/tenantSurface.ts`) is missing an allowlist entry. It's **opt-in via `SMOKE_BASE_URL`**:
 
 - **`SMOKE_BASE_URL` unset (the default)** → the check is skipped (exit 0). A deployment without a demo site won't fail its deploy here.
-- **`SMOKE_BASE_URL` set to a `DEMO_MODE` tenant** (inline in the `smoke:legiscan` script, or exported by your deploy environment) → the check runs against it. A demo tenant is the easiest target because its shared auto-login session needs no cookie. To probe a normal tenant instead, also set `SMOKE_COOKIE` to a valid session cookie.
+- **`SMOKE_BASE_URL` set to a `DEMO_MODE` tenant** (inline in the `smoke:central` script, or exported by your deploy environment) → the check runs against it. A demo tenant is the easiest target because its shared auto-login session needs no cookie. To probe a normal tenant instead, also set `SMOKE_COOKIE` to a valid session cookie.

@@ -7,9 +7,13 @@ import { billUrl as buildBillUrl } from '../lib/sessionSlug'
 import { BillBadge } from './BillBadge'
 import { DraftChip } from './DraftChip'
 import { PriorityBadge } from './PriorityBadge'
+import { CompactPrioritySelect } from './CompactPrioritySelect'
+import { NewMatchChip } from './NewMatchChip'
+import { DismissAnnouncement } from './DismissAnnouncement'
+import { HoverTooltip } from './HoverTooltip'
 import { PrioritySquare } from './PrioritySquare'
 import { color, radius, fontSize, fontWeight } from '../styles/tokens'
-import { buildBillCardModel, CARD_STYLE, type BillCardRow } from '../lib/billCardModel'
+import { buildBillCardModel, billCardRowText, CARD_STYLE, type BillCardRow } from '../lib/billCardModel'
 import { isModifiedClick } from '../lib/modifierClick'
 
 function MaterialIcon({ name, color, size = 14, fill = 0 }: {
@@ -38,7 +42,15 @@ function MaterialIcon({ name, color, size = 14, fill = 0 }: {
 // PRIORITY_COLORS and the priority square; layout/markup here is NOT shared, so
 // structural changes (header, rows, spacing) won't reach the digest unless you
 // update digestEmail too.
-export function GroupedBillCard({ group, seenAt = null, currentUserId = null }: { group: GroupedBillEvents; seenAt?: string | null; currentUserId?: string | null }) {
+export function GroupedBillCard({ group, seenAt = null, currentUserId = null, isAdmin = false, onPriorityChange, onTriageDismiss }: {
+  group: GroupedBillEvents; seenAt?: string | null; currentUserId?: string | null
+  /** An admin gets the priority dropdown at the top right, as a Bills list row does; anyone else the read-only badge. */
+  isAdmin?: boolean
+  /** Called with the priority the dropdown saved (null when cleared), for the card's owner to show it. */
+  onPriorityChange?: (priority: 'high' | 'medium' | 'low' | null) => void
+  /** Called after the dropdown's Dismiss triaged the bill. */
+  onTriageDismiss?: () => void
+}) {
   const navigate = useNavigate()
   const { billId, billNumber, billState, billSessionSlug, billIsDraft } = group
   const model = buildBillCardModel(group)
@@ -48,8 +60,11 @@ export function GroupedBillCard({ group, seenAt = null, currentUserId = null }: 
   const { height, hasResized, handlePointerDown } = useVerticalResize(300, 60)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [hasOverflow, setHasOverflow] = useState(false)
+  const [announcement, setAnnouncement] = useState('')
 
   const rows: BillCardRow[] = model.rows
+  // A companion group's card holds events from several bills: each badge and each row opens its own.
+  const cardBills = group.bills ?? [{ billId, billNumber, billState, billSessionSlug, billIsDraft: billIsDraft ?? false }]
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -58,6 +73,43 @@ export function GroupedBillCard({ group, seenAt = null, currentUserId = null }: 
 
   // A bill-less group never reaches this card (Feed renders it as a FeedActivityRow).
   const billUrl = buildBillUrl({ id: billId ?? undefined, state: billState, sessionSlug: billSessionSlug, billNumber })
+
+  // The bill a row's event is on: the card's own bill unless the row says another.
+  const urlOfBill = (id: string | null) => {
+    const b = id === null ? undefined : group.bills?.find(x => x.billId === id)
+    return b ? buildBillUrl({ id: b.billId ?? undefined, state: b.billState, sessionSlug: b.billSessionSlug, billNumber: b.billNumber }) : billUrl
+  }
+
+  // An untriaged new match (see lib/newMatch.ts): an amber state of the priority control, until a priority is set or it is dismissed.
+  const isNewMatch = !!group.billNewMatch && !model.priority
+
+  // Top right, where a Bills list row has the same control. The dropdown sits in
+  // the card, whose click and middle-click open the bill, so the wrapper keeps
+  // both from reaching the card (the select stops its own click, not an auxclick).
+  const priorityControl = isAdmin && billId !== null ? (() => {
+    const select = (
+      <CompactPrioritySelect
+        billId={billId}
+        current={model.priority}
+        onChange={(p) => onPriorityChange?.(p)}
+        newMatch={isNewMatch}
+        onDismiss={() => { setAnnouncement('Dismissed'); onTriageDismiss?.() }}
+        errorAlign="right"
+      />
+    )
+    return (
+      <span
+        onClick={(e) => e.stopPropagation()}
+        onAuxClick={(e) => e.stopPropagation()}
+        style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}
+      >
+        <DismissAnnouncement message={announcement} />
+        {/* Only a new match's control needs a word: its label alone does not say what to do. The wrapper stays
+            when the word goes (Dismiss), so the select is not remounted and keyboard focus stays on it. */}
+        <HoverTooltip text={isNewMatch ? 'New keyword match — set a priority or dismiss' : ''}>{select}</HoverTooltip>
+      </span>
+    )
+  })() : model.priority ? <PriorityBadge priority={model.priority} /> : isNewMatch ? <NewMatchChip /> : null
 
   function goTo(url: string, e: React.MouseEvent) {
     // ⌘/Ctrl/Shift-click → open in a new tab/window (middle-click handled by
@@ -97,11 +149,23 @@ export function GroupedBillCard({ group, seenAt = null, currentUserId = null }: 
               text half — the border alone carries no meaning to a screen reader
               or to anyone who can't distinguish it, so the chip must ship with
               it wherever the dashed variant is used. */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-            <BillBadge billNumber={billNumber} state={billState ?? undefined} isDraft={billIsDraft} />
-            {billIsDraft && <DraftChip />}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexWrap: 'wrap' }}>
+            {group.bills ? cardBills.map(b => (
+              <span key={b.billId} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <BillBadge
+                  billNumber={b.billNumber} state={b.billState ?? undefined} isDraft={b.billIsDraft}
+                  to={urlOfBill(b.billId)} onClick={e => e.stopPropagation()}
+                />
+                {b.billIsDraft && <DraftChip />}
+              </span>
+            )) : (
+              <>
+                <BillBadge billNumber={billNumber} state={billState ?? undefined} isDraft={billIsDraft} />
+                {billIsDraft && <DraftChip />}
+              </>
+            )}
           </div>
-          {model.priority && <PriorityBadge priority={model.priority} />}
+          {priorityControl}
         </div>
 
         <div style={{ padding: '4px 14px 10px' }}>
@@ -141,8 +205,8 @@ export function GroupedBillCard({ group, seenAt = null, currentUserId = null }: 
           return (
             <div
               key={row.key}
-              onClick={(e) => { e.stopPropagation(); goTo(billUrl + row.hash, e) }}
-              onAuxClick={(e) => { if (e.button === 1) { e.stopPropagation(); window.open(billUrl + row.hash, '_blank') } }}
+              onClick={(e) => { e.stopPropagation(); goTo(urlOfBill(row.billId) + row.hash, e) }}
+              onAuxClick={(e) => { if (e.button === 1) { e.stopPropagation(); window.open(urlOfBill(row.billId) + row.hash, '_blank') } }}
               onMouseEnter={() => setHoveredRow(row.key)}
               onMouseLeave={() => setHoveredRow(null)}
               style={{
@@ -154,7 +218,7 @@ export function GroupedBillCard({ group, seenAt = null, currentUserId = null }: 
               }}
             >
               {row.square ? (
-                <PrioritySquare size={11} color={row.iconColor} style={{ marginTop: 2 }} />
+                <PrioritySquare size={11} color={row.iconColor} hollow={row.hollow} style={{ marginTop: 2 }} />
               ) : (
                 <MaterialIcon name={row.iconName} color={row.iconColor} fill={row.iconFill} size={14} />
               )}
@@ -165,7 +229,7 @@ export function GroupedBillCard({ group, seenAt = null, currentUserId = null }: 
                 WebkitBoxOrient: 'vertical' as const,
                 overflow: 'hidden',
                 lineHeight: 1.4,
-              }}>{row.text}</span>
+              }}>{billCardRowText(row)}</span>
 
               {row.showTime && (
                 <span title={absoluteTime(row.createdAt)} style={{ fontSize: fontSize.sm, color: color.textMuted, flexShrink: 0 }}>

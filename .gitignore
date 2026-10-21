@@ -6,6 +6,8 @@ dist/
 *.local
 .env
 .env.secrets
+# Per-deployment values and opt-outs for scripts/new-instance.sh.
+scripts/.env.ops
 .DS_Store
 tsconfig.tsbuildinfo
 
@@ -25,16 +27,6 @@ docs/.vitepress/cache/
 
 # Git worktrees
 .worktrees/
-
-# graphify: track graph.json and GRAPH_REPORT.md (nightly CI regenerates).
-# Ignore everything else (build cache, HTML viewer, backups).
-graphify-out/graph.html
-graphify-out/cost.json
-graphify-out/.graphify_python
-graphify-out/.graphify_root
-graphify-out/cache/
-graphify-out/wiki/
-graphify-out/20*/
 
 # Legal docs: operators' real Terms/Privacy stay untracked until a deliberate
 # `git add -f` at launch. Only the *.example.md placeholders ship.

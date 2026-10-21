@@ -4,7 +4,7 @@ import { limsBillId, limsPeopleId, limsSessionId } from './ids'
 import { limsCategories } from './config'
 import { hearingUid, limsBodyEvents } from './hearings'
 import { vocabulary } from './vocabulary'
-import type { Provider, ProviderImport, ProviderPerson, ProviderRecord, SyncSession } from '../sdk'
+import { EVERY_HOUR_ET, type Provider, type ProviderImport, type ProviderPerson, type ProviderRecord, type SyncSession } from '../sdk'
 
 /**
  * The DC Council's Legislative Information Management System (client.ts,
@@ -26,21 +26,26 @@ const CATEGORY_BY_PREFIX: Record<string, number> = {
   RC: 16, ANC: 16, AU: 16, CFO: 16, IG: 16, HN: 18, HR: 19, AG: 26,
 }
 
-export const lims: Provider<'LIMS_API_KEY' | 'LIMS_STATES' | 'LIMS_CATEGORIES'> = {
+export const lims: Provider<'LIMS_API_KEY' | 'LIMS_CATEGORIES'> = {
   id: 'lims',
   displayName: 'DC Council',
+  bodyName: 'Council',
   // The Council publishes no license for LIMS, so it is credited without one.
   attribution: {
     name: 'DC Council LIMS',
     url: 'https://lims.dccouncil.gov',
   },
   coverage: { maintainers: ['anotherpanacea-eng'] },
-  envKeys: ['LIMS_API_KEY', 'LIMS_STATES', 'LIMS_CATEGORIES'],
+  envKeys: ['LIMS_API_KEY', 'LIMS_CATEGORIES'],
   states: [LIMS_STATE],
   configured: env => !!env.LIMS_API_KEY,
-  statesEnvKey: 'LIMS_STATES',
   // LIMS answers 429 above about two concurrent requests.
   ingestQueue: 'LIMS_INGESTOR_QUEUE',
+  // A full ingest is one LegislationDetails call, unmetered and paced on that queue, so every
+  // bill gets one (#835). 200 a pass is about three and a half minutes of calls.
+  ingestAll: { perPass: 200 },
+  // An unchanged pass is a few BulkData calls, so every hour is cheap.
+  fullHoursEt: EVERY_HOUR_ET,
 
   /**
    * The current Council Period, plus the previous one while it is within a

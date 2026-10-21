@@ -1,16 +1,19 @@
 import { safeDate } from '../lib/dates'
 import { normalizeVersionNote } from '../lib/billText'
-import { color, fontSize, radius } from '../styles/tokens'
+import { color, fontSize, fontWeight, radius } from '../styles/tokens'
 
 type Props = {
+  /** Another bill's number, for a version of a companion's text shown beside this bill's (#571). */
+  billNumber?: string
   type: string | null | undefined
   date: string | null | undefined
+  /** Whether this version is the one shown, for a chip in the Bill texts list. Left out, the chip isn't a toggle (the summary's "based on" chip). */
   selected?: boolean
   onClick?: () => void
   title?: string
 }
 
-export function BillTextChip({ type, date, selected = false, onClick, title }: Props) {
+export function BillTextChip({ billNumber, type, date, selected, onClick, title }: Props) {
   const label = normalizeVersionNote(type)
   const safe = safeDate(date)
   return (
@@ -18,6 +21,7 @@ export function BillTextChip({ type, date, selected = false, onClick, title }: P
       type="button"
       onClick={onClick}
       title={title}
+      aria-pressed={selected}
       style={{
         fontSize: fontSize.sm,
         padding: '3px 10px',
@@ -30,6 +34,7 @@ export function BillTextChip({ type, date, selected = false, onClick, title }: P
         fontFamily: 'inherit',
       }}
     >
+      {billNumber && <span style={{ fontWeight: fontWeight.semibold, marginRight: 4 }}>{billNumber}</span>}
       {label}{safe && <span style={{ opacity: 0.7, marginLeft: 4 }}>{safe}</span>}
     </button>
   )

@@ -11,8 +11,10 @@ import {
   LM_CUSTOM_FIELD_VALUES,
   LM_ENGAGEMENT_EVENTS,
   LM_HEARING_EVENTS,
+  LM_NO_PRIORITY_EVENTS,
   LM_POSITIONS,
   LM_PRIORITIES,
+  LM_TEAM_FIELD_CHANGES,
 } from './bills'
 import { LM_COMMENTS, LM_MENTIONS, LM_NOTES, LM_REACTIONS, LM_VOTES } from './discussion'
 
@@ -34,6 +36,7 @@ const commentEvents: DemoSeedFeedEvent[] = LM_COMMENTS.map((c) => {
       ...(mentioned.length ? { mentionedUserIds: mentioned } : {}),
     },
     daysAgo: c.daysAgo,
+    ...(c.minutesLater !== undefined ? { minutesLater: c.minutesLater } : {}),
   }
 })
 
@@ -67,8 +70,10 @@ export const LAKE_MICHIGAN_SEED: DemoSeed = {
     ...LM_BILL_UPDATED_EVENTS, ...LM_RECENT_ACTIVITY_EVENTS, ...LM_HEARING_EVENTS, ...LM_ENGAGEMENT_EVENTS,
     ...commentEvents, ...voteMilestones,
   ],
+  noPriorityEvents: LM_NO_PRIORITY_EVENTS,
   customFieldValues: LM_CUSTOM_FIELD_VALUES, notes: LM_NOTES,
   calendarEvents: LM_CALENDAR_EVENTS,
+  teamFieldChanges: LM_TEAM_FIELD_CHANGES,
   // Written for a basin-wide water team. Each view combines filters the way a team
   // would, and they lean on what this seed writes (working group, position, priority)
   // so they return bills whatever the AI tagged. None uses a subject, since a demo
@@ -80,18 +85,32 @@ export const LAKE_MICHIGAN_SEED: DemoSeed = {
       // 8 bills: 6 tagged Drinking Water or Lead Service Lines, plus WI AB131 and IL HB2516 (Contaminants).
       id: 'lm-view-water-supply-or-contaminants', name: 'Drinking water or contaminants', slug: 'drinking-water-or-contaminants',
       query: viewQuery([
-        ['match', 'any'], ['tag', 'Drinking Water'], ['tag', 'Lead Service Lines'], ['cf_working-group', 'Contaminants'],
+        ['match', 'any'], ['tag', 'Drinking Water'], ['tag', 'Lead Service Lines'], ['field.working-group', 'Contaminants'],
       ]),
     },
     {
-      // 3 bills: MI HB4768, MI HB5674, and IL HB5268, which the Infrastructure group owns and no one has taken a position on.
+      // 2 bills: MI HB4768 and IL HB5268, which the Infrastructure group owns and no one has taken a position on.
       id: 'lm-view-infrastructure-open', name: 'Infrastructure bills with no position', slug: 'infrastructure-bills-with-no-position',
-      query: viewQuery([['cf_working-group', 'Infrastructure'], ['position', 'none']]),
+      query: viewQuery([['field.working-group', 'Infrastructure'], ['position', 'none']]),
     },
     {
-      // 5 bills: MI HB4427, HB5308, SB0771, and WI AB131, SB56.
+      // 5 bills: MI HB5308, HB5674, SB0771, and WI AB131, SB56.
       id: 'lm-view-high-mi-wi', name: 'High priority in Michigan and Wisconsin', slug: 'high-priority-in-michigan-and-wisconsin',
       query: viewQuery([['priority', 'high'], ['state', 'MI'], ['state', 'WI']]),
+    },
+    {
+      // Bills referred to any of the coalition's environment and natural resources committees (central's ids, stable
+      // across metadata refreshes): WI Assembly Environment and Senate Natural Resources, MI House Natural Resources
+      // and Senate Natural Resources and Agriculture, IL House Energy & Environment, IN House Environmental Affairs,
+      // and the US Senate Environment and Public Works and House Water Resources and Environment subcommittee. The
+      // default `any referral` scope is not written, as the bill list leaves it out of the URL. Narrowed to the
+      // priorities the seed writes, so it combines two filters. Not subject-based.
+      id: 'lm-view-environment-committees', name: 'Environment committees, high and medium priority',
+      slug: 'environment-committees-high-and-medium-priority',
+      query: viewQuery([
+        ...['4122', '5058', '5004', '4774', '3958', '1290', '2325', '2551'].map((id): [string, string] => ['committee', id]),
+        ['priority', 'high'], ['priority', 'medium'],
+      ]),
     },
   ],
 }

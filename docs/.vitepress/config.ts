@@ -72,6 +72,7 @@ export default withMermaid(
             { text: 'What can it do?', link: '/overview/what-can-it-do' },
             { text: 'How much does it cost?', link: '/overview/how-much-does-it-cost' },
             { text: 'How hard is it to set up?', link: '/overview/how-hard-is-it-to-set-up' },
+            { text: 'How to track legislation', link: '/overview/how-to-track-legislation' },
           ],
         },
         {
@@ -84,6 +85,7 @@ export default withMermaid(
               collapsed: false,
               items: [
                 { text: 'Operating', link: '/self-hosting/operating' },
+                { text: 'Congress from GovInfo', link: '/self-hosting/congress' },
                 { text: 'Turnstile', link: '/self-hosting/turnstile' },
                 { text: 'Public demo site', link: '/self-hosting/demo' },
               ],

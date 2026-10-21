@@ -1,11 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedBill } from '../helpers'
+import { clearDb, seedBill } from '../helpers'
 import { runDemoReset } from '../../src/lib/demoReset'
 import { DEMO_SEEDS, resolveDemoSeed } from '../../src/lib/demoSeeds'
-import { LM_BILLS, LM_HEARING_NOTICE_SOURCES } from '../../src/lib/demoSeeds/lakeMichigan/bills'
+import type { DemoSeedFeedEvent } from '../../src/lib/demoSeeds/types'
 import {
-  stripHtml, truncateWithEllipsis, COMMENT_PREVIEW_MAX, PASSIVE_EVENT_TYPES, type FeedEvent,
+  LM_BILLS, LM_BILL_UPDATED_EVENTS, LM_COMPANION_BILLS, LM_HEARING_CHANGE_SOURCES, LM_HEARING_NOTICE_SOURCES,
+  LM_RECENT_ACTIVITY_EVENTS, LM_NO_PRIORITY_ACTIONS,
+} from '../../src/lib/demoSeeds/lakeMichigan/bills'
+import {
+  stripHtml, truncateWithEllipsis, COMMENT_PREVIEW_MAX, PASSIVE_EVENT_TYPES, LEGISLATIVE_EVENT_TYPES, type FeedEvent,
 } from '../../../shared/feedUtils'
 import { LM_USER_ROLES } from '../../src/lib/demoSeeds/lakeMichigan/roster'
 
@@ -44,6 +48,9 @@ describe('lake-michigan seed registration', () => {
     // not be surprised by an action that never happened.
     expect(b).toContain('the organization, its staff, the hearing dates, and the most recent legislative activity are fictional')
     expect(b).toMatch(/resets every few hours/i)
+    // Member-facing copy never says "instance".
+    expect(b.startsWith('This is a demo.')).toBe(true)
+    expect(b).not.toMatch(/instance/i)
   })
 
   it('ships no keyword that is empty or duplicated', () => {
@@ -264,7 +271,10 @@ describe('lake-michigan derived feed events', () => {
       expect(cal, `hearing event ${e.id} needs its source calendar entry`).toBeDefined()
       expect(cal!.source).toBe('hearing')
       expect(e.externalId).toBe(cal!.externalId)
-      expect(e.metadata).toEqual({ time: cal!.time, location: cal!.location, description: cal!.description })
+      // A hearing the committee later moved was announced in its earlier room; the
+      // calendar holds where it ended up.
+      const moved = LM_HEARING_CHANGE_SOURCES.find(x => x.calendarId === cal!.id)
+      expect(e.metadata).toEqual({ time: cal!.time, location: moved?.previousLocation ?? cal!.location, description: cal!.description })
       // The point of the type change: no invented LegiScan action string rides along.
       expect(e.metadata, `${e.id} must not carry bill_updated changes`).not.toHaveProperty('changes')
     }
@@ -282,6 +292,48 @@ describe('lake-michigan derived feed events', () => {
     }
   })
 
+  it('changes a hearing only after announcing it, detailed straight from the calendar', () => {
+    const sourceOf = new Map(LM_HEARING_CHANGE_SOURCES.map(x => [x.eventId, x.calendarId]))
+    const noticeOf = new Map(LM_HEARING_NOTICE_SOURCES.map(x => [x.calendarId, x.eventId]))
+    const changes = s.feedEvents.filter(e => e.type === 'hearing_changed')
+    expect(changes.map(e => e.id).sort()).toEqual([...sourceOf.keys()].sort())
+    for (const e of changes) {
+      const cal = s.calendarEvents.find(c => c.id === sourceOf.get(e.id))
+      expect(cal, `hearing change ${e.id} needs its source calendar entry`).toBeDefined()
+      expect(cal!.source).toBe('hearing')
+      expect(cal!.offsetDays, `${e.id} changes a hearing that has already happened`).toBeGreaterThan(0)
+      expect(e.userId).toBe('system')
+      expect(e.externalId).toBe(cal!.externalId)
+      // The calendar row is the hearing as it stands after the change, and the change
+      // has to show something new, or it reads as a correction to nothing.
+      expect(e.metadata).toEqual({ time: cal!.time, location: cal!.location, description: cal!.description })
+      const previous = LM_HEARING_CHANGE_SOURCES.find(x => x.eventId === e.id)!.previousLocation
+      expect(previous, `${e.id} names no earlier room`).toEqual(expect.any(String))
+      expect(previous, `${e.id} moves the hearing nowhere`).not.toBe(cal!.location)
+      // A change to a hearing the feed never announced reads as a correction to nothing.
+      const notice = s.feedEvents.find(x => x.id === noticeOf.get(cal!.id))
+      expect(notice, `${e.id} needs a notice for ${cal!.id}`).toBeDefined()
+      expect(notice!.daysAgo, `${e.id} lands before its notice`).toBeGreaterThan(e.daysAgo)
+    }
+  })
+
+  it('moves no action into the recent window that the bill history already reports', () => {
+    // LM_BILL_UPDATED_EVENTS is the real record. Reporting one of its actions again
+    // at a recent date shows the bill doing the same thing twice, months apart,
+    // while its actions tab lists it once. Containment catches a shortened copy as
+    // well as an exact one.
+    const norm = (v: string | null) => (v ?? '').toLowerCase().replace(/\s+/g, ' ').replace(/[.\s]+$/, '')
+    const actionsOf = (evs: typeof LM_BILL_UPDATED_EVENTS) => evs.flatMap(e =>
+      (e.metadata as { changes: Array<{ changeType: string; newValue: string | null }> }).changes
+        .filter(c => c.changeType === 'action_added').map(c => ({ id: e.id, bill: e.externalId, action: norm(c.newValue) })))
+    const history = actionsOf(LM_BILL_UPDATED_EVENTS)
+    for (const r of actionsOf(LM_RECENT_ACTIVITY_EVENTS)) {
+      const copy = history.find(h => h.bill === r.bill && h.action !== '' && r.action !== ''
+        && (h.action.includes(r.action) || r.action.includes(h.action)))
+      expect(copy, `${r.id} "${r.action}" repeats ${copy?.id}`).toBeUndefined()
+    }
+  })
+
   it('uses only real change types and never fabricates a hearing notice as one', () => {
     // Hearing details ride on hearing_added rows, which is what the calendar
     // reconciler emits. A bill_updated change claiming a hearing notice would be a
@@ -291,7 +343,7 @@ describe('lake-michigan derived feed events', () => {
     for (const e of s.feedEvents.filter(x => x.type === 'bill_updated')) {
       const changes = (e.metadata as { changes: Array<{ changeType: string; newValue: string | null }> }).changes
       for (const ch of changes) {
-        expect(['status_change', 'action_added', 'vote_added', 'amendment_added'], `${e.id} changeType`)
+        expect(['status_change', 'action_added', 'vote_added', 'amendment_added', 'sponsor_added', 'supplement_added', 'text_added'], `${e.id} changeType`)
           .toContain(ch.changeType)
         expect(ch.newValue ?? '', `${e.id}`).not.toMatch(/hearing notice/i)
       }
@@ -301,7 +353,7 @@ describe('lake-michigan derived feed events', () => {
   it('gives every feed event a unique id and a known bill', () => {
     const ids = s.feedEvents.map(e => e.id)
     expect(new Set(ids).size).toBe(ids.length)
-    const known = new Set(s.priorities.map(p => p.externalId))
+    const known = new Set([...s.priorities.map(p => p.externalId), ...LM_COMPANION_BILLS.map(c => c.externalId)])
     for (const e of s.feedEvents) expect(known.has(e.externalId), `event ${e.id}`).toBe(true)
   })
 })
@@ -321,7 +373,7 @@ describe('lake-michigan discussion', () => {
   it('resolves every comment, reaction, mention, vote, and note reference', () => {
     const uids = new Set(s.users.map(u => u.id))
     const rids = new Set(s.roles.map(r => r.id))
-    const bills = new Set(s.priorities.map(p => p.externalId))
+    const bills = new Set([...s.priorities.map(p => p.externalId), ...LM_COMPANION_BILLS.map(c => c.externalId)])
     const cids = new Set(s.comments.map(c => c.id))
     for (const c of s.comments) {
       expect(uids.has(c.userId), `comment ${c.id} user`).toBe(true)
@@ -529,6 +581,148 @@ describe('lake-michigan feed density', () => {
     expect(recent.some(e => e.type === 'comment_added')).toBe(true)
   })
 
+  // The feed rolls a companion's events into its partner's card, so a card is a
+  // companion group's day, not a single bill's.
+  const cardOf = (e: { externalId: string; daysAgo: number }) =>
+    `${LM_COMPANION_BILLS.find(c => c.externalId === e.externalId)?.companionOf ?? e.externalId}::${e.daysAgo}`
+  const isActivity = (e: { type: string }) => PASSIVE_EVENT_TYPES.has(e.type as FeedEvent['type'])
+
+  it('gives every live bill discussed in the last 14 days legislative activity in that window too', () => {
+    // A thread with nothing happening to its bill reads as a chat room, not as a
+    // team reacting to legislation. Dead bills are exempt: nothing new can happen
+    // to them, and the seed never invents activity on one.
+    const recent = s.feedEvents.filter(e => e.daysAgo <= 14)
+    for (const b of LM_BILLS.filter(x => x.live)) {
+      const group = new Set([b.externalId, ...LM_COMPANION_BILLS.filter(c => c.companionOf === b.externalId).map(c => c.externalId)])
+      const onBill = recent.filter(e => group.has(e.externalId))
+      if (!onBill.some(e => e.type === 'comment_added')) continue
+      expect(onBill.some(isActivity), `${b.jurisdiction} ${b.billNumber} is discussed with no legislative activity`).toBe(true)
+    }
+  })
+
+  it('shows at least six cards in the last 14 days that are legislative activity alone', () => {
+    // Bills move without anyone commenting, and the feed should show that too,
+    // between the discussion cards rather than only underneath them.
+    const cards = new Map<string, Array<{ type: string }>>()
+    for (const e of s.feedEvents.filter(x => x.daysAgo <= 14)) {
+      cards.set(cardOf(e), [...(cards.get(cardOf(e)) ?? []), e])
+    }
+    const activityOnly = [...cards.entries()].filter(([, evs]) => evs.every(isActivity)).map(([k]) => k)
+    expect(activityOnly.length, activityOnly.join(', ')).toBeGreaterThanOrEqual(6)
+  })
+
+  // A day's cards in feed order: grouped as the feed groups them, newest event first.
+  const cardsOfDay = (day: number) => {
+    const cards = new Map<string, Array<DemoSeedFeedEvent>>()
+    for (const e of s.feedEvents.filter(x => x.daysAgo === day)) cards.set(cardOf(e), [...(cards.get(cardOf(e)) ?? []), e])
+    const at = (e: DemoSeedFeedEvent) => e.daysAgo * 1440 - (e.minutesLater ?? 0)
+    return [...cards.values()].sort((a, b) => Math.min(...a.map(at)) - Math.min(...b.map(at)))
+  }
+  // Rows a card draws: one per change in a bill update, one for anything else.
+  const rowsOf = (evs: DemoSeedFeedEvent[]) => evs.reduce((n, e) =>
+    n + (e.type === 'bill_updated' ? (e.metadata as { changes: unknown[] }).changes.length : 1), 0)
+  const kindOf = (evs: DemoSeedFeedEvent[]) =>
+    evs.every(isActivity) ? 'activity' : evs.some(isActivity) ? 'mixed' : 'social'
+
+  it("opens today's feed on a few full cards that take turns: mixed, discussion, activity", () => {
+    // Fewer cards with more in each reads like a team at work; a run of one-row
+    // cards reads like a log. Each kind takes its turn so the first screen shows
+    // all three.
+    const today = cardsOfDay(0)
+    expect(today.map(kindOf).slice(0, 4)).toEqual(['mixed', 'social', 'activity', 'mixed'])
+    for (const c of today) expect(rowsOf(c), `${cardOf(c[0])} rows`).toBeGreaterThanOrEqual(2)
+    expect(today.length).toBeLessThanOrEqual(5)
+    // The opening card carries two of each.
+    expect(rowsOf(today[0].filter(isActivity)), 'activity rows on the opening card').toBeGreaterThanOrEqual(2)
+    expect(rowsOf(today[0].filter(e => !isActivity(e))), 'discussion rows on the opening card').toBeGreaterThanOrEqual(2)
+  })
+
+  // The lead bill (#942). The demo opens on a bill a visitor wants to read, not on the one
+  // the team has left behind: MI HB4427 is demoted and quiet, MI HB5674 leads the first screen.
+  describe("today's lead bill (#942)", () => {
+    const HB4427 = 'legiscan:2029026'
+    const HB5674 = 'legiscan:2129983'
+    const priorityOf = (ext: string) => s.priorities.find(p => p.externalId === ext)?.priority
+
+    it("makes today's second card MI HB5674's discussion card, with at least two rows", () => {
+      const second = cardsOfDay(0)[1]
+      expect(cardOf(second[0])).toBe(`${HB5674}::0`)
+      expect(kindOf(second)).toBe('social')
+      expect(rowsOf(second)).toBeGreaterThanOrEqual(2)
+    })
+
+    it('keeps MI HB4427 off the first screen of today (the top four cards)', () => {
+      for (const c of cardsOfDay(0).slice(0, 4)) expect(cardOf(c[0]), 'a top-four card').not.toContain(HB4427)
+    })
+
+    it('keeps MI HB4427 off today altogether, so nothing of its own is among the cards', () => {
+      expect(cardsOfDay(0).map(c => cardOf(c[0]))).not.toContain(`${HB4427}::0`)
+    })
+
+    it('demotes MI HB4427 to low priority and keeps it a tracked bill', () => {
+      expect(priorityOf(HB4427)).toBe('low')
+      expect(LM_BILLS.map(b => b.externalId)).toContain(HB4427)
+    })
+
+    it('gives MI HB4427 no feed event, custom-field change, position, or priority change in the last 7 days', () => {
+      const recent = s.feedEvents.filter(e => e.externalId === HB4427 && e.daysAgo <= 7)
+      expect(recent.map(e => e.id), 'feed events in the last 7 days').toEqual([])
+      expect(s.customFieldValues.filter(v => v.externalId === HB4427 && v.daysAgo <= 7), 'custom-field changes').toEqual([])
+      expect(s.positions.filter(p => p.externalId === HB4427 && p.daysAgo <= 7), 'positions').toEqual([])
+      expect(s.teamFieldChanges.filter(c => c.externalId === HB4427 && c.daysAgo <= 7), 'team field changes').toEqual([])
+      expect(s.comments.filter(c => c.externalId === HB4427 && c.daysAgo <= 7), 'comments').toEqual([])
+    })
+
+    it("gives MI HB4427's low priority a dated change that its own history explains", () => {
+      const change = s.teamFieldChanges.filter(c => c.externalId === HB4427 && c.field === 'priority').at(-1)
+      expect(change, 'a priority change').toBeDefined()
+      expect([change!.old, change!.new]).toEqual(['high', 'low'])
+    })
+
+    it('makes MI HB5674 high priority, with a hearing scheduled in two days', () => {
+      expect(priorityOf(HB5674)).toBe('high')
+      const hearings = s.calendarEvents.filter(c => c.externalId === HB5674 && c.source === 'hearing')
+      expect(hearings.map(h => h.offsetDays)).toEqual([2])
+    })
+
+    it('gives MI HB5674 an official position, as every high-priority bill has one', () => {
+      expect(s.positions.find(o => o.externalId === HB5674)?.position).toBe('Support')
+      for (const p of s.priorities.filter(x => x.priority === 'high')) {
+        expect(s.positions.some(o => o.externalId === p.externalId), `${p.externalId} has a position`).toBe(true)
+      }
+    })
+
+    it('gives MI HB5674 a working group and a fiscal impact, as the other high-priority bills have', () => {
+      for (const fieldId of ['lm-cf-1', 'lm-cf-2']) {
+        expect(s.customFieldValues.some(v => v.externalId === HB5674 && v.fieldId === fieldId), fieldId).toBe(true)
+      }
+    })
+
+    it('has MI HB5674 voice a priority, position, and fiscal-impact change in its thread, ahead of the hearing', () => {
+      const changes = s.teamFieldChanges.filter(c => c.externalId === HB5674)
+      expect(new Set(changes.map(c => c.field))).toEqual(new Set(['priority', 'position', 'customField']))
+      for (const c of changes) expect(c.daysAgo, `${c.id} lands before the hearing`).toBeGreaterThan(0)
+    })
+  })
+
+  it('shows all three kinds of card yesterday too, and bill changes besides hearings at the top', () => {
+    expect(new Set(cardsOfDay(1).map(kindOf))).toEqual(new Set(['mixed', 'social', 'activity']))
+    const kinds = new Set(s.feedEvents.filter(x => x.daysAgo <= 1 && x.type === 'bill_updated').flatMap(e =>
+      (e.metadata as { changes: Array<{ changeType: string }> }).changes.map(c => c.changeType)))
+    expect(kinds.size, `change types at the top: ${[...kinds].join(', ')}`).toBeGreaterThanOrEqual(3)
+  })
+
+  it('puts legislative activity on at least half the cards of the last three days', () => {
+    // The first screen is what a visitor judges the product by, and the busiest
+    // threads sit there.
+    const cards = new Map<string, boolean>()
+    for (const e of s.feedEvents.filter(x => x.daysAgo <= 3)) {
+      cards.set(cardOf(e), (cards.get(cardOf(e)) ?? false) || isActivity(e))
+    }
+    const withActivity = [...cards.values()].filter(Boolean).length
+    expect(withActivity, `${withActivity} of ${cards.size} cards`).toBeGreaterThanOrEqual(cards.size / 2)
+  })
+
   it('mentions teams, not just people', () => {
     expect(s.mentions.filter(m => m.sourceType === 'role').length).toBeGreaterThanOrEqual(8)
   })
@@ -542,6 +736,168 @@ describe('lake-michigan feed density', () => {
     expect(used.size, `only ${[...used].join(' ')} in use`).toBeGreaterThanOrEqual(5)
     expect(used.has('😭'), 'no reaction registers a bad outcome').toBe(true)
   })
+
+  /**
+   * The bills with no priority (#925). Their events sit in `noPriorityEvents`, apart
+   * from the team's, and the feed gathers them into one row a day (#918). These
+   * helpers model that row the way the feed resolves it, from the seed alone: which
+   * bills a day's row stands for, and where it falls among the day's cards.
+   */
+  describe('the no-priority row', () => {
+    const WINDOW = 14 // days 0 to 13, the recent window the density checks above use
+    const seeded = s.noPriorityEvents ?? []
+    const seededBills = [...new Set(seeded.map(e => e.externalId))]
+    const LEGISLATIVE = new Set<string>(LEGISLATIVE_EVENT_TYPES)
+    // A companion group is one policy: it shares its tracked partner's priority and card.
+    const groupOf = (ext: string) => LM_COMPANION_BILLS.find(c => c.externalId === ext)?.companionOf ?? ext
+    const hasPriority = (ext: string) => s.priorities.some(p => p.externalId === groupOf(ext))
+    const atOf = (e: DemoSeedFeedEvent) => e.daysAgo * 1440 - (e.minutesLater ?? 0)
+    const changesOf = (e: DemoSeedFeedEvent) =>
+      (e.metadata as { changes: Array<{ changeType: string; newValue: string | null }> }).changes
+
+    /** The bills a day's row stands for: a legislative event that day on a bill whose
+     *  companion group has no priority and that nobody engaged with that day (the
+     *  feed's rule, api/src/lib/noPriorityRow.ts), one entry per group. */
+    const qualifyingOn = (day: number) => {
+      const ofDay = [...s.feedEvents, ...seeded].filter(e => e.daysAgo === day)
+      const engaged = new Set(ofDay.filter(e => !isActivity(e)).map(e => groupOf(e.externalId)))
+      return [...new Set(ofDay.filter(e => LEGISLATIVE.has(e.type)).map(e => groupOf(e.externalId)))]
+        .filter(g => !hasPriority(g) && !engaged.has(g))
+    }
+
+    /** A day's cards in feed order, the row among them. Two or more bills are one row,
+     *  which the feed puts last in its day. A lone bill is its own full card (#921),
+     *  ordered by the time of its events like any card. */
+    const feedOfDay = (day: number) => {
+      const cards: Array<{ kind: string; at: number; bills: string[] }> = cardsOfDay(day).map(evs => ({
+        kind: kindOf(evs), at: Math.min(...evs.map(atOf)), bills: [cardOf(evs[0]).split('::')[0]],
+      }))
+      const bills = qualifyingOn(day)
+      if (bills.length === 0) return cards
+      const lone = bills.length === 1
+      const at = lone ? Math.min(...seeded.filter(e => e.daysAgo === day).map(atOf)) : Infinity
+      return [...cards, { kind: lone ? 'lone' : 'row', at, bills }].sort((a, b) => a.at - b.at)
+    }
+    const windowDays = Array.from({ length: WINDOW }, (_, i) => i)
+    const teamCards = windowDays.reduce((n, d) => n + cardsOfDay(d).length, 0)
+    const rowDays = windowDays.filter(d => qualifyingOn(d).length > 0)
+
+    it('seeds bill_updated events on about a dozen bills, each carrying an action', () => {
+      expect(seededBills.length, 'about a dozen bills').toBeGreaterThanOrEqual(10)
+      expect(seededBills.length, 'about a dozen bills').toBeLessThanOrEqual(14)
+      for (const e of seeded) {
+        expect(e.type).toBe('bill_updated')
+        expect(e.userId).toBe('system')
+        expect(changesOf(e).length, `${e.id} changes`).toBeGreaterThan(0)
+        for (const c of changesOf(e)) {
+          expect(c.changeType, `${e.id} change type`).toBe('action_added')
+          expect(c.newValue, `${e.id} action`).toEqual(expect.any(String))
+          expect(c.newValue!.trim().length, `${e.id} action`).toBeGreaterThan(0)
+        }
+      }
+    })
+
+    it("takes each action from the bill's own history and re-dates it into the recent window", () => {
+      expect(LM_NO_PRIORITY_ACTIONS.length).toBeGreaterThan(0)
+      // The events say exactly what the table of real actions says, bill by bill and day by day.
+      const fromEvents = seeded.flatMap(e => changesOf(e).map(c => `${e.externalId}|${e.daysAgo}|${c.newValue}`)).sort()
+      expect(fromEvents).toEqual(LM_NO_PRIORITY_ACTIONS.map(a => `${a.externalId}|${a.daysAgo}|${a.action}`).sort())
+      const windowStart = Date.now() - WINDOW * 86400_000
+      for (const a of LM_NO_PRIORITY_ACTIONS) {
+        expect(a.actionDate, `${a.billNumber} action date`).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+        // A real action from before the window, now shown inside it.
+        expect(Date.parse(a.actionDate), `${a.billNumber} "${a.action}" is already recent`).toBeLessThan(windowStart)
+        expect(a.daysAgo, `${a.billNumber} "${a.action}" lands outside the window`).toBeGreaterThanOrEqual(0)
+        expect(a.daysAgo, `${a.billNumber} "${a.action}" lands outside the window`).toBeLessThan(WINDOW)
+      }
+      // The bill's actions keep their order: the older one is shown on the earlier day
+      // (two actions of one real date carry no order to keep).
+      for (const a of LM_NO_PRIORITY_ACTIONS) {
+        for (const b of LM_NO_PRIORITY_ACTIONS.filter(x => x.externalId === a.externalId && x.actionDate > a.actionDate)) {
+          expect(a.daysAgo, `${a.billNumber}: "${a.action}" (${a.actionDate}) is shown after "${b.action}" (${b.actionDate})`)
+            .toBeGreaterThanOrEqual(b.daysAgo)
+        }
+      }
+    })
+
+    it('repeats no action, and none the bill history already reports', () => {
+      // Same containment test as the recent-activity check above, over these events.
+      const norm = (v: string | null) => (v ?? '').toLowerCase().replace(/\s+/g, ' ').replace(/[.\s]+$/, '')
+      const actionsOf = (evs: DemoSeedFeedEvent[]) => evs.flatMap(e =>
+        changesOf(e).filter(c => c.changeType === 'action_added').map(c => ({ id: e.id, bill: e.externalId, action: norm(c.newValue) })))
+      const mine = actionsOf(seeded)
+      expect(mine.length).toBeGreaterThan(0)
+      const others = [...actionsOf(LM_BILL_UPDATED_EVENTS), ...actionsOf(LM_RECENT_ACTIVITY_EVENTS)]
+      const contains = (a: string, b: string) => a !== '' && b !== '' && (a.includes(b) || b.includes(a))
+      for (const [i, r] of mine.entries()) {
+        const copy = others.find(h => h.bill === r.bill && contains(h.action, r.action))
+        expect(copy, `${r.id} "${r.action}" repeats ${copy?.id}`).toBeUndefined()
+        const twice = mine.find((h, j) => j !== i && h.bill === r.bill && contains(h.action, r.action))
+        expect(twice, `${r.id} "${r.action}" repeats ${twice?.id}`).toBeUndefined()
+      }
+    })
+
+    it('has no priority or team activity on any bill it seeds, so every one lands in the row and none is a card of its own', () => {
+      expect(seededBills.length).toBeGreaterThan(0)
+      const tracked = new Set([...s.priorities.map(p => p.externalId), ...LM_COMPANION_BILLS.map(c => c.externalId)])
+      const teamIds = new Set(s.feedEvents.map(e => e.id))
+      for (const e of seeded) expect(teamIds.has(e.id), `${e.id} reuses a team event's id`).toBe(false)
+      for (const ext of seededBills) {
+        expect(tracked.has(ext), `${ext} is one of the team's bills`).toBe(false)
+        expect(s.feedEvents.filter(e => e.externalId === ext).map(e => e.id), `${ext} has earlier feed events`).toEqual([])
+        for (const [what, rows] of Object.entries({
+          comments: s.comments, votes: s.votes, notes: s.notes, positions: s.positions,
+          fieldValues: s.customFieldValues, fieldChanges: s.teamFieldChanges, calendar: s.calendarEvents,
+        })) {
+          expect((rows as Array<{ externalId: string | null }>).filter(r => r.externalId === ext).length, `${ext} has ${what}`).toBe(0)
+        }
+      }
+      // Whatever day one of these events is on, the day's row stands for the bill, and the
+      // day's cards (the team's) carry no event of it.
+      for (const day of new Set(seeded.map(e => e.daysAgo))) {
+        const bills = new Set(seeded.filter(e => e.daysAgo === day).map(e => e.externalId))
+        expect(new Set(qualifyingOn(day)), `day ${day}`).toEqual(bills)
+        for (const c of cardsOfDay(day)) {
+          for (const e of c) expect(bills.has(e.externalId), `${e.id} is on a card of its own`).toBe(false)
+        }
+      }
+    })
+
+    it('shows a row of two or more bills on most days of the window, and exactly one bill on at least one', () => {
+      const counts = windowDays.map(d => qualifyingOn(d).length)
+      expect(counts.filter(n => n >= 2).length, `bills a day: ${counts.join(' ')}`).toBeGreaterThan(WINDOW / 2)
+      expect(counts.filter(n => n === 1).length, `bills a day: ${counts.join(' ')}`).toBeGreaterThanOrEqual(1)
+      // Outside the window the seed adds nothing: the feed's older days stay the team's.
+      expect(seeded.every(e => e.daysAgo < WINDOW)).toBe(true)
+    })
+
+    it("never opens a day on the row, and gives it no more than one row per three cards of the team's", () => {
+      expect(rowDays.length).toBeGreaterThan(0)
+      for (const d of rowDays) {
+        const feed = feedOfDay(d)
+        expect(cardsOfDay(d).length, `day ${d} has no team card to precede the row`).toBeGreaterThanOrEqual(1)
+        expect(feed[0].kind, `day ${d} opens on the row: ${feed.map(c => c.kind).join(', ')}`).toMatch(/^(mixed|social|activity)$/)
+        // A row of two or more is the day's last card.
+        if (qualifyingOn(d).length >= 2) expect(feed[feed.length - 1].kind, `day ${d}`).toBe('row')
+        // A lone bill is ordered by time, so it must be strictly older than the day's top card:
+        // a tie would leave the order to the feed's tiebreak.
+        const lone = feed.find(c => c.kind === 'lone')
+        if (lone) expect(lone.at, `day ${d}: the lone bill is not older than the top card`).toBeGreaterThan(feed[0].at)
+      }
+      expect(rowDays.length, `${rowDays.length} rows among ${teamCards} cards`).toBeLessThanOrEqual(teamCards / 3)
+      // And enough of them to be seen: about one row for every three to five cards.
+      expect(rowDays.length, `${rowDays.length} rows among ${teamCards} cards`).toBeGreaterThanOrEqual(teamCards / 6)
+    })
+
+    it("sits below today's pinned cards, and the first screen's four still take their turns", () => {
+      const today = feedOfDay(0)
+      expect(today.map(c => c.kind)).toEqual(['mixed', 'social', 'activity', 'mixed', 'row'])
+      expect(today.length).toBeLessThanOrEqual(5)
+      // The row never pushes a pinned card out of the top four.
+      expect(cardsOfDay(0).map(kindOf).slice(0, 4)).toEqual(['mixed', 'social', 'activity', 'mixed'])
+      for (const c of cardsOfDay(0)) expect(rowsOf(c), `${cardOf(c[0])} rows`).toBeGreaterThanOrEqual(2)
+    })
+  })
 })
 
 // The one thing a pure data test cannot settle: whether D1 accepts the row. The
@@ -552,8 +908,7 @@ describe('lake-michigan hearing notices through a real demo reset', () => {
   const s = DEMO_SEEDS['lake-michigan']
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
   })
 
   it('writes every hearing_added row, with the calendar details intact', async () => {

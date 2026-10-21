@@ -3,10 +3,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { drizzle } from 'drizzle-orm/d1'
 import { eq } from 'drizzle-orm'
 import * as schema from '../../src/db/schema'
-import { app } from '../../src/index-legiscan'
+import { app } from '../../src/index'
 import { runSync } from '../../src/cron/sync'
 import * as legiscan from '../../src/providers/legiscan/client'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { clearDb } from '../helpers/migrations'
 import { BILL_KEYWORD_MATCH_CASES, type BillKeywordMatchCase } from '../../../shared/keywordMatchFixtures'
 
 vi.mock('../../src/providers/legiscan/client', async () => {
@@ -60,7 +60,7 @@ function ingestorEnv() {
 }
 
 beforeEach(async () => {
-  await setupLsDb()
+  await clearDb()
   vi.clearAllMocks()
   vi.mocked(legiscan.getSessionList).mockResolvedValue([])
 })

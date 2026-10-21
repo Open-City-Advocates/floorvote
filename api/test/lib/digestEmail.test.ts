@@ -6,6 +6,9 @@ import { buildBillCardModel } from '../../../web/src/lib/billCardModel'
 import { COMMENT_PREVIEW_MAX } from '../../../web/src/lib/feedUtils'
 import type { GroupedBillEvents, FeedEvent } from '../../../web/src/lib/feedUtils'
 import { SAMPLE_DIGEST_EVENTS, SAMPLE_NEW_MATCHES, SAMPLE_ASSOC_NAME } from '../../src/lib/sampleEmails'
+import { color } from '../../../shared/tokens'
+import { CARD_STYLE } from '../../../shared/billCardModel'
+import { billsListPath, parseBillFilter, withBillFilter } from '../../../shared/billFilter'
 
 const ev = (over: any = {}) => ({
   type: 'bill_updated',
@@ -22,7 +25,7 @@ describe('renderDigestEmail', () => {
     expect(html).toContain('H 5174')
     expect(html).toContain('Status:')                  // formatBillUpdateDetail output
     expect(html).toContain('Manage email settings')
-    expect(html).toContain('https://staging.example.com/profile')
+    expect(html).toContain('https://staging.example.com/account#setting-email-digest')
   })
   it('uses real PRIORITY_COLORS (drift guard)', () => {
     const html = renderDigestEmail({ events: [ev({ priority: 'high' })], assocName: 'X', appUrl: 'https://x' })
@@ -68,6 +71,11 @@ describe('renderDigestEmail', () => {
     expect(html).toContain('width:11px;height:11px;border-radius:')  // the priority square box
     expect(html).toContain('title="High priority"')                  // native hover tooltip
   })
+  it('draws a cleared priority as an empty square with a light gray border', () => {
+    const html = renderDigestEmail({ events: [ev({ type: 'priority_set', metadata: JSON.stringify({ priority: null }) })], assocName: 'X', appUrl: 'https://x' })
+    expect(html).toContain(`border:1px solid ${color.borderDefault};vertical-align:middle;`)
+    expect(html).not.toContain(`background:${color.borderDefault};vertical-align:middle;`)
+  })
   it('ends a cut comment row with an ellipsis (legacy previews, stored hard-cut at the cap)', () => {
     // Made-up comment, cut mid-word the way the old write site cut real ones.
     const cut = 'The county offices will need extra staffing before this takes effect, and the training schedule is the real constraint o'
@@ -88,7 +96,7 @@ describe('renderDigestEmail', () => {
   })
   it('points the manage-settings footer link at the email-digest setting anchor', () => {
     const html = renderDigestEmail({ events: [ev()], assocName: 'X', appUrl: 'https://x' })
-    expect(html).toContain('/profile#setting-email-digest')
+    expect(html).toContain('/account#setting-email-digest')
   })
   it('drops the priority-colored left edge (matches Pulse bill card)', () => {
     const html = renderDigestEmail({ events: [ev({ priority: 'high' })], assocName: 'X', appUrl: 'https://x' })
@@ -194,22 +202,53 @@ describe('renderDigestEmail — summary line follows the window the digest cover
 })
 
 describe('sample digest emails render the wording for their cadence', () => {
-  it('the daily sample says "in the last day"', () => {
-    expect(renderSampleEmail('digest', 'https://x').html).toContain('priority bills were updated in the last day')
+  it('the samples carry the real subject lines, one per cadence and mix of kinds', () => {
+    expect(renderSampleEmail('digest', 'https://x').subject).toBe('[Sample] Your daily digest: 3 updated bills, 3 new matches')
+    expect(renderSampleEmail('digest-weekly' as any, 'https://x').subject).toBe('[Sample] Your weekly digest: 3 updated bills, 3 new matches')
+    expect(renderSampleEmail('digest-new-only', 'https://x').subject).toBe('[Sample] Your daily digest: 14 new matches')
   })
-  it('the weekly sample says "in the last week"', () => {
-    expect(renderSampleEmail('digest-weekly' as any, 'https://x').html).toContain('priority bills were updated in the last week')
+  it('the new-matches-only sample is a one-day digest', () => {
+    expect(renderSampleEmail('digest-new-only', 'https://x').html).toContain('14 new matches in the last day')
   })
-  it('the daily sample leads with updates, then a counted new-match section', () => {
+  it('the samples show a new match with a summary preview and one without', () => {
     const html = renderSampleEmail('digest', 'https://x').html
-    expect(html).toContain('New matches (3)')
-    expect(html.indexOf('Voter ID Act')).toBeLessThan(html.indexOf('New matches (3)'))
+    expect(html).toContain('Registers eligible residents to vote automatically')
+    expect(html).toContain('Poll worker compensation increase')
   })
-  it('the new-matches-only sample shows a heavy day: the count, ten listed, and the link to the rest', () => {
+  it('the daily sample\'s headline says the last day', () => {
+    expect(renderSampleEmail('digest', 'https://x').html).toContain('Your digest for the last day')
+  })
+  it('the weekly sample\'s headline says the last week', () => {
+    expect(renderSampleEmail('digest-weekly' as any, 'https://x').html).toContain('Your digest for the last week')
+  })
+  it('the daily sample previews both kinds up top, then leads with updates and follows with new-match cards', () => {
+    const html = renderSampleEmail('digest', 'https://x').html
+    expect(html).toContain('Your digest for the last day')
+    expect(html).toContain('In this digest')
+    expect(html.indexOf('Voter ID Act')).toBeLessThan(html.indexOf('id="digest-new-matches"'))
+    expect(html).toContain('3 new matches')
+  })
+  it('the new-matches-only sample shows a heavy day: the count, ten cards, and the link to the rest', () => {
     const html = renderSampleEmail('digest-new-only', 'https://x').html
-    expect(html).toContain('New matches (14)')
-    expect(html).toContain('…and 4 more')
+    expect(html).toContain('14 new matches')
+    expect(html).toContain('See all 14 new matches')
+    expect((html.match(/box-shadow:/g) || []).length).toBe(10)
     expect(html).toContain('href="https://x/bills?newMatches=1"')
+  })
+})
+
+// The digest's links to the Bills list are the shared module's, so the list they open applies exactly the filter the
+// digest names (the new matches) and the page reads it back as that filter and no other.
+describe('the digest\'s links to the Bills list', () => {
+  const links = (html: string) => [...html.matchAll(/href="(https:\/\/x\/bills\?[^"]*)"/g)].map(m => m[1].replace(/&amp;/g, '&'))
+
+  it('the new-matches-only sample links to the list filtered to new matches, built with billsListPath', () => {
+    const found = links(renderSampleEmail('digest-new-only', 'https://x').html)
+    expect(found.length).toBeGreaterThan(0)
+    for (const link of found) {
+      expect(link).toBe(`https://x${billsListPath({ newMatches: true })}`)
+      expect(parseBillFilter(new URL(link).searchParams)).toEqual(withBillFilter({ newMatches: true }))
+    }
   })
 })
 
@@ -229,8 +268,8 @@ describe('renderDigestEmail — updates lead, new matches follow with a count an
     expect(html.indexOf('H 5174')).toBeGreaterThan(-1)
     expect(html.indexOf('H 5174')).toBeLessThan(html.indexOf('Matched bill 3'))
   })
-  it('shows the total count of new matches in the heading, not the number listed', () => {
-    expect(render(matches(37))).toContain('New matches (37)')
+  it('shows the total count of new matches in the section header, not the number listed', () => {
+    expect(render(matches(37))).toMatch(/>\s*37 new matches\s*</)
   })
   it('lists at most 10 new matches, highest relevance first', () => {
     const html = render(matches(12))
@@ -240,29 +279,30 @@ describe('renderDigestEmail — updates lead, new matches follow with a count an
     const html = render([match(1, null), match(2, 3), match(3, 8)])
     expect(listed(html)).toEqual([3, 2, 1])
   })
-  it('with more than 10, adds an "…and N more" line linking to the bill list filtered to new matches', () => {
+  it('with more than 10, adds a "See all N new matches" line linking to the bill list filtered to new matches', () => {
     const html = render(matches(37))
     expect(listed(html)).toHaveLength(10)
-    expect(html).toContain('…and 27 more')
+    expect(html).toContain('See all 37 new matches')
     expect(html).toContain('href="https://x/bills?newMatches=1"')
-    // The more-line sits after the last listed row (HB 1028 is the 28th of 37, the 10th most relevant).
-    expect(html.indexOf('…and 27 more')).toBeGreaterThan(html.indexOf('HB 1028'))
+    // The link sits after the last listed card (HB 1028 is the 28th of 37, the 10th most relevant).
+    expect(html.indexOf('See all 37 new matches')).toBeGreaterThan(html.indexOf('HB 1028'))
   })
-  it('with exactly 10, lists them all and adds no "and more" line', () => {
+  it('with exactly 10, lists them all and adds no "See all" line', () => {
     const html = render(matches(10))
-    expect(html).toContain('New matches (10)')
+    expect(html).toMatch(/>\s*10 new matches\s*</)
     expect(listed(html)).toHaveLength(10)
-    expect(html).not.toContain('…and')
+    expect(html).not.toContain('See all')
   })
   it('a digest with only new matches renders the section with its count, and no update cards', () => {
     const html = render(matches(3), [])
-    expect(html).toContain('New matches (3)')
+    expect(html).toMatch(/>\s*3 new matches\s*</)
     expect(listed(html)).toEqual([3, 2, 1])
-    expect((html.match(/box-shadow:/g) || []).length).toBe(0)
-    expect(html).toContain('3 new keyword matches')
+    // Three new-match cards; no updated-bill card.
+    expect((html.match(/box-shadow:/g) || []).length).toBe(3)
+    expect(html).toContain('3 new matches in the last day')
   })
   it('the only-new-matches summary line counts every match, not just the ten listed', () => {
-    expect(render(matches(37), [])).toContain('37 new keyword matches')
+    expect(render(matches(37), [])).toContain('37 new matches in the last day')
   })
 })
 
@@ -280,5 +320,90 @@ describe('renderDigestEmail — untitled drafts', () => {
   it('never labels a filed bill "Untitled draft", even with a blank title', () => {
     const html = renderDigestEmail({ events: [ev({ billTitle: '', billIsDraft: false })], assocName: 'X', appUrl: 'https://x' })
     expect(html).not.toContain('Untitled draft')
+  })
+})
+
+// #588 and the polish after #748: a new-match card carries the app's amber pill in the corner, in the priority
+// dropdown's words and tokens. An admin's reads "New · Set priority" and opens the bill page, where the amber dropdown
+// is. A member can't set priorities, so theirs reads "New match" and links nowhere. Neither card has a separate
+// "Set priority" row.
+describe('renderDigestEmail: the new-match card and its amber pill', () => {
+  const match = (n: number) => ({
+    billId: `m${n}`, billNumber: `HB ${1000 + n}`, billTitle: `Matched bill ${n}`,
+    billState: 'RI', billSession: '2026', billSessionSlug: '2026', relevanceScore: n, summary: n === 2 ? null : `Summary ${n}`,
+  })
+  const items = [match(1), match(2), match(3)]
+  const anchors = (html: string) => [...html.matchAll(/<a href="([^"]*)"[^>]*>\s*(?:<span[^>]*>)?\s*([^<]*?)\s*(?:<\/span>)?\s*<\/a>/g)].map(m => ({ href: m[1], text: m[2] }))
+  const pillLinks = (html: string) => anchors(html).filter(a => a.text === 'New · Set priority')
+  // The pill's own span, with the style it carries.
+  const pills = (html: string, label: string) => [...html.matchAll(new RegExp(`<span style="([^"]*)">${label}</span>`, 'g'))].map(m => m[1])
+
+  it('puts an amber "New · Set priority" pill on every new-match card for an admin', () => {
+    const html = renderDigestEmail({ events: [], assocName: 'X', appUrl: 'https://x', newMatches: items })
+    expect(pillLinks(html)).toHaveLength(3)
+    expect(pills(html, 'New · Set priority')).toHaveLength(3)
+  })
+
+  it("links each admin pill to that card's own bill page", () => {
+    const html = renderDigestEmail({ events: [], assocName: 'X', appUrl: 'https://x', newMatches: items })
+    const titleHrefs = (title: string) => anchors(html).filter(a => a.text === title).map(a => a.href)
+    const links = pillLinks(html).map(a => a.href)
+    for (const n of [1, 2, 3]) {
+      const [titleHref] = titleHrefs(`Matched bill ${n}`)
+      expect(titleHref).toMatch(/^https:\/\/x\//)
+      expect(links).toContain(titleHref)
+    }
+    expect(new Set(links).size).toBe(3)
+  })
+
+  it("takes the app's amber tokens, not the legacy chip text color", () => {
+    const html = renderDigestEmail({ events: [], assocName: 'X', appUrl: 'https://x', newMatches: [match(1)] })
+    const [style] = pills(html, 'New · Set priority')
+    expect(style).toContain(`background:${color.bgAmberPriority}`)
+    expect(style).toContain(`color:${color.textAmberDark}`)
+    expect(style).toContain(`border:1px solid ${color.borderAmber}`)
+  })
+
+  it('has no corner "New match" chip and no separate "Set priority" row on an admin card', () => {
+    const html = renderDigestEmail({ events: [], assocName: 'X', appUrl: 'https://x', newMatches: items })
+    expect(html).not.toContain('>New match<')
+    expect(html).not.toContain('>Set priority<')
+    expect(html).not.toContain(`border-top:1px solid ${CARD_STYLE.rowBorder};font-size`)
+  })
+
+  it('gives a card with no summary the pill, too', () => {
+    const html = renderDigestEmail({ events: [], assocName: 'X', appUrl: 'https://x', newMatches: [match(2)] })
+    expect(pillLinks(html)).toHaveLength(1)
+  })
+
+  it("gives a member's cards the read-only amber pill \"New match\", with no link and no Set priority", () => {
+    const html = renderDigestEmail({ events: [], assocName: 'X', appUrl: 'https://x', newMatches: items, forMember: true })
+    expect(html).toContain('Matched bill 1')
+    const styles = pills(html, 'New match')
+    expect(styles).toHaveLength(3)
+    for (const style of styles) {
+      expect(style).toContain(`background:${color.bgAmberPriority}`)
+      expect(style).toContain(`color:${color.textAmberDark}`)
+      expect(style).toContain(`border:1px solid ${color.borderAmber}`)
+    }
+    expect(anchors(html).filter(a => a.text === 'New match')).toHaveLength(0)
+    expect(html).not.toContain('Set priority')
+  })
+
+  it('gives only the listed cards a pill when there are more than the cap, not the "See all" line', () => {
+    const many = Array.from({ length: 14 }, (_, i) => match(i + 1))
+    const html = renderDigestEmail({ events: [], assocName: 'X', appUrl: 'https://x', newMatches: many })
+    expect(pillLinks(html)).toHaveLength(10)
+    expect(html).toContain('See all 14 new matches')
+  })
+
+  it('adds no link to an updated-bill card', () => {
+    const html = renderDigestEmail({ events: [ev()], assocName: 'X', appUrl: 'https://x' })
+    expect(html).not.toContain('Set priority')
+  })
+
+  it('shows the pill in the sample digest an admin previews', () => {
+    const html = renderSampleEmail('digest', 'https://x').html
+    expect(pillLinks(html)).toHaveLength(3)
   })
 })

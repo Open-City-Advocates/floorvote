@@ -25,10 +25,13 @@ export type Env = {
    */
   LIS_API_KEY?: string
   /**
-   * "DC" to seed DC's ownership row for LIMS on the first sync, when DC has no
-   * row (lib/stateProviders.ts). Kept for one release.
+   * Congress.gov API key, an api.data.gov key (src/providers/govinfo). Optional:
+   * with it, GovInfo reads Congress's committee meetings, and shows them on the
+   * body calendar and on the calendars of the bills they take up. Without it,
+   * those calendars are empty, and nothing else changes. Sent only in the
+   * `X-Api-Key` header of a request to api.congress.gov.
    */
-  LIMS_STATES?: string
+  CONGRESS_API_KEY?: string
   /**
    * Comma-separated LIMS category ids to sync (GET LegislationCategories).
    * Default "1,6,13,14,18": bills, resolutions, grant budget modifications,
@@ -41,10 +44,25 @@ export type Env = {
    * Falls back to INGESTOR_QUEUE when unset.
    */
   LIMS_INGESTOR_QUEUE?: Queue
+  /**
+   * Ingestor queue for Maryland (MGA) bills, so a Maryland cutover's backlog
+   * never waits behind LegiScan's, or LegiScan's behind it. The MGA's data
+   * comes from one session file, but each bill's text is a separate download
+   * paced per isolate, so this queue's consumer should run with
+   * max_concurrency = 1. Falls back to INGESTOR_QUEUE when unset.
+   */
+  MGA_INGESTOR_QUEUE?: Queue
+  /**
+   * Ingestor queue for Virginia (LIS) bills, for the same reason as
+   * MGA_INGESTOR_QUEUE. The LIS paces its requests per isolate too (two a
+   * second), so run this queue's consumer at max_concurrency = 1. Falls back
+   * to INGESTOR_QUEUE when unset.
+   */
+  LIS_INGESTOR_QUEUE?: Queue
   ADMIN_SECRET: string
   OPERATOR_NAME: string
   RESEND_API_KEY?: string
-  EMAIL?: import('./lib/email').CloudflareEmailBinding
+  EMAIL?: import('../../shared/emailProviders').CloudflareEmailBinding
   EMAIL_PROVIDER?: string
   EMAIL_FROM?: string       // full sender address; defaults to notifications@example.com
   EMAIL_REPLY_TO?: string   // reply-to; defaults to EMAIL_FROM
@@ -132,6 +150,13 @@ export type BillMessage = {
    */
   firstIngestFor?: string
   /**
+   * The first full ingest of a bill a provider's ingestAll queued before it
+   * had one (cron/sync.ts). While the bill still has had none, the ingest
+   * stores its data and sends it with no changes, as a new bill's is: its
+   * backlog of actions, documents, and past hearings isn't news.
+   */
+  firstFullIngest?: boolean
+  /**
    * The instances this message brings a new keyword match to, by tenant id,
    * and where each match came from (MatchProvenance). Each instance's
    * notification carries its own. An instance missing here gets none, which
@@ -187,7 +212,7 @@ export type CalendarBlock = {
 
 export type NotificationMessage = {
   tenantId: string
-  billId: string   // the bill handle, "legiscan:{bill_id}" (toHandle in lib/billHandle)
+  billId: string   // the bill handle, "bill:{bill_id}" (toHandle in lib/billHandle), sent as "legiscan:{bill_id}" to an instance that doesn't read neutral handles (lib/tenantDelivery.ts)
   forceMetadata?: boolean
   forceAI?: boolean
   interactive?: true     // only set when true; omitted for all background paths

@@ -9,13 +9,17 @@ import { backfillCalendar } from '../../lib/calendarBackfill'
 import { isHandle, parseHandle } from '../../../../shared/billHandle'
 import { nowDb } from '../../lib/dbTime'
 import { ocaPriorityChanged } from '../../oca'
-import { billsAs, buildBillsFilter } from './query'
+import { billsAs } from './query'
+import { buildBillsFilter } from './filterTable'
 import { countGroups, matchingGroupKeys, newMatchGroupKeys, newMatchGroupsAmong } from './groupList'
 import { getNewMatchMinRelevance } from '../../lib/newMatch'
-import { decodeSubjectFilters } from '../../lib/billSubjects'
+import { parseBillFilter } from '../../../../shared/billFilter'
+import { BULK_FILTER_ERROR, parseBulkFilter, subjectCapError } from './filterRequest'
 import { parseStoredMulti } from '../../../../shared/customFieldValues'
 import { inGroupOf, inGroupsOf } from '../../lib/companionGroups'
 import { loadTeamValuesOf, recordFieldChanges, type FieldChange } from '../../lib/teamFields'
+import { chunk } from '../../lib/chunk'
+import { DRAFT_DELETE_CHUNK, deleteDrafts, previewDraftDelete, type DraftSkipReason } from '../../lib/draftDelete'
 
 // Cloudflare D1 rejects queries with >100 bound parameters. Chunk bulk operations
 // below 100 to leave headroom for the extra SET/predicate params some queries add
@@ -29,25 +33,8 @@ export function registerBulkRoutes(router: Hono<AppEnv>) {
 
     type BulkBody = {
       ids?: string[]
-      filter?: {
-        status?: string[]
-        stage?: string[]
-        priority?: string[]
-        position?: string[]
-        session?: string[]
-        year?: string[]
-        state?: string[]
-        tag?: string[]
-        subject?: string[]
-        q?: string
-        minRelevance?: string
-        myBills?: string
-        unvoted?: string
-        newMatches?: string
-        drafts?: string
-        cf?: Record<string, string[]>
-        match?: string
-      }
+      /** The bill filter as a query string, as GET /bills takes it. */
+      filter?: string
       priority?: string | null
       position?: string | null
       customFields?: Array<
@@ -67,6 +54,9 @@ export function registerBulkRoutes(router: Hono<AppEnv>) {
     if (hasIds === hasFilter) {
       return c.json({ error: 'Provide exactly one of: ids or filter' }, 400)
     }
+    // The filter is read as the list reads a query string, so the two select the same bills.
+    const f = hasFilter ? parseBulkFilter(body.filter) : null
+    if (hasFilter && !f) return c.json(BULK_FILTER_ERROR, 400)
 
     const hasPriority = 'priority' in body
     const hasPosition = 'position' in body
@@ -88,39 +78,12 @@ export function registerBulkRoutes(router: Hono<AppEnv>) {
     if (hasIds) {
       billIds = body.ids!
     } else {
-      const f = body.filter!
-      const filter = await buildBillsFilter(db, {
-        statuses: f.status ?? [],
-        stages: f.stage ?? [],
-        priorities: f.priority ?? [],
-        positionValues: f.position ?? [],
-        sessions: f.session ?? [],
-        years: f.year ?? [],
-        states: f.state ?? [],
-        tagFilters: f.tag ?? [],
-        // Stays on the truncating decodeSubjectFilters (not decodeSubjectFiltersChecked).
-        // Truncating an AND widens the set (dropped terms stop narrowing it), and under
-        // match=any it narrows the set (a dropped OR arm stops contributing bills) — so
-        // either way the written set can differ from the filter the admin actually chose,
-        // not just "under-select." This is a deliberate open decision, left as-is here
-        // because GET /bills 400s on an over-cap selection before a bulk action can ever
-        // be issued against one, so the truncation isn't reachable in practice today.
-        subjectFilters: decodeSubjectFilters(f.subject ?? []),
-        q: f.q,
-        minRelevance: f.minRelevance,
-        myBillsParam: f.myBills != null ? String(f.myBills) : undefined,
-        unvoted: f.unvoted,
-        newMatches: f.newMatches,
-        drafts: f.drafts,
-        newMatchMinRelevance: (f.newMatches === '1' || f.newMatches === 'true') ? await getNewMatchMinRelevance(db) : 0,
-        cfParamMap: f.cf ?? {},
+      // Same cap and message as GET /bills, checked before any write.
+      const capError = subjectCapError(f!)
+      if (capError) return c.json(capError, 400)
+      const filter = await buildBillsFilter(db, f!, {
         userId: currentUser.id,
-        // Same `=== 'any'` test as GET /bills and GET /bills/facets (listRoutes.ts),
-        // so the surfaces cannot drift on what the param means. The filter payload
-        // here is the client's serialised currentFilters (Task 6), which now carries
-        // match=any when the admin has the OR operator active — the bulk write must
-        // resolve against the same set the admin sees on screen, not silently AND it.
-        matchAny: f.match === 'any',
+        newMatchMinRelevance: f!.newMatches ? await getNewMatchMinRelevance(db) : 0,
       })
       selected = filter(billsAs('m'))
       // One more than the cap tells an over-cap selection from one at it.
@@ -379,21 +342,16 @@ export function registerBulkRoutes(router: Hono<AppEnv>) {
     const db = getDb(c.env.DB)
     const currentUser = c.get('user')
 
-    type Body = {
-      ids?: string[]
-      filter?: {
-        status?: string[]; stage?: string[]; priority?: string[]; position?: string[]; session?: string[]
-        year?: string[]; state?: string[]; tag?: string[]; subject?: string[]; q?: string; minRelevance?: string
-        myBills?: string; unvoted?: string; newMatches?: string; drafts?: string; cf?: Record<string, string[]>
-        match?: string
-      }
-    }
+    type Body = { ids?: string[]; /** The bill filter as a query string, as GET /bills takes it. */ filter?: string }
 
     const body = await c.req.json<Body>().catch(() => null)
     if (!body) return c.json({ error: 'Invalid body' }, 400)
     const hasIds = Array.isArray(body.ids) && body.ids.length > 0
     const hasFilter = body.filter != null
     if (hasIds === hasFilter) return c.json({ error: 'Provide exactly one of: ids or filter' }, 400)
+    // Read as POST /bulk reads it, and as the list reads a query string.
+    const f = hasFilter ? parseBulkFilter(body.filter) : null
+    if (hasFilter && !f) return c.json(BULK_FILTER_ERROR, 400)
 
     // Computed up front — the groups to dismiss are only those on the new-match queue,
     // even when the "New matches" chip (f.newMatches) is off but the dismiss action is
@@ -405,25 +363,10 @@ export function registerBulkRoutes(router: Hono<AppEnv>) {
       // The groups of the bills named that are on the new-match queue.
       toDismiss = await newMatchGroupsAmong(db, body.ids!, min)
     } else {
-      const f = body.filter!
-      const filter = await buildBillsFilter(db, {
-        statuses: f.status ?? [], stages: f.stage ?? [], priorities: f.priority ?? [], positionValues: f.position ?? [],
-        sessions: f.session ?? [], years: f.year ?? [], states: f.state ?? [], tagFilters: f.tag ?? [],
-        // Same truncation tradeoff as the other bulk call site above: it can widen the
-        // written set under AND or narrow it under match=any, either way diverging from
-        // what the admin picked, but that's unreachable today since GET /bills 400s on
-        // an over-cap selection before this endpoint is ever reached with one.
-        subjectFilters: decodeSubjectFilters(f.subject ?? []),
-        q: f.q, minRelevance: f.minRelevance,
-        myBillsParam: f.myBills != null ? String(f.myBills) : undefined,
-        unvoted: f.unvoted, newMatches: f.newMatches,
-        drafts: f.drafts,
-        newMatchMinRelevance: (f.newMatches === '1' || f.newMatches === 'true') ? min : 0,
-        cfParamMap: f.cf ?? {}, userId: currentUser.id,
-        // Same `=== 'any'` test as GET /bills / GET /bills/facets and the /bulk
-        // route above, so the three surfaces cannot drift on what the param means.
-        matchAny: f.match === 'any',
-      })
+      // Same cap and message as GET /bills, checked before any write.
+      const capError = subjectCapError(f!)
+      if (capError) return c.json(capError, 400)
+      const filter = await buildBillsFilter(db, f!, { userId: currentUser.id, newMatchMinRelevance: f!.newMatches ? min : 0 })
       // One bill per group, named by its key bill: a group is dismissed as one. One statement, so the
       // groups the filter names (every group on a broad filter) never travel as a parameter.
       toDismiss = await newMatchGroupKeys(db, filter(billsAs('m')), min)
@@ -444,6 +387,82 @@ export function registerBulkRoutes(router: Hono<AppEnv>) {
     return c.json({ dismissed: toDismiss.length })
   })
 
+  // POST /bills/bulk-delete — admin only. Deletes the draft bills named, each exactly as
+  // DELETE /bills/:id deletes one (lib/draftDelete.ts is the one place that decides and does it),
+  // and says what became of every id: { deleted, skipped: [{ id, reason }] }. A bill that is
+  // gone already, is filed, or has engagement (without includeEngaged) is skipped and left alone,
+  // so one such id never fails the rest. Up to 1,000 ids, checked before anything is written.
+  //
+  // `includeEngaged: true` says the admin saw what goes with an engaged draft and confirmed.
+  //
+  // `preview: true` writes nothing and answers what a delete would take (DraftDeletePreview), for
+  // that confirm: the drafts by id, the filed bills selected, and the engagement on the drafts. A
+  // preview takes { ids } or { filter }, the filter as a query string as POST /bulk takes it, with
+  // the Drafts filter on (the bills page's select-all with Drafts shown), matching at most 1,000
+  // drafts. A delete takes ids only: the client sends the ids its preview named, so a draft made
+  // while the confirm was open is never deleted uncounted.
+  router.post('/bulk-delete', requireAdmin, async (c) => {
+    const db = getDb(c.env.DB)
+    const body = await c.req.json<{ ids?: unknown; filter?: unknown; includeEngaged?: unknown; preview?: unknown }>().catch(() => null)
+    if (!body || typeof body !== 'object') return c.json({ error: 'Invalid body' }, 400)
+    for (const flag of ['includeEngaged', 'preview'] as const) {
+      if (flag in body && typeof body[flag] !== 'boolean') return c.json({ error: `${flag} must be true or false` }, 400)
+    }
+    const preview = body.preview === true
+    const includeEngaged = body.includeEngaged === true
+
+    const hasIds = body.ids !== undefined
+    const hasFilter = body.filter !== undefined
+    if (hasIds === hasFilter) return c.json({ error: 'Provide exactly one of: ids or filter' }, 400)
+    if (hasFilter && !preview) {
+      return c.json({ error: 'A delete names its drafts by id. Preview the filter for their ids first.' }, 400)
+    }
+
+    if (hasFilter) {
+      const f = parseBulkFilter(body.filter)
+      if (!f) return c.json(BULK_FILTER_ERROR, 400)
+      if (!f.drafts) return c.json({ error: 'A filter must have the Drafts filter on to delete drafts.' }, 400)
+      const capError = subjectCapError(f)
+      if (capError) return c.json(capError, 400)
+      const filter = await buildBillsFilter(db, f, {
+        userId: c.get('user').id,
+        newMatchMinRelevance: f.newMatches ? await getNewMatchMinRelevance(db) : 0,
+      })
+      // The Drafts filter is on, so every bill it matches is a draft; the condition says so again here.
+      const filterSql = and(filter(billsAs('m')), sql`m.is_draft = 1`)!
+      const result = await previewDraftDelete(db, filterSql)
+      if (result.drafts > 1000) {
+        // The preview reads one past the cap, so the count for the message is read only when refusing.
+        const rows = await db.all(sql`SELECT COUNT(*) AS n FROM bills m WHERE ${filterSql}`) as { n: number }[]
+        const n = Number(rows[0].n).toLocaleString('en-US')
+        return c.json({ error: `Too many drafts (${n}). Apply more filters to narrow down to 1,000 or fewer.` }, 400)
+      }
+      return c.json(result)
+    }
+
+    const raw = body.ids
+    if (!Array.isArray(raw) || raw.length === 0 || !raw.every((id): id is string => typeof id === 'string' && id !== '')) {
+      return c.json({ error: 'ids must be a non-empty array of bill ids' }, 400)
+    }
+    // The same cap as POST /bulk, checked before anything is read or written.
+    if (raw.length > 1000) {
+      return c.json({ error: `Too many bills (${raw.length}). Select 1,000 or fewer.` }, 400)
+    }
+    const ids = [...new Set(raw)]
+    if (preview) return c.json(await previewDraftDelete(db, sql`m.id IN (SELECT value FROM json_each(${JSON.stringify(ids)}))`))
+
+    const deleted: string[] = []
+    const skipped: Array<{ id: string; reason: DraftSkipReason }> = []
+    // One atomic D1 batch per chunk. A chunk that fails leaves its drafts whole and is
+    // reported, and the chunks after it still run.
+    for (const part of chunk(ids, DRAFT_DELETE_CHUNK)) {
+      const result = await deleteDrafts(db, part, { reportFailure: true, includeEngaged, attachments: c.env.ATTACHMENTS_BUCKET })
+      deleted.push(...result.deleted)
+      skipped.push(...result.skipped)
+    }
+    return c.json({ deleted, skipped })
+  })
+
   // GET /bills/bulk-values — admin only; returns value distributions across matching bills
   // for pre-populating the bulk action bar. Must be before /:id to avoid param capture.
   router.get('/bulk-values', requireAdmin, async (c) => {
@@ -459,47 +478,16 @@ export function registerBulkRoutes(router: Hono<AppEnv>) {
     if (explicitIds.length > 0) {
       billIds = explicitIds
     } else {
-      const statuses = params.getAll('status')
-      const stages = params.getAll('stage')
-      const priorities = params.getAll('priority')
-      const positionValues = params.getAll('position')
-      const sessions = params.getAll('session')
-      const years = params.getAll('year')
-      const states = params.getAll('state')
-      const tagFilters = params.getAll('tag')
-      // Same tradeoff as the other bulk call sites: truncation widens the written
-      // set under AND, narrows it under match=any, and either way can differ from
-      // the filter the admin chose — left as-is because GET /bills 400s on an
-      // over-cap selection first, so it isn't reachable in practice today.
-      const subjectFilters = decodeSubjectFilters(params.getAll('subject'))
-      const q = params.get('q') ?? undefined
-      const minRelevance = params.get('minRelevance') ?? undefined
-      const myBillsParam = params.get('myBills') ?? undefined
-      const unvoted = params.get('unvoted') ?? undefined
-      const newMatchesParam = params.get('newMatches') ?? undefined
-      const draftsParam = params.get('drafts') ?? undefined
-
-      const cfParamMap: Record<string, string[]> = {}
-      for (const [key, value] of params) {
-        if (key.startsWith('cf_')) {
-          const fieldId = key.slice(3)
-          ;(cfParamMap[fieldId] ??= []).push(value)
-        }
-      }
-
-      const filter = await buildBillsFilter(db, {
-        statuses, stages, priorities, positionValues, sessions, years, states, tagFilters,
-        subjectFilters,
-        q, minRelevance, myBillsParam, unvoted,
-        newMatches: newMatchesParam,
-        drafts: draftsParam,
-        newMatchMinRelevance: (newMatchesParam === '1' || newMatchesParam === 'true') ? await getNewMatchMinRelevance(db) : 0,
-        cfParamMap, userId: currentUser.id,
-        // Same `=== 'any'` test as GET /bills / GET /bills/facets and the other
-        // two bulk call sites, so the surfaces cannot drift on what the param
-        // means. This is the read that pre-populates the bulk-edit form's
-        // initial values, and it must agree with the write that follows it.
-        matchAny: params.get('match') === 'any',
+      // The same parse as GET /bills, of the same query string.
+      const f = parseBillFilter(params)
+      // Same cap and message as GET /bills.
+      const capError = subjectCapError(f)
+      if (capError) return c.json(capError, 400)
+      // This is the read that pre-populates the bulk-edit form's initial values, and it must agree with
+      // the write that follows it.
+      const filter = await buildBillsFilter(db, f, {
+        userId: currentUser.id,
+        newMatchMinRelevance: f.newMatches ? await getNewMatchMinRelevance(db) : 0,
       })
 
       // One bill per companion group, named by its key bill.

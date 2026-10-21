@@ -7,7 +7,7 @@
 // unexplained red green — an unexpected diff is the bug this file exists to catch.
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { env } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedBill } from '../helpers'
+import { clearDb, seedBill } from '../helpers'
 import { runDemoReset, dateFromNow } from '../../src/lib/demoReset'
 import { DEMO_SEEDS } from '../../src/lib/demoSeeds'
 
@@ -17,7 +17,7 @@ const TABLES = [
   'users', 'roles', 'user_roles', 'custom_field_definitions', 'association_config',
   'sessions', 'magic_links', 'official_positions', 'member_votes', 'comments',
   'notifications', 'comment_reactions', 'feed_events', 'bill_custom_field_values', 'notes',
-  'calendar_events',
+  'calendar_events', 'team_events',
 ]
 
 // The bills the seed references. Seeded with deterministic ids of the form
@@ -52,7 +52,7 @@ const parseDbTs = (v: string) => Date.parse(v.replace(' ', 'T').replace(/Z?$/, '
 const SQL_CLOCK_COLUMNS = new Set([
   'users.last_active', 'users.last_seen_feed', 'roles.created_at',
   'custom_field_definitions.created_at', 'custom_field_definitions.updated_at',
-  'official_positions.updated_at', 'notes.updated_at',
+  'notes.updated_at',
   'calendar_events.created_at', 'calendar_events.updated_at',
 ])
 
@@ -143,8 +143,7 @@ export async function dumpResetState(baseMs: number, realNowMs: number): Promise
  *  bills the INSERT ... SELECT guards no-op and the dump is empty for the tables
  *  that matter most. */
 async function freshlyMigratedWithBills() {
-  await resetDb()
-  await applyMigrations()
+  await clearDb()
   for (const [i, extId] of SEED_BILL_EXTERNAL_IDS.entries()) {
     await seedBill({ id: `bill-${extId}`, externalId: extId, billNumber: `B${1000 + i}`, title: `Bill ${i}`, state: 'MI', priority: 'high' })
   }

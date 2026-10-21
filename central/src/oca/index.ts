@@ -4,7 +4,7 @@ import { ocaAdminRoutes, ocaBillsRoutes } from './routes'
 import { runDcDirectory } from './directory'
 import type { Db, Env } from '../types'
 
-// OCA's hooks into central, each called from one line in src/index-legiscan.ts
+// OCA's hooks into central, each called from one line in src/index.ts
 // so an upstream merge only has those lines to keep (docs/internal/fork-upgrade.md).
 
 /** The fork's routes. Mounted ahead of upstream's, so /api/bills/:id doesn't answer for /api/bills/council-directory. */

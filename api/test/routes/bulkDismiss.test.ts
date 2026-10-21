@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { SELF, env } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill } from '../helpers'
+import { clearDb, seedUser, seedSession, seedBill } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { bills } from '../../src/db/schema'
 import { eq, inArray } from 'drizzle-orm'
@@ -12,8 +12,7 @@ describe('POST /bills/bulk-dismiss', () => {
   let nm1: string, nm2: string, prioritized: string, manual: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     adminId = await seedUser({ role: 'admin', email: 'admin@example.com' })
     adminToken = await seedSession(adminId)
     nm1 = await seedBill({ billNumber: 'NM 1', matchType: 'keyword', newMatchAt: MATCH, relevanceScore: 80 })
@@ -93,7 +92,7 @@ describe('POST /bills/bulk-dismiss', () => {
     const res = await SELF.fetch('http://localhost/api/bills/bulk-dismiss', {
       method: 'POST',
       headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: { newMatches: '1' } }),
+      body: JSON.stringify({ filter: 'newMatches=1' }),
     })
     expect(res.status).toBe(200)
     // Only nm1 + nm2 qualify (prioritized is already triaged; manual is matchType manual).
@@ -113,7 +112,7 @@ describe('POST /bills/bulk-dismiss', () => {
     const res = await SELF.fetch('http://localhost/api/bills/bulk-dismiss', {
       method: 'POST',
       headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: { newMatches: '1' } }),
+      body: JSON.stringify({ filter: 'newMatches=1' }),
     })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ dismissed: 1002 })
@@ -124,7 +123,7 @@ describe('POST /bills/bulk-dismiss', () => {
     const res = await SELF.fetch('http://localhost/api/bills/bulk-dismiss', {
       method: 'POST',
       headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: {} }),
+      body: JSON.stringify({ filter: '' }),
     })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ dismissed: 2 }) // nm1 + nm2 only

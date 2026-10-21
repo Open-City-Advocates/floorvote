@@ -5,7 +5,7 @@ import { requireAdmin } from '../../middleware/auth'
 import { getDb } from '../../db/client'
 import {
   bills, memberVotes, officialPositions, comments, notes, feedEvents, billTexts,
-  billCustomFieldValues, calendarEventBills, notifications, billMutes,
+  billCustomFieldValues, calendarEventBills, notifications, billMutes, teamEvents,
 } from '../../db/schema'
 import { ocaPriorityChanged } from '../../oca'
 import type { AppEnv } from '../../types'
@@ -17,6 +17,9 @@ import { nextDraftNumber, findNumberCollision } from '../../lib/draftNumber'
 import { resolveCustomFieldValues } from '../../lib/customFieldValues'
 import { inGroupOf } from '../../lib/companionGroups'
 import { loadGroupTeamValues, recordFieldChanges } from '../../lib/teamFields'
+import { parseStoredItems } from '../../lib/claimSources'
+import { pruneClaimSources } from '../../lib/claimResolution'
+import { deleteDrafts } from '../../lib/draftDelete'
 
 // Latch a bill as triaged. Idempotent: the isNull guard means only the first
 // triage (dismiss or priority-set) records the actor/timestamp, so re-triaging
@@ -30,34 +33,23 @@ async function latchTriaged(db: ReturnType<typeof getDb>, id: string, userId: st
 }
 
 export function registerDraftRoutes(router: Hono<AppEnv>) {
-  // DELETE /bills/:id — admin only
+  // DELETE /bills/:id — admin only. A draft with engagement answers 409 unless `?includeEngaged=1` says the
+  // admin confirmed deleting it with its votes, positions, comments, and notes (lib/draftDelete.ts).
   router.delete('/:id', requireAdmin, async (c) => {
     const db = getDb(c.env.DB)
     const { id } = c.req.param()
-    const bill = await db.select({ id: bills.id, isDraft: bills.isDraft }).from(bills).where(eq(bills.id, id)).get()
-    if (!bill) return c.json({ error: 'Bill not found' }, 404)
-    if (!bill.isDraft) return c.json({ error: 'Only draft bills can be deleted' }, 403)
+    const flag = c.req.query('includeEngaged')
+    const includeEngaged = flag === '1' || flag === 'true'
+    const { skipped } = await deleteDrafts(db, [id], { includeEngaged, attachments: c.env.ATTACHMENTS_BUCKET })
+    const refusal = skipped[0]?.reason
+    if (refusal === 'not_found') return c.json({ error: 'Bill not found' }, 404)
+    if (refusal === 'not_draft') return c.json({ error: 'Only draft bills can be deleted' }, 403)
+    if (refusal === 'engaged') {
+      return c.json({ error: 'This draft has votes, comments, notes, or a position. Link it to its filed bill instead, or delete it with includeEngaged=1.' }, 409)
+    }
+    // The batch kept the draft for a reason we could not read back: not deleted, and not known to be engaged.
+    if (refusal === 'error') return c.json({ error: 'internal_error' }, 500)
 
-    const [v, p, cm, nt] = await Promise.all([
-      db.select({ id: memberVotes.id }).from(memberVotes).where(eq(memberVotes.billId, id)).get(),
-      db.select({ billId: officialPositions.billId }).from(officialPositions).where(eq(officialPositions.billId, id)).get(),
-      db.select({ id: comments.id }).from(comments).where(and(eq(comments.billId, id), isNull(comments.deletedAt))).get(),
-      db.select({ id: notes.id }).from(notes).where(and(eq(notes.billId, id), ne(notes.content, ''))).get(),
-    ])
-    if (v || p || cm || nt) return c.json({ error: 'This draft has engagement; link it to a filed bill instead.' }, 409)
-
-    await db.batch([
-      db.delete(feedEvents).where(eq(feedEvents.billId, id)),
-      db.delete(comments).where(eq(comments.billId, id)),
-      db.delete(officialPositions).where(eq(officialPositions.billId, id)),
-      db.delete(memberVotes).where(eq(memberVotes.billId, id)),
-      db.delete(notes).where(eq(notes.billId, id)),
-      db.delete(billTexts).where(eq(billTexts.billId, id)),
-      // calendar_event_bills has no FK, so these rows would orphan on the dead draft id.
-      // The calendar events themselves stay, as does their link to any other bill.
-      db.delete(calendarEventBills).where(eq(calendarEventBills.billId, id)),
-      db.delete(bills).where(eq(bills.id, id)),
-    ])
     return new Response(null, { status: 204 })
   })
 
@@ -81,11 +73,13 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     // never get a canonical URL — reject rather than silently creating one.
     // A single-state tenant always has c.env.STATE set, so this never fires there.
     if (!state) {
-      return c.json({ error: 'This instance tracks multiple states. Include a state when creating a draft.' }, 400)
+      return c.json({ error: 'More than one state is tracked here. Include a state when creating a draft.' }, 400)
     }
-    // Custom field values set on the create form, in the same format and under
-    // the same rules as the bill page's PUT /bills/:id/custom-fields. Validated
-    // before anything is written, so a bad value leaves no draft behind.
+    // Custom field values sent with the create request, in the same format and
+    // under the same rules as the bill page's PUT /bills/:id/custom-fields.
+    // No current client sends them (the bill page edits them in place), but the
+    // field stays accepted. Validated before anything is written, so a bad
+    // value leaves no draft behind.
     const cf = 'customFields' in body ? body.customFields : undefined
     if (cf !== undefined && cf !== null && (typeof cf !== 'object' || Array.isArray(cf))) {
       return c.json({ error: 'customFields must be an object of field ID to value' }, 400)
@@ -205,6 +199,8 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     }
     ops.push(db.update(calendarEventBills).set({ billId: filedBillId }).where(eq(calendarEventBills.billId, draftId)))
     ops.push(db.update(feedEvents).set({ billId: filedBillId }).where(eq(feedEvents.billId, draftId)))
+    // Field-change history cascade-deletes with the draft, so it must move first.
+    ops.push(db.update(teamEvents).set({ billId: filedBillId }).where(eq(teamEvents.billId, draftId)))
     ops.push(db.delete(bills).where(eq(bills.id, draftId)))
 
     await db.batch(ops as unknown as Parameters<typeof db.batch>[0])
@@ -232,7 +228,14 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
     // 400s them — so a source title can't be blanked through this endpoint.
     if ('title' in body) patch.title = typeof body.title === 'string' ? body.title.trim() : ''
     if ('sponsor' in body) patch.sponsor = body.sponsor?.trim() || null
-    if ('summary' in body) patch.tenantSummary = body.summary?.trim() || null
+    if ('summary' in body) {
+      patch.tenantSummary = body.summary?.trim() || null
+      // Claim sources are quotes behind claims in the summary, so an edit keeps
+      // only those whose claim is still in it.
+      if (existing.claimSources !== null) {
+        patch.claimSources = JSON.stringify(pruneClaimSources(parseStoredItems(existing.claimSources) ?? [], patch.tenantSummary))
+      }
+    }
     if ('text' in body) patch.draftText = body.text?.trim() || null
 
     // An omitted state leaves the row alone — including a legacy '', which
@@ -331,7 +334,7 @@ export function registerDraftRoutes(router: Hono<AppEnv>) {
       const legiscanId = parseHandle(row?.externalId)
       // Backfill hearings for this newly-prioritized bill (fire-and-forget).
       if (legiscanId !== null) c.executionCtx.waitUntil(backfillCalendar(c.env, [legiscanId]))
-      // Promote a lightweight LegiScan stub to full tracking + AI (zero-cost on central;
+      // Promote a monitored LegiScan bill to full tracking + AI (zero-cost on central;
       // the ingestor will make one getBill() call). Failures log but don't fail the request.
       // Promotion means "fetch text and run AI", which a demo must never do —
       // see the demo guard in queue/processor.ts. `promoted` stays false so the

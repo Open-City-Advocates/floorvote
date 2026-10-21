@@ -11,7 +11,7 @@ import youthRaw from '../fixtures/dccouncil/committee-youth-affairs.html?raw'
 import dirRaw from '../fixtures/dccouncil/council-directory-1.html?raw'
 import cmsRaw from '../fixtures/dccouncil/councilmembers.html?raw'
 import { syncCouncilDirectory } from '../../src/oca/directory'
-import { app } from '../../src/index-legiscan'
+import { app } from '../../src/index'
 import { eq } from 'drizzle-orm'
 
 // Each directory page gets distinct people, as the real directory has (about 190 across 10 pages).

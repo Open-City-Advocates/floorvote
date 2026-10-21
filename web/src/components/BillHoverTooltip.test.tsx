@@ -64,3 +64,138 @@ describe('BillHoverTooltip untitled drafts', () => {
     expect(screen.queryByText('Untitled draft')).toBeNull()
   })
 })
+
+describe('BillHoverTooltip placement', () => {
+  const BILL = { billNumber: 'H 1', title: 'Placement title', summary: null, priority: null }
+  function withSize(w: number, h: number, innerHeight = 800) {
+    const ow = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(w)
+    const oh = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(h)
+    const ih = Object.getOwnPropertyDescriptor(window, 'innerHeight')
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: innerHeight })
+    return () => { ow.mockRestore(); oh.mockRestore(); if (ih) Object.defineProperty(window, 'innerHeight', ih) }
+  }
+  const bubbleEl = () => screen.getByText('Placement title').closest('div[style*="position: fixed"]') as HTMLElement
+
+  it('opens above the pointer, its bottom edge just over the cursor', () => {
+    const restore = withSize(200, 100)
+    try {
+      render(<BillHoverTooltip bill={BILL} cursor={{ x: 300, y: 400 }} />)
+      expect(parseFloat(bubbleEl().style.top)).toBe(400 - 18 - 100)
+      expect(parseFloat(bubbleEl().style.left)).toBe(316)
+    } finally { restore() }
+  })
+
+  it('flips below the pointer only when there is no room above it', () => {
+    const restore = withSize(200, 100)
+    try {
+      render(<BillHoverTooltip bill={BILL} cursor={{ x: 300, y: 50 }} />)
+      expect(parseFloat(bubbleEl().style.top)).toBe(50 + 18)
+    } finally { restore() }
+  })
+
+  it('stays above when it just fits', () => {
+    const restore = withSize(200, 100)
+    try {
+      render(<BillHoverTooltip bill={BILL} cursor={{ x: 300, y: 126 }} />)
+      expect(parseFloat(bubbleEl().style.top)).toBe(8)
+    } finally { restore() }
+  })
+
+  it('keeps a flipped bubble on screen at the bottom edge', () => {
+    const restore = withSize(200, 100, 120)
+    try {
+      render(<BillHoverTooltip bill={BILL} cursor={{ x: 300, y: 60 }} />)
+      expect(parseFloat(bubbleEl().style.top)).toBeLessThanOrEqual(120 - 100 - 8 + 0.01)
+    } finally { restore() }
+  })
+
+  it('moves up again when the lazy summary loads and the bubble grows, so it never covers the pointer', async () => {
+    const oh = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.textContent?.includes('Loaded summary text') ? 180 : 100
+    })
+    const ow = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(200)
+    try {
+      fetchMock.mockResolvedValue({ tenantSummary: 'Loaded summary text' })
+      render(<BillHoverTooltip bill={{ billNumber: 'H 9', billId: 'grow-1', title: 'Placement title', summary: null, priority: null }} cursor={{ x: 300, y: 400 }} />)
+      expect(parseFloat(bubbleEl().style.top)).toBe(400 - 18 - 100)
+      await waitFor(() => expect(screen.getByText('Loaded summary text')).toBeInTheDocument())
+      await waitFor(() => expect(parseFloat(bubbleEl().style.top)).toBe(400 - 18 - 180))
+    } finally { oh.mockRestore(); ow.mockRestore() }
+  })
+})
+
+describe('BillHoverTooltip long summaries', () => {
+  const SUMMARY = 'Reauthorizes a restoration program.\n\n- **Authorization:** Authorizes $5,000,000 a year.\n- **Reporting:** Requires an annual report.'
+  const BILL = { billNumber: 'H 2', title: 'Long summary title', summary: SUMMARY, priority: null }
+  const bubbleEl = () => screen.getByText('Long summary title').closest('div[style*="position: fixed"]') as HTMLElement
+  const summaryEl = () => bubbleEl().querySelector('[data-hover-summary]') as HTMLElement
+  function withViewportHeight(h: number) {
+    const ih = Object.getOwnPropertyDescriptor(window, 'innerHeight')
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: h })
+    return () => { if (ih) Object.defineProperty(window, 'innerHeight', ih) }
+  }
+  function withSummarySize(scrollHeight: number, clientHeight: number) {
+    const sh = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-hover-summary') ? scrollHeight : 0
+    })
+    const ch = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-hover-summary') ? clientHeight : 0
+    })
+    return () => { sh.mockRestore(); ch.mockRestore() }
+  }
+
+  it('keeps the summary\'s formatting: its lead sentence, and a list with bold labels', () => {
+    render(<BillHoverTooltip bill={BILL} cursor={{ x: 0, y: 0 }} />)
+    expect(screen.getByText('Reauthorizes a restoration program.')).toBeInTheDocument()
+    const items = summaryEl().querySelectorAll('li')
+    expect(items).toHaveLength(2)
+    expect(items[0].querySelector('strong')?.textContent).toBe('Authorization:')
+    expect(summaryEl().textContent).not.toContain('**')
+  })
+
+  it('formats a lazily fetched summary too', async () => {
+    fetchMock.mockResolvedValue({ tenantSummary: '- **Fees:** Raises the permit fee.' })
+    render(<BillHoverTooltip bill={{ billNumber: 'H 3', billId: 'fmt-1', title: 'Long summary title', summary: null, priority: null }} cursor={{ x: 0, y: 0 }} />)
+    await waitFor(() => expect(screen.getByText('Fees:').tagName).toBe('STRONG'))
+  })
+
+  it('is 360px wide at most', () => {
+    render(<BillHoverTooltip bill={BILL} cursor={{ x: 0, y: 0 }} />)
+    expect(bubbleEl().style.maxWidth).toBe('360px')
+  })
+
+  it('is 450px tall at most, the summary cut off below the title', () => {
+    const restore = withViewportHeight(900)
+    try {
+      render(<BillHoverTooltip bill={BILL} cursor={{ x: 0, y: 0 }} />)
+      expect(bubbleEl().style.maxHeight).toBe('450px')
+      expect(bubbleEl().style.display).toBe('flex')
+      expect(summaryEl().style.overflow).toBe('hidden')
+      expect(summaryEl().style.minHeight).toBe('0px')
+    } finally { restore() }
+  })
+
+  it('fits a viewport shorter than the cap, with a margin', () => {
+    const restore = withViewportHeight(300)
+    try {
+      render(<BillHoverTooltip bill={BILL} cursor={{ x: 0, y: 0 }} />)
+      expect(bubbleEl().style.maxHeight).toBe('284px')
+    } finally { restore() }
+  })
+
+  it('fades out a summary that is cut off', () => {
+    const restore = withSummarySize(900, 380)
+    try {
+      render(<BillHoverTooltip bill={BILL} cursor={{ x: 0, y: 0 }} />)
+      expect(summaryEl().hasAttribute('data-clipped')).toBe(true)
+    } finally { restore() }
+  })
+
+  it('leaves a summary that fits unfaded, so its last line stays crisp', () => {
+    const restore = withSummarySize(120, 120)
+    try {
+      render(<BillHoverTooltip bill={BILL} cursor={{ x: 0, y: 0 }} />)
+      expect(summaryEl().hasAttribute('data-clipped')).toBe(false)
+    } finally { restore() }
+  })
+})

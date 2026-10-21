@@ -1,7 +1,9 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react'
 import { useParams, Link, useNavigate, useNavigation, useLocation, useLoaderData, redirect, type LoaderFunctionArgs } from 'react-router-dom'
 import { apiFetch, ApiError } from '../lib/api'
+import { fetchDraftDeletePreview, GAINED_ENGAGEMENT, hasEngagement, singleDraftDeleteConfirm } from '../lib/draftDeleteConfirm'
 import { apiFetchForLoader } from '../lib/loaderFetch'
+import { groupByHand } from '../lib/groupByHand'
 import { useAuth } from '../hooks/useAuth'
 import { MarkdownSummary } from '../components/MarkdownSummary'
 import { BillBadge } from '../components/BillBadge'
@@ -9,22 +11,26 @@ import { DraftChip } from '../components/DraftChip'
 import { PositionBadge } from '../components/PositionBadge'
 import { PriorityBadge } from '../components/PriorityBadge'
 import { CompactPrioritySelect } from '../components/CompactPrioritySelect'
-import { NewMatchTriageControl } from '../components/NewMatchTriageControl'
+import { DismissAnnouncement } from '../components/DismissAnnouncement'
+import { NewMatchChip } from '../components/NewMatchChip'
+import { isUntriagedNewMatch } from '../lib/newMatch'
 import { CompactPositionSelect } from '../components/CompactPositionSelect'
 import { StatusChip } from '../components/StatusChip'
 import { decodeStatus } from '../lib/legislativeStatus'
-import { billTypeExplainer, eventTypeExplainer, statusExplainer as explainStatus, useStateLabels } from '../lib/statusExplainers'
+import { billTypeExplainer, statusExplainer as explainStatus, useStateLabels } from '../lib/statusExplainers'
 import { getNoAnalysisMessage } from '../lib/billDetailCopy'
 import { REGENERATE_PRESERVES_DESCRIPTION } from '../lib/billDetailCopy'
 import { OverflowMenu, type OverflowMenuRow } from '../components/ui/OverflowMenu'
-import { orgPositionLabel, orgRelevanceLabel, DEFAULT_ORG_NOUN } from '../lib/orgNoun'
+import { orgPositionLabel, orgRelevanceLabel, titleCase as upperFirst, DEFAULT_ORG_NOUN } from '../lib/orgNoun'
+import { groupSharedThings } from '../lib/groupShares'
 import { RelevanceChip } from '../components/RelevanceChip'
 import { SessionChip } from '../components/SessionChip'
 import { SentimentBars } from '../components/SentimentBars'
 import { LegislativeHistory, syntheticLatestAction } from '../components/LegislativeHistory'
 import { CommitteeLine, type CommitteeRef, type ReferralRef } from '../components/CommitteeLine'
 import { TabularRow } from '../components/TabularRow'
-import { BillTextPanel } from '../components/BillTextPanel'
+import { BillTextPanel, type DocumentRequest, type PassageRequest } from '../components/BillTextPanel'
+import { linkableClaims, type ClaimSourcesDetail } from '../lib/claimLinks'
 import { OcaBillPanels } from '../oca'
 import { BillTextChip } from '../components/BillTextChip'
 import { PersonalNote } from '../components/PersonalNote'
@@ -36,57 +42,61 @@ import { usePolling } from '../hooks/usePolling'
 import { useSidebarRefresh } from '../context/SidebarRefreshContext'
 import { usePageTitle } from '../hooks/usePageTitle'
 import { color, radius, fontSize, fontWeight, shadow } from '../styles/tokens'
+import { primaryButtonColors } from '../styles/primaryButton'
 import { TAG_CHIP, TAG_CHIP_HOVERED } from '../lib/tagChipStyle'
 import { CARD } from '../lib/cardStyle'
-import { COMPANION_TAG, COUNT_BADGE, displayName, ROLE_CHIP, TOOLTIP_STYLE, sortRoles } from '../lib/chipStyles'
+import { COUNT_BADGE, displayName, ROLE_CHIP, TOOLTIP_STYLE, sortRoles } from '../lib/chipStyles'
 import { SECTION_LABEL, CHROME_TEXT, FONT_SANS, FORM_LABEL } from '../lib/textStyles'
 import { HoverTooltip } from '../components/HoverTooltip'
 import { SubjectsTrigger, SubjectsPanel } from '../components/SubjectsDisclosure'
 import { ChangeHistoryTooltip, type ChangeRecord } from '../components/ChangeHistoryTooltip'
 import { RichTextEditor } from '../components/RichTextEditor'
+import { CommentAttachments } from '../components/CommentAttachments'
+import type { AttachmentLimits, AttachmentSummary } from '../lib/attachments'
 import { CommentContent } from '../components/CommentContent'
 import { CustomFieldsSection, type CustomFieldDef } from '../components/CustomFieldsSection'
 import { useDemo } from '../context/DemoContext'
 import { useNotifications } from '../context/NotificationsContext'
 import { markNotificationsRead } from '../lib/demoReadState'
+import { peekJustCreatedDraft, clearJustCreatedDraft } from '../lib/justCreatedDraft'
 import { relativeTime, absoluteTime } from '../lib/time'
 import { COMMENT_STYLE } from '../../../shared/commentStyle'
 import { billDisplayTitle } from '../../../shared/billTitle'
+import { httpUrl } from '../../../shared/httpUrl'
 import { getScrollContainer } from '../lib/scrollUtils'
 import { billUrl } from '../lib/sessionSlug'
 import { OtherSessionNotice, billChoicesFrom, type BillChoice } from '../components/BillChoices'
 import { todayIso } from '../lib/calendarGrid'
 import { safeDate, safeTime } from '../lib/dates'
 import { ExternalLinkIcon } from '../components/ExternalLinkIcon'
+import { BillNavArrow } from '../components/BillNavArrow'
 import { isEditableTarget } from '../lib/isEditableTarget'
 import { BillPicker, type BillOption } from '../components/BillPicker'
 import { editableFieldBox } from '../lib/editableFieldStyle'
 import { CollapsibleSection } from '../components/CollapsibleSection'
-import { ProviderExtrasList } from '../components/ProviderExtras'
+import { ProviderExtrasList, ExtraMetaItem, ExtraDetailList, ExtraFlagItem, placeExtras } from '../components/ProviderExtras'
 import type { BillExtras } from '../../../shared/providerExtras'
 import { RELATIONSHIP_KINDS, RELATIONSHIP_KIND_LABELS, isRelationshipKind, type RelationshipKind } from '../../../shared/relationshipKinds'
-import type { GroupBill, GroupingEvent, GroupNote } from '../../../shared/companionGroups'
+import type { GroupBill, GroupBillLink, GroupBillTexts, GroupingEvent, GroupNote } from '../../../shared/companionGroups'
+import { PartyBadge } from '../components/PartyBadge'
+import type { FieldChangeEvent } from '../../../shared/teamFields'
 import { GroupWithDialog } from '../components/GroupWithDialog'
 import { splitConfirmText } from '../lib/splitConfirm'
-import { placeGroupingLines } from '../lib/groupingLine'
-import { GroupingLine } from '../components/GroupingLine'
+import { placeThreadLines } from '../lib/groupingLine'
+import { ThreadLineView } from '../components/ActivityLine'
 import { useMultiState } from '../context/ConfigContext'
 import { AnalysisBox, AnalysisProgressChip, DIMMED_WHILE_RUNNING } from '../components/AnalysisBox'
 import { pollForAnalysis, analysisOutcomeMessage, regenerateOutcomeMessage, type AnalysisSnapshot } from '../lib/analysisPoll'
 import { MissingRequiredReason, requiredName, useRequiredSubmit } from '../components/RequiredField'
-import { useCommentsMute, CommentsMuteButton, CommentsMutedNote } from '../components/CommentsMuteToggle'
-
-function PartyBadge({ party }: { party: string }) {
-  const bg = party === 'D' ? color.bgBlueChip : party === 'R' ? color.bgRedPriority : color.surfaceMuted
-  const partyColor = party === 'D' ? color.linkBlue : party === 'R' ? color.textDanger : color.textSlate500
-  // display:inline-block prevents text-decoration from the parent <a> punching through the chip background
-  return <span style={{ marginLeft: 3, fontSize: fontSize.xs, padding: '1px 4px', borderRadius: radius.sm, background: bg, color: partyColor, fontWeight: fontWeight.bold, display: 'inline-block', textDecoration: 'none' }}>{party}</span>
-}
+import { useCommentsMute, CommentsMuteButton } from '../components/CommentsMuteToggle'
+import { billsListPath } from '../../../shared/billFilter'
 
 function SponsorLink({ name, url, party, bold }: { name: string; url: string | null; party: string | null; bold?: boolean }) {
-  if (url) {
+  // Only an http(s) URL becomes a link, whatever central or the instance API sent.
+  const href = httpUrl(url)
+  if (href) {
     return (
-      <a href={url} target="_blank" rel="noreferrer" className="blue-link"
+      <a href={href} target="_blank" rel="noreferrer" className="blue-link"
         style={{ whiteSpace: 'nowrap', fontWeight: bold ? 600 : undefined }}>
         {name}{party && <PartyBadge party={party} />}<ExternalLinkIcon />
       </a>
@@ -381,9 +391,7 @@ function ItemDateText({ item }: { item: { date: string | null; dateResolved?: st
   if (!d) return <>—</>
   if (item.dateInferred) {
     return (
-      <HoverTooltip text="Date parsed from title">
-        <span style={{ borderBottom: `1px dotted ${color.textMuted}`, cursor: 'default' }}>{d}</span>
-      </HoverTooltip>
+      <HoverTooltip text="Date parsed from title" describe>{d}</HoverTooltip>
     )
   }
   return <>{d}</>
@@ -400,10 +408,12 @@ type Comment = {
   content: string
   createdAt: string
   reactions: { emoji: string; count: number; userReacted: boolean; reactors: { name: string; title: string | null }[] }[]
+  /** Files attached to the comment (#465). Absent from a server that predates them. */
+  attachments?: AttachmentSummary[]
 }
 
 type CoSponsor = { name: string; party: string | null; role?: string; district?: string; url: string | null; primary?: boolean }
-type VoteSummaryEntry = { date: string; chamber: string; desc: string; yea: number; nay: number; nv: number; absent: number; passed: number; legislatorVotes?: { personId?: string; name: string; vote: string }[] }
+type VoteSummaryEntry = { date: string; chamber: string; desc: string; yea: number; nay: number; nv: number; absent: number; passed: number; legislatorVotes?: { personId?: string; name: string; vote: string; url?: string | null; party?: string | null }[] }
 // `kind` is what the bill's provider makes of the legislature's label (`type`). A central that predates kinds sends none.
 type RelatedBill = { billId: number; billNumber: string; type: string; kind?: RelationshipKind; route: { id: string; billNumber: string; sessionSlug: string; state: string } | null }
 
@@ -448,7 +458,6 @@ type BillDetailData = {
   voteSummary?: VoteSummaryEntry[]
   subjects: string[]
   relatedBillIds: RelatedBill[]
-  companionBillIds: string[]
   texts: {
     docId: string
     type: string
@@ -498,6 +507,8 @@ type BillDetailData = {
   extras?: BillExtras | null
   customFieldValues: Record<string, { value: string; setBy: string | null; updatedAt: string }>
   matchType: 'keyword' | 'manual' | null
+  /** Central's full message has been applied: the bill's data is here, tracked or not. Absent from an older server. */
+  fullyIngested?: boolean
   newMatchAt?: string | null
   triagedAt?: string | null
   isDraft?: boolean
@@ -509,8 +520,8 @@ type BillDetailData = {
   aiSkipReason: 'pdf_too_large' | null
   /**
    * The bill the analysis shown on this page comes from: this bill's own, or
-   * on a companion group's page a tracked member's (#554), with that bill's
-   * handle and analysis state. Regenerate re-analyzes and polls it (#563).
+   * on a companion group's page its lead's (or while the lead has none, a
+   * tracked member's), with that bill's handle and analysis state. Regenerate re-analyzes and polls it (#563).
    * Absent from a server that predates them, when the bill's own fields apply.
    */
   analysisBillId?: string
@@ -519,6 +530,28 @@ type BillDetailData = {
   analysisAiProcessedAt?: string | null
   analysisAiSkipReason?: 'pdf_too_large' | null
   analysisTextStatus?: 'not_checked' | 'no_texts' | 'available' | 'in_r2' | null
+  /**
+   * The group's lead, when Regenerate analyzes it instead of the bill above:
+   * while the lead has no analysis and the page shows another member's. Null
+   * or absent otherwise.
+   */
+  regenerateBill?: { id: string; externalId: string | null; billNumber: string; aiProcessedAt: string | null; aiSkipReason: string | null; textStatus: string | null } | null
+  /**
+   * The document the shown analysis read (#601), which on a companion's page is
+   * the analyzed member's, with what names and opens it. `analysisLastAiText` is
+   * null when none is recorded or it is no longer listed. Both are absent from a
+   * server that predates them, when `lastAiTextDocId` and `texts` apply.
+   */
+  analysisLastAiTextDocId?: string | null
+  analysisLastAiText?: { docId: string; type: string; date: string; mime: string; stateLink: string | null; altStateLink: string | null } | null
+  /** Whether the instance shows claim links (#570). Absent from a server that predates the setting. */
+  claimLinksEnabled?: boolean
+  /**
+   * The shown analysis's claim sources (#571), pinned to its bill's document,
+   * which on a companion's page can be another member's. Null when there are
+   * none to show, and absent from a server that predates them.
+   */
+  claimSources?: ClaimSourcesDetail | null
   lastAiTextDocId: string | null
   textStatus: 'not_checked' | 'no_texts' | 'available' | 'in_r2' | null
   myVote: 'support' | 'oppose' | 'neutral' | null
@@ -527,8 +560,17 @@ type BillDetailData = {
   myNotes?: GroupNote[]
   /** Where the bill's companion group formed or split, for the lines in its comment thread. */
   groupingEvents?: GroupingEvent[]
+  /** The changes to the team fields of its companion group, for the same thread. Absent from an older server. */
+  fieldEvents?: FieldChangeEvent[]
   /** The bills in its companion group, this one first: just this one in no group. */
-  groupBills?: GroupBill[]
+  groupBills?: GroupBillLink[]
+  /**
+   * Another bill with the same title, in the other chamber of the same session, that an admin can group this
+   * one with (#521). Admins only, and null when there is none. Absent from an older server.
+   */
+  companionSuggestion?: GroupBillLink | null
+  /** Every group bill's text versions, newest first, one entry per bill that has any (#712). Absent from a server that predates it. */
+  groupTexts?: GroupBillTexts[]
   priorityMeta: { setByName: string; updatedAt: string } | null
   position: { position: string; setByName: string; updatedAt: string } | null
   voteCounts: { support: number; oppose: number; neutral: number; total: number }
@@ -537,6 +579,8 @@ type BillDetailData = {
   commentsTotal: number
   /** Whether the signed-in member muted this bill's comments. */
   commentsMuted: boolean
+  /** Whether the member would get reply notifications here: they commented on the bill or its companion group. */
+  commentsParticipant: boolean
 }
 
 /**
@@ -618,8 +662,7 @@ export async function billDetailLoader({ params, request }: LoaderFunctionArgs) 
 function draftSaveStyle(disabled: boolean): React.CSSProperties {
   return {
     fontSize: fontSize.sm, fontWeight: fontWeight.medium, border: 'none', borderRadius: radius.md, padding: '4px 10px',
-    background: disabled ? color.borderDefault : color.accentBlue,
-    color: disabled ? color.textMuted : color.textOnFill,
+    ...primaryButtonColors(disabled),
     cursor: disabled ? 'not-allowed' : 'pointer',
   }
 }
@@ -658,6 +701,7 @@ export function BillDetail() {
   // no spinner. Mirrors applyBillData; the effect re-applies it as the source of truth.
   const [bill, setBill] = useState<BillDetailData | null>(prefetchedBill)
   const [triageDismissed, setTriageDismissed] = useState(false)
+  const [dismissAnnouncement, setDismissAnnouncement] = useState('')
   const [loading, setLoading] = useState(() => prefetchedBill ? false : true)
   const [error, setError] = useState<string | null>(null)
   usePageTitle(bill ? `${bill.state} ${bill.billNumber} — ${billDisplayTitle(bill) || bill.abstract || ''}` : null)
@@ -669,11 +713,42 @@ export function BillDetail() {
   const [voteCounts, setVoteCounts] = useState(prefetchedBill?.voteCounts ?? { support: 0, oppose: 0, neutral: 0, total: 0 })
   const [comments, setComments] = useState<Comment[]>(prefetchedBill?.comments ?? [])
   const commentsMute = useCommentsMute({ billId: bill?.id ?? '', initialMuted: bill?.commentsMuted ?? false })
-  // Lines where the bill's companion group formed or split, placed among the comments by time.
-  const groupingLines = useMemo(() => placeGroupingLines(comments, bill?.groupingEvents ?? []), [comments, bill?.groupingEvents])
+  // Mute shows to a participant, and to anyone already muted (so they can unmute),
+  // while their "Replies on bills you've commented on" setting is on. With it off
+  // they get no replies on any bill, so the control is hidden and any mute they
+  // set earlier stays on file. The page's own just-posted comment counts without
+  // a refetch. Reading the loaded `commentsMuted` rather than the live toggle
+  // keeps the button in place after a non-participant unmutes.
+  const canMuteComments = !!bill && !!user?.emailRepliesEnabled && (bill.commentsParticipant || bill.commentsMuted || commentsMute.muted || comments.some(c => c.userId === user?.id))
+  // The lines of the bill's activity (where its companion group formed or split, and changes to its team
+  // fields), placed among the comments by time, each change its own line.
+  const thread = useMemo(() => placeThreadLines(comments, bill?.groupingEvents ?? [], bill?.fieldEvents ?? []), [comments, bill?.groupingEvents, bill?.fieldEvents])
+  const hasActivity = thread.before.size > 0 || thread.after.length > 0
+  // The badge of a companion bill in this bill's group, saying on hover or focus what was done on it. One for a
+  // bill no longer in the group (split off since the page loaded) has no state or session here, so it links by id.
+  const companionBadge = (billId: string, billNumber: string, describeId: string, sentence: string) => {
+    const posted = (bill?.groupBills ?? []).find(g => g.billId === billId)
+    return (
+      <HoverTooltip text={sentence} placement="top" describe={{ id: describeId, interactive: true }}>
+        <BillBadge
+          mini
+          billNumber={billNumber}
+          state={posted?.state}
+          to={billUrl({ id: billId, state: posted?.state, sessionSlug: posted?.sessionSlug, billNumber })}
+          describedBy={describeId}
+        />
+      </HoverTooltip>
+    )
+  }
   const [openPickerFor, setOpenPickerFor] = useState<string | null>(null)
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null)
-  const [config, setConfig] = useState<{ positionVocabulary: string[]; instanceDomains: Record<string, string>; orgNoun: string } | null>(null)
+  const [config, setConfig] = useState<{ positionVocabulary: string[]; instanceDomains: Record<string, string>; orgNoun: string; attachments: AttachmentLimits | null } | null>(null)
+  const commentAttachments = demoMode ? null : config?.attachments ?? null
+  // How the thread's activity lines word the position, as the position card does, and mark a change made on a companion.
+  const threadPositionLabel = orgPositionLabel(config?.orgNoun ?? DEFAULT_ORG_NOUN).toLowerCase()
+  const renderChangeBill = (e: FieldChangeEvent) => bill && e.billId !== bill.id && e.billNumber
+    ? companionBadge(e.billId, e.billNumber, `change-on-${e.id}`, `This change was made on ${e.billNumber}, a companion bill in this group.`)
+    : null
   const multiState = useMultiState()
   // What the bill's status means, from its state's provider vocabulary, shown
   // on hover over the status chip.
@@ -716,6 +791,20 @@ export function BillDetail() {
   const [hoveredTag, setHoveredTag] = useState<string | null>(null)
   const [showBillText, setShowBillText] = useState(false)
   const [requestedDocId, setRequestedDocId] = useState<string | null>(null)
+  // A claim's passage to show in the bill text panel (#571), a new key for each request.
+  const [passage, setPassage] = useState<PassageRequest | null>(null)
+  const passageKeyRef = useRef(0)
+  const billIdForPassage = bill?.id
+  // Another bill's document to open, for the "based on text" link on a companion's page (#601).
+  const [docRequest, setDocRequest] = useState<DocumentRequest | null>(null)
+  // The bill a request was made on. The panel mounts for the next bill before the
+  // layout effect below clears these, and a request it sees on that first render
+  // would open the previous bill's document there (#734), so a request counts
+  // only on the bill it was made on.
+  const [requestBillId, setRequestBillId] = useState<string | undefined>(undefined)
+  useLayoutEffect(() => { setPassage(null); setDocRequest(null) }, [billIdForPassage])
+  const shownPassage = requestBillId === billIdForPassage ? passage : null
+  const shownDocRequest = requestBillId === billIdForPassage ? docRequest : null
   const [showHearings, setShowHearings] = useState(false)
   const [changeLog, setChangeLog] = useState<ChangeRecord[]>([])
   const [subjectsOpen, setSubjectsOpen] = useState(false)
@@ -742,29 +831,56 @@ export function BillDetail() {
   // button's other disabled reasons.
   const linkGate = useRequiredSubmit({ missingRequired: !linkTarget, blocked: linking || demoLocked })
   const [deletingDraft, setDeletingDraft] = useState(false)
+  // Why Discard draft (the button shown right after a draft is created) failed.
+  const [discardError, setDiscardError] = useState<string | null>(null)
+  // The overflow menu's delete failing, for example the server refusing a draft that has engagement (409).
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  // Whether this bill's page was reached straight from "Add draft bill" (the
+  // marker in lib/justCreatedDraft.ts), read on arrival for this bill's id and
+  // held in component state, so it survives the in-page number, year, and state
+  // edits that navigate with replace, and a different bill's page starts without
+  // it. The read happens during render (peek has no side effect, so StrictMode's
+  // second render sees the same answer); the marker is removed in an effect
+  // below, so a reload, back/forward, or a link finds none.
+  const [arrival, setArrival] = useState<{ id: string | null; justCreated: boolean }>(
+    () => ({ id: prefetchedBill?.id ?? null, justCreated: !!prefetchedBill?.id && peekJustCreatedDraft(prefetchedBill.id) }),
+  )
+  const arrivalId = bill?.id ?? null
+  if (arrivalId !== null && arrival.id !== arrivalId) {
+    setArrival({ id: arrivalId, justCreated: peekJustCreatedDraft(arrivalId) })
+  }
+  const justCreated = arrival.id === arrivalId && arrival.justCreated
+  useEffect(() => {
+    if (arrivalId) clearJustCreatedDraft(arrivalId)
+  }, [arrivalId])
+  const discardInFlight = useRef(false)
   // The page's toast for overflow-menu actions: Copy link's feedback, and a failed split.
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null)
   // Grouping by hand, from the overflow menu (admins).
   const [groupWithOpen, setGroupWithOpen] = useState(false)
+  const [suggestionBusy, setSuggestionBusy] = useState(false)
   const [splitting, setSplitting] = useState(false)
   const [filedOptions, setFiledOptions] = useState<BillOption[]>([])
   const [editingDraftField, setEditingDraftField] = useState<'summary' | 'text' | 'title' | 'sponsor' | 'billNumber' | 'year' | 'state' | null>(null)
   const [hoveredDraftField, setHoveredDraftField] = useState<'summary' | 'text' | 'title' | 'sponsor' | 'billNumber' | 'year' | 'state' | null>(null)
   const [draftFieldError, setDraftFieldError] = useState<string | null>(null)
-  // The authoritative single-state signal, from GET /bills/draft-defaults —
-  // the same one DraftBills.tsx uses, for the same reason: c.env.STATE when
-  // the tenant is configured for one state, null when it tracks many. `null`
-  // (including before the call resolves, or if it fails) offers the State
-  // editor; the client only ever hides it on positive evidence of a configured
-  // state. Deliberately NOT derived from /bills/facets — facets only reports
-  // states that already have bills, so it cannot tell a single-state tenant
-  // from a multi-state one whose bills happen to sit in one state.
+  // The authoritative single-state signal, from GET /bills/draft-defaults:
+  // c.env.STATE when the tenant is configured for one state, null when it
+  // tracks many. `null` (including before the call resolves, or if it fails)
+  // offers the State editor; the client only ever hides it on positive
+  // evidence of a configured state. Deliberately NOT derived from
+  // /bills/facets — facets only reports states that already have bills, so it
+  // cannot tell a single-state tenant from a multi-state one whose bills
+  // happen to sit in one state. The real guarantee that a draft never ends up
+  // with state='' is server-side (POST /bills/draft 400s on an empty resolved
+  // state); this editor is the convenience that lets an admin satisfy it.
   const [tenantState, setTenantState] = useState<string | null>(null)
   // Option list for the State Picker only — NOT used to decide whether to
-  // show the editor (that's tenantState above). Same facets-derived list and
-  // free-text fallback as the create form (DraftBills.tsx): `null` means
-  // unknown (still loading, or the call failed); `statesResolved`
-  // distinguishes that from a genuine empty list.
+  // show the editor (that's tenantState above). Built from GET /bills/facets,
+  // which only lists states that already have bills, so a tenant with none yet
+  // (or a facets outage) gets a free-text input instead of a select it cannot
+  // satisfy. `null` means unknown (still loading, or the call failed);
+  // `statesResolved` distinguishes that from a genuine empty list.
   const [knownStates, setKnownStates] = useState<string[] | null>(null)
   const [statesResolved, setStatesResolved] = useState(false)
   // Pending edit values for the year/state Pickers, seeded from the bill's
@@ -848,6 +964,9 @@ export function BillDetail() {
     return () => cancelAnimationFrame(rafId)
   }, [location.hash, comments.length])
 
+  // Whether the bill has extras for the "Additional information" fold-out: those placed in `panel`.
+  const hasPanelExtras = placeExtras(bill?.extras?.fields ?? []).panel.length > 0
+
   // Scroll to and flash a section when the URL hash is #section-{name} or open text panel for #text-{docId}
   useEffect(() => {
     const hash = location.hash
@@ -873,7 +992,8 @@ export function BillDetail() {
     if (sectionId === 'section-amendments') setShowAmendments(true)
     if (sectionId === 'section-documents') setShowDocuments(true)
     if (sectionId === 'section-hearings') setShowHearings(true)
-    if (sectionId === 'section-extras') setShowExtras(true)
+    // Only a bill with panel extras has the fold-out. Its others show elsewhere.
+    if (sectionId === 'section-extras' && hasPanelExtras) setShowExtras(true)
 
     // setTimeout gives React one extra tick to flush collapsible expansion before measuring
     const timerId = setTimeout(() => {
@@ -892,7 +1012,7 @@ export function BillDetail() {
       }, 1500)
     }, 0)
     return () => clearTimeout(timerId)
-  }, [location.hash, location.key, bill?.id])
+  }, [location.hash, location.key, bill?.id, hasPanelExtras])
 
   // Value-stable key: refresh() hands back a new array every time (a fresh parse
   // of the response, NotificationsContext.tsx), so depending on `notifications` itself
@@ -972,6 +1092,11 @@ export function BillDetail() {
     }
   }, [apiPath, applyBillData])
 
+  // The latest refetch, for a run that ends after the page moved on and so
+  // would hold the refetch of the page it started on.
+  const refetchBillRef = useRef(refetchBill)
+  useEffect(() => { refetchBillRef.current = refetchBill }, [refetchBill])
+
   usePolling(fetchBillData, 15_000)
 
   useEffect(() => {
@@ -984,8 +1109,8 @@ export function BillDetail() {
     applyBillData(prefetchedBill)
     const today = todayIso()
     if ((prefetchedBill.calendar ?? []).some(e => e.date >= today)) setShowHearings(true)
-    apiFetch<{ associationName: string; positionVocabulary: string[]; instanceDomains: Record<string, string>; orgNoun: string }>('/config')
-      .then(cfg => setConfig({ positionVocabulary: cfg.positionVocabulary, instanceDomains: cfg.instanceDomains ?? {}, orgNoun: cfg.orgNoun }))
+    apiFetch<{ associationName: string; positionVocabulary: string[]; instanceDomains: Record<string, string>; orgNoun: string; attachments?: AttachmentLimits | null }>('/config')
+      .then(cfg => setConfig({ positionVocabulary: cfg.positionVocabulary, instanceDomains: cfg.instanceDomains ?? {}, orgNoun: cfg.orgNoun, attachments: cfg.attachments ?? null }))
       .catch(() => {})
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [billKey])
@@ -1118,11 +1243,11 @@ export function BillDetail() {
     refreshSidebar()
   }
 
-  async function handlePostComment(content: string) {
-    if (!bill || !content.trim()) return
-    const result = await apiFetch<{ id: string; content: string; createdAt: string }>(`/bills/${bill.id}/comments`, {
+  async function handlePostComment(content: string, attachmentIds: string[] = []) {
+    if (!bill || (!content.trim() && attachmentIds.length === 0)) return
+    const result = await apiFetch<{ id: string; content: string; createdAt: string; attachments?: AttachmentSummary[] }>(`/bills/${bill.id}/comments`, {
       method: 'POST',
-      body: JSON.stringify({ content }),
+      body: JSON.stringify(attachmentIds.length > 0 ? { content, attachmentIds } : { content }),
     })
     setComments((prev) => [...prev, {
       id: result.id,
@@ -1132,6 +1257,7 @@ export function BillDetail() {
       content: result.content,
       createdAt: result.createdAt,
       reactions: [],
+      attachments: result.attachments ?? [],
     }])
     setNewCommentIds((prev) => new Set([...prev, result.id]))
   }
@@ -1182,7 +1308,8 @@ export function BillDetail() {
   }
 
   async function handleSaveEdit(commentId: string, content: string) {
-    if (!content.trim()) return
+    // Text can be cleared from a comment that still has files.
+    if (!content.trim() && !comments.find((c) => c.id === commentId)?.attachments?.length) return
     const newContent = content
     await apiFetch(`/comments/${commentId}`, {
       method: 'PATCH',
@@ -1239,6 +1366,73 @@ export function BillDetail() {
     }
   }
 
+  // Discard draft: the one-click undo for a draft just created from the bills
+  // page. No confirm while nothing has been added to the draft. If something has
+  // (the server refuses with 409), it asks first, naming what goes with the draft,
+  // and only then deletes it with its engagement. The overflow menu's "Delete
+  // this draft bill" always confirms.
+  async function handleDiscardDraft() {
+    // A ref, not `deletingDraft`: a second click can land before the first one's
+    // re-render disables the button (as AddDraftButton's inFlight guard says).
+    if (!bill || discardInFlight.current || deletingDraft || demoLocked) return
+    discardInFlight.current = true
+    setDeletingDraft(true)
+    setDiscardError(null)
+    const stop = () => {
+      discardInFlight.current = false
+      setDeletingDraft(false)
+    }
+    try {
+      try {
+        await apiFetch(`/bills/${bill.id}`, { method: 'DELETE' })
+      } catch (err) {
+        if (!(err instanceof ApiError && err.status === 409)) throw err
+        const preview = await fetchDraftDeletePreview({ ids: [bill.id] })
+        if (!window.confirm(singleDraftDeleteConfirm(preview))) {
+          stop()
+          return
+        }
+        // Only a confirm that named the work lets the server delete it, as in the overflow menu.
+        try {
+          await apiFetch(`/bills/${bill.id}${hasEngagement(preview) ? '?includeEngaged=1' : ''}`, { method: 'DELETE' })
+        } catch (second) {
+          throw refusedAfterPreview(second)
+        }
+      }
+      navigate('/bills')
+    } catch (err) {
+      setDiscardError(err instanceof ApiError ? err.message : 'Failed to discard draft.')
+      stop()
+    }
+  }
+
+  // A 409 after a preview means the draft gained work since: say so, and that trying again shows what goes with it.
+  function refusedAfterPreview(err: unknown): unknown {
+    return err instanceof ApiError && err.status === 409 ? new ApiError(409, GAINED_ENGAGEMENT) : err
+  }
+
+  // The overflow menu's "Delete this draft bill": asks the server what the draft
+  // holds, confirms with that, and sends includeEngaged only when the confirm
+  // named work that goes with it.
+  async function handleDeleteDraft() {
+    if (!bill || deletingDraft || demoLocked) return
+    setDeletingDraft(true)
+    setDeleteError(null)
+    try {
+      const preview = await fetchDraftDeletePreview({ ids: [bill.id] })
+      if (!window.confirm(singleDraftDeleteConfirm(preview))) {
+        setDeletingDraft(false)
+        return
+      }
+      await apiFetch(`/bills/${bill.id}${hasEngagement(preview) ? '?includeEngaged=1' : ''}`, { method: 'DELETE' })
+        .catch((err: unknown) => { throw refusedAfterPreview(err) })
+      navigate('/bills')
+    } catch (err) {
+      setDeleteError(err instanceof ApiError ? err.message : 'Failed to delete draft.')
+      setDeletingDraft(false)
+    }
+  }
+
   async function handleLinkDraft() {
     if (!bill || !linkTarget || demoLocked) return
     if (!window.confirm('Link this draft to the filed bill? The draft will be retired and all votes, positions, comments, notes, custom fields, and calendar events will be moved to the filed bill. This cannot be undone.')) return
@@ -1274,18 +1468,23 @@ export function BillDetail() {
     // The guard reads this page's own bill, so it applies only when this page's
     // own bill is the one that would be re-analyzed. On a pulled companion's
     // page that is another bill, one with an analysis to show.
-    const targetId = bill.analysisBillId ?? bill.id
+    // While the group's lead has no analysis, Regenerate analyzes the lead
+    // (as a group analysis if it is untracked), never promoting it, and the
+    // run lands once the lead's analysis is the one the page shows.
+    const lead = bill.regenerateBill ?? null
+    const targetId = lead?.id ?? bill.analysisBillId ?? bill.id
     const other = targetId !== bill.id
-    if (!other && bill.matchType === null && !bill.aiProcessedAt) return handlePromote()
+    if (!lead && !other && bill.matchType === null && !bill.aiProcessedAt) return handlePromote()
     // Regenerate re-analyzes the bill whose analysis this page shows (#563):
-    // its own, or on a pulled companion's page the tracked bill's (#554),
+    // its own, or on a companion group's page the lead's (or the member's
+    // shown while the lead has none),
     // whose analysis time is what this run moves. Without the server's
     // analysis fields, that is this bill.
     const hasAnalysisBill = bill.analysisBillId != null
-    const targetExternalId = other ? bill.analysisBillExternalId : bill.externalId
-    const targetNumber = other ? (bill.analysisBillNumber ?? null) : bill.billNumber
-    const prevProcessedAt = hasAnalysisBill ? (bill.analysisAiProcessedAt ?? null) : bill.aiProcessedAt
-    const prevSkipReason = hasAnalysisBill ? (bill.analysisAiSkipReason ?? null) : bill.aiSkipReason
+    const targetExternalId = lead ? lead.externalId : other ? bill.analysisBillExternalId : bill.externalId
+    const targetNumber = lead ? lead.billNumber : other ? (bill.analysisBillNumber ?? null) : bill.billNumber
+    const prevProcessedAt = lead ? lead.aiProcessedAt : hasAnalysisBill ? (bill.analysisAiProcessedAt ?? null) : bill.aiProcessedAt
+    const prevSkipReason = lead ? lead.aiSkipReason : hasAnalysisBill ? (bill.analysisAiSkipReason ?? null) : bill.aiSkipReason
     const run = ++regenerateRun.current
     setRegenerateError(null)
     setRegenerateNotice(null)
@@ -1308,6 +1507,10 @@ export function BillDetail() {
           const r = await fetch(`/api/bills/${bill.id}`, { credentials: 'include' })
           if (!r.ok) return null
           const d = await r.json() as BillDetailData
+          // Still waiting on the lead: its own fields, named as the target.
+          if (d.regenerateBill && d.regenerateBill.id === targetId) {
+            return { aiProcessedAt: d.regenerateBill.aiProcessedAt, aiSkipReason: d.regenerateBill.aiSkipReason, textStatus: d.regenerateBill.textStatus, analysisBillId: targetId }
+          }
           if (d.analysisBillId == null) return d
           return {
             aiProcessedAt: d.analysisAiProcessedAt ?? null,
@@ -1321,7 +1524,14 @@ export function BillDetail() {
         expectedBillId: targetId,
       })
       // Ends only the run that is still this page's: not one the admin has since left.
-      if (regenerateRun.current !== run) return
+      // But the analysis it produced is the analyzed bill's, so a page the admin
+      // moved to that shows that analysis (the bill's own, or a companion's of
+      // it) reloads to pick it up (#601), saying nothing about the run.
+      if (regenerateRun.current !== run) {
+        const now = billRef.current
+        if (outcome !== 'timeout' && now && (now.analysisBillId ?? now.id) === targetId) void refetchBillRef.current()
+        return
+      }
       setRegenerating(false)
       setRegenerateOtherBill(null)
       const message = regenerateOutcomeMessage(outcome, { billNumber: targetNumber, other })
@@ -1353,12 +1563,58 @@ export function BillDetail() {
   // cannot appear for a bill the menu won't offer the action on.
   const hasAnalysis = !!bill.tenantSummary || bill.tags.length > 0 || bill.relevanceScore != null
 
-  // Separators between collapsible sections — no border above the first one
-  const hasBillText = bill.texts.length > 0 && !!bill.textR2Key
+  // Claim links (#571): the shown analysis's resolved claims, each linked to its
+  // passage. The analysis's bill can be another member of the group, whose
+  // document the links open, never this bill's own text. When the analysis is
+  // this bill's, its pinned document must still be one of its texts (the server
+  // checked another member's).
+  const claimSources = bill.claimSources ?? null
+  const claimLinks = claimSources && (claimSources.billId !== bill.id || bill.texts.some(t => t.docId === claimSources.document.docId))
+    ? linkableClaims(claimSources, bill.claimLinksEnabled)
+    : []
+  // A summary from another member of the group says whose it is, links or not (#560).
+  const borrowedFrom = bill.analysisBillId && bill.analysisBillId !== bill.id && bill.analysisBillNumber
+    ? { billId: bill.analysisBillId, billNumber: bill.analysisBillNumber }
+    : null
+  // The document the shown analysis read (#601). With the server's analysis
+  // fields it is that bill's, which on a companion's page is not in this bill's
+  // text list, so opening it asks the panel for another bill's document. A
+  // server that predates them describes only this bill's own.
+  const analysisText = bill.analysisLastAiText !== undefined
+    ? bill.analysisLastAiText
+    : (bill.texts.find(t => t.docId === bill.lastAiTextDocId) ?? null)
+  const analysisTextIsOwn = !bill.analysisBillId || bill.analysisBillId === bill.id
+  // With the group's texts the analysis's document is a version in the list, so it is selected there (#712).
+  const analysisTextInGroupTexts = !!analysisText && !!bill.groupTexts?.some(g => g.texts.some(t => t.docId === analysisText.docId))
+  const openClaim = (index: number, opener?: HTMLElement) => {
+    const link = claimLinks.find(c => c.index === index)
+    if (!link || !claimSources) return
+    setShowBillText(true)
+    setRequestBillId(bill.id)
+    const base = {
+      key: ++passageKeyRef.current,
+      billId: claimSources.billId,
+      billNumber: claimSources.billId === bill.id ? bill.billNumber : (bill.analysisBillNumber ?? null),
+      document: claimSources.document,
+    }
+    // A PDF claim opens its page and shows its quote (#572), an HTML claim its highlighted passage (#571).
+    setPassage('quote' in link
+      ? { ...base, quote: link.quote, page: link.page, opener: opener ?? null, ...(link.rest ? { rest: link.rest } : {}) }
+      : { ...base, matched: link.matched, quoteAt: link.quoteAt, ...(link.rest ? { rest: link.rest } : {}) })
+  }
+
+  // Separators between collapsible sections — no border above the first one.
+  // A claim's passage opens the bill text even where this bill has none of its own.
+  const groupVersionCount = (bill.groupTexts ?? []).reduce((n, g) => n + g.texts.length, 0)
+  const hasBillText = (bill.texts.length > 0 && !!bill.textR2Key) || groupVersionCount > 0 || shownPassage !== null || shownDocRequest !== null
   const hasAmendments = (bill.amendments ?? []).filter(a => a.url || a.stateLink).length > 0
   const hasActions = !!bill.lastAction
   const hasHearings = (bill.calendar ?? []).length > 0
   const hasDocuments = (bill.supplements ?? []).filter(s => s.stateLink || s.url).length > 0
+  // An untriaged new match is an amber state of the priority control. This page
+  // keeps its own priority and dismissed state, so it can show the change at once.
+  const isNewMatch = isUntriagedNewMatch({ ...bill, priority }) && !triageDismissed
+  const headerCompanions = (bill.groupBills ?? []).filter(g => g.billId !== bill.id)
   return (
     <div className="bill-detail-outer" style={{ padding: '24px 32px', maxWidth: 1100, margin: '0 auto' }}>
       <style>{`
@@ -1369,39 +1625,71 @@ export function BillDetail() {
         .comment-new { animation: slideInComment 0.38s cubic-bezier(0.16, 1, 0.3, 1) both; }
       `}</style>
 
+      {/* The overflow menu's "Delete this draft bill" failing, such as the server refusing a draft with engagement. */}
+      {isAdmin && bill.isDraft && deleteError && (
+        <div role="alert" style={{ marginBottom: 12, overflowWrap: 'anywhere', fontSize: fontSize.sm, color: color.textErrorRed }}>{deleteError}</div>
+      )}
+
+      {/* Only on arrival from "Add draft bill": the marker is read once on arrival
+          (lib/justCreatedDraft.ts), so a reload, a link, or any other visit to
+          the draft never shows this. */}
+      {isAdmin && bill.isDraft && justCreated && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 12px', marginBottom: 12 }}>
+          <button
+            type="button"
+            onClick={handleDiscardDraft}
+            disabled={deletingDraft || demoLocked}
+            title={demoLocked ? 'Locked in demo mode' : undefined}
+            aria-busy={deletingDraft || undefined}
+            style={{
+              fontFamily: 'inherit', fontSize: fontSize.sm, fontWeight: fontWeight.medium,
+              padding: '4px 6px', border: 'none', background: 'none', color: color.textSecondary,
+              cursor: demoLocked ? 'not-allowed' : deletingDraft ? 'default' : 'pointer',
+              opacity: demoLocked ? 0.6 : 1,
+            }}
+          >
+            Discard draft
+          </button>
+          {discardError && (
+            <span role="alert" style={{ minWidth: 0, overflowWrap: 'anywhere', fontSize: fontSize.sm, color: color.textErrorRed }}>{discardError}</span>
+          )}
+        </div>
+      )}
 
       {/* Static info block */}
       <div style={{ ...CARD, padding: '20px 24px' }}>
+        <DismissAnnouncement message={dismissAnnouncement} />
 
         {/* Chip strip */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: (priorityMeta || (isAdmin && bill.matchType === 'keyword' && !!bill.newMatchAt && !priority && !bill.triagedAt && !triageDismissed)) ? 20 : 12 }}>
-          <BillBadge
-            billNumber={bill.billNumber}
-            state={bill.state}
-            isDraft={bill.isDraft}
-            stateUrl={(() => {
-              if (!config || !multiState) return undefined
-              const isHub = window.location.hostname === 'staging.example.com' || window.location.hostname === 'staging.example.org' || window.location.hostname === 'localhost'
-              const instanceDomain = config.instanceDomains[bill.state]
-              if (!isHub || !instanceDomain) return undefined
-              return `https://${instanceDomain}${window.location.pathname}`
-            })()}
-          />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: priorityMeta ? 20 : headerCompanions.length > 0 ? 8 : 12 }}>
+          {/* This page's bill alone: the status, sponsors, and referrals here are its own.
+              The group's other bills are on the "Grouped with" line below. */}
+          <div data-testid="bill-header-badge" style={{ display: 'contents' }}>
+            <BillBadge
+              billNumber={bill.billNumber}
+              state={bill.state}
+              isDraft={bill.isDraft}
+              stateUrl={(() => {
+                if (!config || !multiState) return undefined
+                const isHub = window.location.hostname === 'staging.example.com' || window.location.hostname === 'staging.example.org' || window.location.hostname === 'localhost'
+                const instanceDomain = config.instanceDomains[bill.state]
+                if (!isHub || !instanceDomain) return undefined
+                return `https://${instanceDomain}${window.location.pathname}`
+              })()}
+            />
+          </div>
           {bill.isDraft ? <DraftChip /> : (() => {
-            const chip = <StatusChip status={decodeStatus(bill.status)} describedBy={statusExplainer ? 'bill-status-explainer' : undefined} onClick={() => navigate(`/bills?status=${encodeURIComponent(bill.status)}`)} />
+            const chip = <StatusChip status={decodeStatus(bill.status)} describedBy={statusExplainer ? 'bill-status-explainer' : undefined} onClick={() => navigate(billsListPath({ status: [bill.status] }))} />
             // The chip is already a focusable button, so HoverTooltip adds no tab stop; the chip points at its hidden copy.
             return <HoverTooltip text={statusExplainer} describe={{ id: 'bill-status-explainer', interactive: true }}>{chip}</HoverTooltip>
           })()}
           {bill.session && (
             <SessionChip
               session={bill.session}
-              onClick={() => {
-                if (bill.yearStart) {
-                  navigate(`/bills?year=${bill.yearStart}${bill.state ? `&state=${bill.state}` : ''}`)
-                } else {
-                  navigate(`/bills?session=${encodeURIComponent(bill.session)}`)
-                }
-              }}
+              // The Bills page filters by year only. Without a usable yearStart (null or 0) the chip is plain text.
+              onClick={bill.yearStart
+                ? () => navigate(billsListPath({ year: [String(bill.yearStart)], ...(bill.state ? { state: [bill.state] } : {}) }))
+                : undefined}
             />
           )}
           <ChangeHistoryTooltip
@@ -1413,32 +1701,24 @@ export function BillDetail() {
             {isAdmin
               ? (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', position: 'relative' }}>
-                  {bill.matchType === 'keyword' && !!bill.newMatchAt && !priority && !bill.triagedAt && !triageDismissed
-                    ? (
-                      <HoverTooltip text="New keyword match — set a priority or dismiss">
-                        <NewMatchTriageControl
-                          billId={bill.id}
-                          current={priority}
-                          onChange={(p, result) => {
-                            setPriority(p)
-                            setPriorityMeta(p ? { setByName: displayName(user!), updatedAt: new Date().toISOString() } : null)
-                            refreshSidebar()
-                            if (result?.promoted) startAnalyzingPoll()
-                          }}
-                          onDismiss={() => { setTriageDismissed(true); refreshSidebar() }}
-                        />
-                      </HoverTooltip>
+                  {(() => {
+                    const control = (
+                      <CompactPrioritySelect
+                        billId={bill.id}
+                        current={priority}
+                        onChange={(p, result) => {
+                          setPriority(p)
+                          setPriorityMeta(p ? { setByName: displayName(user!), updatedAt: new Date().toISOString() } : null)
+                          refreshSidebar()
+                          if (result?.promoted) startAnalyzingPoll()
+                        }}
+                        newMatch={isNewMatch}
+                        onDismiss={() => { setTriageDismissed(true); setDismissAnnouncement('Dismissed'); refreshSidebar() }}
+                      />
                     )
-                    : (
-                  <HoverTooltip text="This bill's priority level">
-                    <CompactPrioritySelect billId={bill.id} current={priority} onChange={(p, result) => {
-                      setPriority(p)
-                      setPriorityMeta(p ? { setByName: displayName(user!), updatedAt: new Date().toISOString() } : null)
-                      refreshSidebar()
-                      if (result?.promoted) startAnalyzingPoll()
-                    }} placeholder="Priority not set" />
-                  </HoverTooltip>
-                    )}
+                    // Only a new match's control needs a word: its label alone does not say what to do.
+                    return isNewMatch ? <HoverTooltip text="New keyword match — set a priority or dismiss">{control}</HoverTooltip> : control
+                  })()}
                   {priorityMeta && (
                     <div title={absoluteTime(priorityMeta.updatedAt)} style={{ ...CHROME_TEXT, marginTop: 3, cursor: 'default', position: 'absolute', top: '100%', left: 0, whiteSpace: 'nowrap' }}>
                       Set by {priorityMeta.setByName} · {relativeTime(priorityMeta.updatedAt)}
@@ -1449,9 +1729,7 @@ export function BillDetail() {
               : priority
                 ? (
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', position: 'relative' }}>
-                    <HoverTooltip text="This bill's priority level">
-                      <PriorityBadge priority={priority} onClick={() => navigate(`/bills?priority=${priority}`)} />
-                    </HoverTooltip>
+                    <PriorityBadge priority={priority} onClick={() => navigate(billsListPath({ priority: [priority] }))} />
                     {priorityMeta && (
                       <div title={absoluteTime(priorityMeta.updatedAt)} style={{ ...CHROME_TEXT, marginTop: 3, cursor: 'default', position: 'absolute', top: '100%', left: 0, whiteSpace: 'nowrap' }}>
                         Set by {priorityMeta.setByName} · {relativeTime(priorityMeta.updatedAt)}
@@ -1459,7 +1737,7 @@ export function BillDetail() {
                     )}
                   </div>
                 )
-                : null
+                : isNewMatch ? <NewMatchChip /> : null
             }
             {(prevPath || nextPath) && (
               <>
@@ -1467,14 +1745,16 @@ export function BillDetail() {
                   onClick={() => prevPath && navigateToBill(prevPath, { billPaths: navState!.billPaths!, currentIndex: navState!.currentIndex! - 1 })}
                   disabled={!prevPath || billNavPending}
                   style={{ fontSize: fontSize.sm, color: prevPath ? color.linkBlue : color.borderStrong, background: 'none', border: 'none', cursor: prevPath && !billNavPending ? 'pointer' : 'default', padding: '2px 4px' }}
-                  title="Previous bill (←)"
-                >←</button>
+                  title="Previous bill"
+                  aria-label="Previous bill"
+                ><BillNavArrow direction="up" /></button>
                 <button
                   onClick={() => nextPath && navigateToBill(nextPath, { billPaths: navState!.billPaths!, currentIndex: navState!.currentIndex! + 1 })}
                   disabled={!nextPath || billNavPending}
                   style={{ fontSize: fontSize.sm, color: nextPath ? color.linkBlue : color.borderStrong, background: 'none', border: 'none', cursor: nextPath && !billNavPending ? 'pointer' : 'default', padding: '2px 4px' }}
-                  title="Next bill (→)"
-                >→</button>
+                  title="Next bill"
+                  aria-label="Next bill"
+                ><BillNavArrow direction="down" /></button>
               </>
             )}
             <OverflowMenu rows={(() => {
@@ -1499,7 +1779,7 @@ export function BillDetail() {
               // that has none sent an un-promoted stub down the reprocess path,
               // where the queue consumer skips AI for want of bill text — so it
               // spun for three minutes and produced nothing. Those bills get the
-              // in-page "Enable full analysis" button instead, which promotes
+              // in-page "Run analysis" button instead, which promotes
               // via central and fetches the text first.
               // Drafts are excluded too: a draft can carry a hand-written
               // tenantSummary, but it has no externalId, so reprocess-bill
@@ -1521,7 +1801,7 @@ export function BillDetail() {
                 menuRows.push({
                   key: 'group-with',
                   label: 'Group with…',
-                  description: 'Share one discussion and the team\'s values with an identical bill.',
+                  description: `Share ${groupSharedThings(config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0)} with an identical bill.`,
                   disabled: demoLocked,
                   onSelect: () => setGroupWithOpen(true),
                 })
@@ -1530,7 +1810,7 @@ export function BillDetail() {
                 menuRows.push({
                   key: 'split',
                   label: 'Split from group',
-                  description: `Give ${bill.billNumber} back its own discussion and the team's values.`,
+                  description: `Give ${bill.billNumber} back its own ${groupSharedThings(config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0)}.`,
                   disabled: splitting || demoLocked,
                   onSelect: async () => {
                     if (splitting || demoLocked) return
@@ -1539,7 +1819,7 @@ export function BillDetail() {
                       // The server says what the split would leave, so the
                       // confirmation can name bills that would come apart.
                       const preview = await apiFetch<{ billNumber: string; parts: GroupBill[][] }>(`/bills/${bill.id}/split-preview`)
-                      if (!window.confirm(splitConfirmText(bill.billNumber, preview.parts.map(part => part.map(b => b.billNumber))))) return
+                      if (!window.confirm(splitConfirmText(bill.billNumber, preview.parts.map(part => part.map(b => b.billNumber)), config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0))) return
                       await apiFetch(`/bills/${bill.id}/split`, { method: 'POST' })
                       await refetchBill()
                     } catch {
@@ -1555,26 +1835,34 @@ export function BillDetail() {
                 menuRows.push({
                   key: 'delete-draft',
                   label: 'Delete this draft bill',
-                  description: 'Permanently removes it and its votes, positions, comments, and notes.',
+                  description: 'Permanently removes this draft. Any votes, comments, notes, and positions on it go too. To keep them, link it to its filed bill instead.',
                   tone: 'danger',
                   disabled: deletingDraft || demoLocked,
-                  onSelect: async () => {
-                    if (deletingDraft || demoLocked) return
-                    if (!window.confirm('Delete this draft bill? This permanently removes it and its votes, positions, comments, and notes.')) return
-                    setDeletingDraft(true)
-                    try {
-                      await apiFetch(`/bills/${bill.id}`, { method: 'DELETE' })
-                      navigate('/bills')
-                    } catch {
-                      setDeletingDraft(false)
-                    }
-                  },
+                  onSelect: handleDeleteDraft,
                 })
               }
               return menuRows
             })()} />
           </span>
         </div>
+
+        {/* The group's other bills, each with its own status, in the order the group lists them. */}
+        {headerCompanions.length > 0 && (
+          <div data-testid="grouped-with-line" role="group" aria-labelledby="grouped-with-label" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px 12px', margin: '0 0 12px', fontSize: fontSize.sm, color: color.textMuted }}>
+            <span id="grouped-with-label">Grouped with</span>
+            {headerCompanions.map(g => (
+              <span key={g.billId} data-testid="grouped-with-member" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                <BillBadge
+                  mini
+                  billNumber={g.billNumber}
+                  state={g.state}
+                  to={billUrl({ id: g.billId, state: g.state, sessionSlug: g.sessionSlug, billNumber: g.billNumber })}
+                />
+                <StatusChip mini capWidth status={decodeStatus(g.status)} />
+              </span>
+            ))}
+          </div>
+        )}
 
         {bill.isDraft && (
           <div style={{ background: color.bgAmberPriority, border: `1px solid ${color.borderAmber}`, borderRadius: radius.md, padding: '10px 14px', marginBottom: 10, fontSize: fontSize.sm, color: color.textAmberWarning }}>
@@ -1601,11 +1889,9 @@ export function BillDetail() {
                     type="button"
                     {...linkGate.buttonProps(handleLinkDraft)}
                     style={{
-                      background: linkGate.disabled ? color.accentBlueMuted : color.accentBlue,
-                      color: color.textOnFill, border: 'none', borderRadius: radius.md,
+                      ...primaryButtonColors(linkGate.disabled), border: 'none', borderRadius: radius.md,
                       padding: '8px 14px', cursor: linkGate.disabled ? 'not-allowed' : 'pointer',
                       fontSize: fontSize.sm, fontWeight: fontWeight.medium, lineHeight: 1.4, whiteSpace: 'nowrap',
-                      opacity: demoLocked ? 0.5 : 1,
                     }}
                   >
                     {linking ? 'Linking…' : 'Link & merge into filed bill'}
@@ -1660,7 +1946,7 @@ export function BillDetail() {
                   outline: 'none',
                 }}
               />
-              <button type="submit" style={{ fontSize: fontSize.sm, fontWeight: fontWeight.medium, background: color.accentBlue, color: color.textOnFill, border: 'none', borderRadius: radius.md, padding: '6px 12px', cursor: 'pointer' }}>Save</button>
+              <button type="submit" style={{ fontSize: fontSize.sm, fontWeight: fontWeight.medium, ...primaryButtonColors(false), border: 'none', borderRadius: radius.md, padding: '6px 12px', cursor: 'pointer' }}>Save</button>
               <button type="button" onClick={() => { setEditingDraftField(null); setDraftFieldError(null) }} style={{ fontSize: fontSize.sm, color: color.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: '6px 8px' }}>Cancel</button>
             </form>
           </div>
@@ -1720,36 +2006,46 @@ export function BillDetail() {
           const bodyLabel = chamberLabel ? `${chamberLabel} ${typeNoun}` : null
           const typeLabel = null
           // One line for each kind, identical companions first, whatever labels the legislature used.
+          // The header's "Grouped with" line already names the identical bills in the group, so
+          // this line lists only the identical bills outside it.
+          const groupIds = new Set((bill.groupBills ?? []).map(g => g.billId))
+          const listedRelated = bill.relatedBillIds.filter(r => !(r.kind === 'identical' && r.route && groupIds.has(r.route.id)))
           const grouped = new Map<RelationshipKind, RelatedBill[]>()
           for (const kind of RELATIONSHIP_KINDS) {
-            const ofKind = bill.relatedBillIds.filter(r => (isRelationshipKind(r.kind) ? r.kind : 'related') === kind)
+            const ofKind = listedRelated.filter(r => (isRelationshipKind(r.kind) ? r.kind : 'related') === kind)
             if (ofKind.length > 0) grouped.set(kind, ofKind)
           }
-          const hasAny = bodyLabel || typeLabel || (bill.calendar ?? []).some(e => e.kind === 'deadline') || bill.relatedBillIds.length > 0 || bill.companionBillIds.length > 0 || bill.stateUrl || bill.stateLink || bill.legiscanUrl || (bill.subjects ?? []).length > 0
+          const placedExtras = placeExtras(bill.extras?.fields ?? [])
+          const hasAny = bodyLabel || typeLabel || placedExtras.meta.length > 0 || placedExtras.detail.length > 0 || placedExtras.flags.length > 0 || (bill.calendar ?? []).some(e => e.kind === 'deadline') || listedRelated.length > 0 || bill.stateUrl || bill.stateLink || bill.legiscanUrl || (bill.subjects ?? []).length > 0
           if (!hasAny) return null
 
           // Collect all display items, then render with · separators only between items
           const metaItems: React.ReactNode[] = []
           const typeExplainer = billTypeExplainer(stateLabels, bill.billType)
-          if (bodyLabel) metaItems.push(typeExplainer
+          const bodyLabelEl = !bodyLabel ? null : typeExplainer
             ? <span key="body" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
                 <HoverTooltip text={typeExplainer} describe={{ id: 'bill-type-explainer' }}>{bodyLabel}</HoverTooltip>
               </span>
-            : <span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>)
+            : <span key="body" style={{ whiteSpace: 'nowrap' }}>{bodyLabel}</span>
+          if (bodyLabelEl) metaItems.push(bodyLabelEl)
+          // The provider's flags (an emergency bill, a constitutional amendment)
+          // are plain meta text right after the body label, which keeps its own wording.
+          for (const f of placedExtras.flags) metaItems.push(<ExtraFlagItem key={`flag-${f.key}`} field={f} />)
           // The bill's next deadline (an executive's time to act, a review
           // period ending, an act expiring), where it's hard to miss.
           const nextDeadline = (bill.calendar ?? []).filter(e => e.kind === 'deadline' && e.date >= todayIso())
             .sort((a, b) => a.date.localeCompare(b.date))[0]
           if (nextDeadline) {
-            const explainer = eventTypeExplainer(stateLabels, nextDeadline.typeId)
             const what = nextDeadline.description || nextDeadline.type
             metaItems.push(
               <span key="deadline" data-testid="next-deadline" style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4, color: color.textAmberDark, fontWeight: fontWeight.medium }}>
                 <span className="material-symbols-outlined" aria-hidden="true" style={{ fontSize: fontSize.base }}>schedule</span>
-                <HoverTooltip text={explainer} describe>{what}</HoverTooltip>: {safeDate(nextDeadline.date) ?? nextDeadline.date}
+                {what}: {safeDate(nextDeadline.date) ?? nextDeadline.date}
               </span>
             )
           }
+          // The provider's own facts: a law number, who asked for the measure.
+          for (const f of placedExtras.meta) metaItems.push(<ExtraMetaItem key={`extra-${f.key}`} field={f} />)
           if (typeLabel) metaItems.push(<span key="type" style={{ whiteSpace: 'nowrap' }}>{typeLabel}</span>)
           grouped.forEach((related, kind) => {
             const label = RELATIONSHIP_KIND_LABELS[kind]
@@ -1773,12 +2069,6 @@ export function BillDetail() {
               </span>
             )
           })
-          bill.companionBillIds.forEach((cid, i) => metaItems.push(
-            <span key={`comp-${i}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ color: color.textMuted }}>Companion:</span>
-              <span>{String(cid)}</span>
-            </span>
-          ))
           if ((bill.subjects ?? []).length > 0) metaItems.push(
             <SubjectsTrigger
               key="subjects"
@@ -1813,9 +2103,14 @@ export function BillDetail() {
             separated.push(metaItems[i])
           }
           return (
-            <div style={{ fontSize: fontSize.sm, color: color.textSecondary, marginBottom: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-              {separated}
-            </div>
+            <>
+              {separated.length > 0 && (
+                <div style={{ fontSize: fontSize.sm, color: color.textSecondary, marginBottom: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {separated}
+                </div>
+              )}
+              <ExtraDetailList fields={placedExtras.detail} />
+            </>
           )
         })()}
 
@@ -1825,7 +2120,7 @@ export function BillDetail() {
             subjects={bill.subjects ?? []}
             open={subjectsOpen}
             onSubjectClick={name =>
-              navigate(`/bills?subject=${encodeURIComponent(`${bill.state}:${name}`)}`)}
+              navigate(billsListPath({ subject: [{ state: bill.state, name }] }))}
           />
         )}
 
@@ -1871,7 +2166,7 @@ export function BillDetail() {
                     padding: '3px 7px', color: color.textPrimary, background: color.white, outline: 'none', minWidth: 220,
                   }}
                 />
-                <button type="submit" style={{ fontSize: fontSize.sm, fontWeight: fontWeight.medium, background: color.accentBlue, color: color.textOnFill, border: 'none', borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Save</button>
+                <button type="submit" style={{ fontSize: fontSize.sm, fontWeight: fontWeight.medium, ...primaryButtonColors(false), border: 'none', borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Save</button>
                 <button type="button" onClick={() => setEditingDraftField(null)} style={{ fontSize: fontSize.sm, color: color.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px' }}>Cancel</button>
               </form>
             ) : (
@@ -2026,8 +2321,7 @@ export function BillDetail() {
                 >
                   <span style={{ color: color.textMuted }}>Year:</span>
                   {(() => {
-                    // Same option-building rule as the create form (DraftBills.tsx):
-                    // the held value must always be one of the options, and the
+                    // The held value must always be one of the options, and the
                     // current year must always be offerable.
                     const thisYear = new Date().getFullYear()
                     const base = Number(draftYearEdit) || thisYear
@@ -2058,7 +2352,7 @@ export function BillDetail() {
                       />
                     )
                   })()}
-                  <button type="submit" style={{ fontSize: fontSize.sm, fontWeight: fontWeight.medium, background: color.accentBlue, color: color.textOnFill, border: 'none', borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Save</button>
+                  <button type="submit" style={{ fontSize: fontSize.sm, fontWeight: fontWeight.medium, ...primaryButtonColors(false), border: 'none', borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Save</button>
                   <button type="button" onClick={() => { setEditingDraftField(null); setDraftFieldError(null) }} style={{ fontSize: fontSize.sm, color: color.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px' }}>Cancel</button>
                 </form>
               ) : (
@@ -2105,9 +2399,8 @@ export function BillDetail() {
                 reports states that already have bills, so it cannot tell a
                 single-state tenant from a multi-state one whose bills happen
                 to sit in one state. The facets-derived list below only supplies
-                the Picker's OPTIONS (same as the create form in
-                DraftBills.tsx); it falls back to free text when facets yields
-                nothing usable. */}
+                the Picker's OPTIONS; it falls back to free text when facets
+                yields nothing usable. */}
             {tenantState === null && (
               // A div for the same reason as the bill-number one above.
               <div>
@@ -2273,13 +2566,12 @@ export function BillDetail() {
           const isStuck = !isLightweight && textConfirmed && !bill.aiSkipReason
           if (isStuck && !isAdmin) return null
 
-          const message = getNoAnalysisMessage({ matchType: bill.matchType, textStatus: bill.textStatus, aiSkipReason: bill.aiSkipReason })
+          const message = getNoAnalysisMessage({ matchType: bill.matchType, fullyIngested: bill.fullyIngested, textStatus: bill.textStatus, aiSkipReason: bill.aiSkipReason })
 
-          // Admins can kick off AI for an unanalyzed bill — either promoting a lightweight stub
+          // Admins can kick off AI for an unanalyzed bill — either promoting an untracked bill
           // or repairing a stuck tracked bill. Both go through handlePromote → promote-bill
           // (idempotent on match_type, re-runs AI via forceAI).
           const canRunAnalysis = isAdmin && (isLightweight || isStuck)
-          const promoteLabel = isLightweight ? 'Enable full analysis' : 'Run analysis'
           const generateDisabled = promoting || pendingPromote || demoLocked
           const hasAdminContent = canRunAnalysis && (pendingPromote || !generateDisabled || !!promoteError || !!promoteOutcomeMsg)
 
@@ -2296,8 +2588,7 @@ export function BillDetail() {
                       onClick={handlePromote}
                       disabled={generateDisabled}
                       style={{
-                        background: generateDisabled ? color.accentBlueMuted : color.accentBlue,
-                        color: color.textOnFill,
+                        ...primaryButtonColors(generateDisabled),
                         border: 'none',
                         borderRadius: radius.md,
                         padding: '8px 14px',
@@ -2308,7 +2599,7 @@ export function BillDetail() {
                         ...(pendingPromote ? DIMMED_WHILE_RUNNING : {}),
                       }}
                     >
-                      {promoting ? 'Queueing…' : promoteLabel}
+                      {promoting ? 'Queueing…' : 'Run analysis'}
                     </button>
                     {pendingPromote && <AnalysisProgressChip label="Analyzing…" />}
                     {isLightweight && !pendingPromote && (
@@ -2477,27 +2768,40 @@ export function BillDetail() {
                     </span>
                     {/* Hidden while a run is in flight: the doc it points at is the
                         previous run's input, so it would be stale mid-regenerate. */}
-                    {!regenerating && bill.lastAiTextDocId && (() => {
-                        const text = bill.texts.find(t => t.docId === bill.lastAiTextDocId)
-                        if (!text) return null
-                        return (
+                    {!regenerating && (analysisText || borrowedFrom) && (
                           <>
                             <span style={{ fontSize: fontSize.sm, fontWeight: fontWeight.semibold, color: color.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase' as const }}>
-                              <span style={{ marginRight: 6, marginLeft: 2 }}>·</span>based on text
+                              <span style={{ marginRight: 6, marginLeft: 2 }}>·</span>based on
                             </span>
-                            <BillTextChip
-                              type={text.type}
-                              date={text.date}
-                              onClick={() => {
-                                setShowBillText(true)
-                                setRequestedDocId(text.docId)
-                                setTimeout(() => setRequestedDocId(null), 100)
-                              }}
-                              title="Show this bill text version"
-                            />
+                            {/* A summary from another bill in the group names that bill (#712). Its chip is that bill's version, never the page bill's. */}
+                            {borrowedFrom && (
+                              <BillBadge billNumber={borrowedFrom.billNumber} state={(bill.groupBills ?? []).find(g => g.billId === borrowedFrom.billId)?.state} mini />
+                            )}
+                            {analysisText && (
+                              <BillTextChip
+                                type={analysisText.type}
+                                date={analysisText.date}
+                                onClick={() => {
+                                  setShowBillText(true)
+                                  if (analysisTextIsOwn || analysisTextInGroupTexts) {
+                                    // Selected in its own bill's row (#712).
+                                    setRequestedDocId(analysisText.docId)
+                                    setTimeout(() => setRequestedDocId(null), 100)
+                                  } else {
+                                    setRequestBillId(bill.id)
+                                    setDocRequest({
+                                      key: ++passageKeyRef.current,
+                                      billId: bill.analysisBillId!,
+                                      billNumber: bill.analysisBillNumber ?? null,
+                                      document: analysisText,
+                                    })
+                                  }
+                                }}
+                                title="Show this bill text version"
+                              />
+                            )}
                           </>
-                        )
-                      })()}
+                        )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, ...(regenerating ? DIMMED_WHILE_RUNNING : {}) }}>
                     {bill.relevanceScore != null && (
@@ -2505,7 +2809,7 @@ export function BillDetail() {
                         <span style={SECTION_LABEL}>
                           {orgRelevanceLabel(config?.orgNoun ?? DEFAULT_ORG_NOUN)}
                         </span>
-                        <RelevanceChip score={bill.relevanceScore} onClick={() => navigate(`/bills?minRelevance=${bill.relevanceScore}`)} />
+                        <RelevanceChip score={bill.relevanceScore} onClick={() => navigate(billsListPath({ minRelevance: bill.relevanceScore }))} />
                       </div>
                     )}
                     <InfoTooltip
@@ -2515,7 +2819,7 @@ export function BillDetail() {
                   </div>
                 </div>
                 <div style={regenerating ? DIMMED_WHILE_RUNNING : undefined}>
-                <MarkdownSummary fontSize={fontSize.base} color={color.textSlate} lineHeight={1.5}>
+                <MarkdownSummary fontSize={fontSize.base} color={color.textSlate} lineHeight={1.5} claimLinks={claimLinks} onClaimActivate={openClaim}>
                   {bill.tenantSummary}
                 </MarkdownSummary>
                 </div>
@@ -2523,7 +2827,7 @@ export function BillDetail() {
             )}
             {!bill.tenantSummary && bill.relevanceScore != null && (
               <div style={{ display: 'flex', justifyContent: 'flex-end', ...(regenerating ? DIMMED_WHILE_RUNNING : {}) }}>
-                <RelevanceChip score={bill.relevanceScore} showLabel onClick={() => navigate(`/bills?minRelevance=${bill.relevanceScore}`)} />
+                <RelevanceChip score={bill.relevanceScore} showLabel onClick={() => navigate(billsListPath({ minRelevance: bill.relevanceScore }))} />
               </div>
             )}
             {bill.tags.length > 0 && (
@@ -2532,7 +2836,7 @@ export function BillDetail() {
                   {bill.tags.map((tag) => (
                     <button
                       key={tag}
-                      onClick={() => navigate(`/bills?tag=${encodeURIComponent(tag)}`)}
+                      onClick={() => navigate(billsListPath({ tag: [tag] }))}
                       onMouseEnter={() => setHoveredTag(tag)}
                       onMouseLeave={() => setHoveredTag(null)}
                       style={hoveredTag === tag ? TAG_CHIP_HOVERED : TAG_CHIP}
@@ -2675,14 +2979,14 @@ export function BillDetail() {
         )}
 
         {/* Bill text collapsible */}
-        {!bill.isDraft && bill.texts.length > 0 && bill.textR2Key && (
+        {!bill.isDraft && hasBillText && (
           <CollapsibleSection
             label="Bill texts"
-            count={bill.texts.length}
+            count={groupVersionCount > 0 ? groupVersionCount : bill.texts.length > 0 ? bill.texts.length : 1}
             open={showBillText}
             onToggle={() => setShowBillText(v => !v)}
           >
-            <BillTextPanel key={bill.id} billId={bill.id} texts={bill.texts ?? []} externalOpen={showBillText} requestedDocId={requestedDocId} />
+            <BillTextPanel key={bill.id} billId={bill.id} texts={bill.texts ?? []} groupTexts={bill.groupTexts} groupBadges={(bill.groupBills ?? []).length > 1} externalOpen={showBillText} requestedDocId={requestedDocId} requestedDocument={shownDocRequest} passage={shownPassage} />
           </CollapsibleSection>
         )}
 
@@ -2771,7 +3075,6 @@ export function BillDetail() {
                 const chipColor = isDeadline
                   ? { color: color.textAmberDark, background: color.bgAmberPriority }
                   : { color: color.billBadgeNavy, background: color.bgInfo }
-                const explainer = eventTypeExplainer(stateLabels, entry.typeId)
                 return (
                   <TabularRow
                     key={entry.eventHash || `hearing-${i}`}
@@ -2791,7 +3094,7 @@ export function BillDetail() {
                     content={
                       <div style={{ color: color.textSlate }}>
                         <div style={{ fontWeight: fontWeight.medium, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <HoverTooltip text={explainer} describe>{entry.description || entry.type}</HoverTooltip>
+                          {entry.description || entry.type}
                         </div>
                         {entry.location && <div style={{ color: color.textSecondary, fontSize: fontSize.xs, marginTop: 1 }}>{entry.location}</div>}
                       </div>
@@ -2851,20 +3154,117 @@ export function BillDetail() {
         })()}
 
         {/* Additional information: fields only the bill's provider publishes */}
-        {bill.extras && bill.extras.fields.length > 0 && (
+        {bill.extras && hasPanelExtras && (
           <CollapsibleSection
             id="section-extras"
             label={`Additional information from ${bill.extras.providerName}`}
-            count={bill.extras.fields.length}
+            count={placeExtras(bill.extras.fields).panel.length}
             open={showExtras}
             onToggle={() => setShowExtras(v => !v)}
             hasPrev={hasBillText || hasAmendments || hasActions || hasHearings || hasDocuments}
             flashed={flashedSectionId === 'section-extras'}
           >
-            <ProviderExtrasList fields={bill.extras.fields} />
+            <ProviderExtrasList fields={placeExtras(bill.extras.fields).panel} />
           </CollapsibleSection>
         )}
       </div>
+
+      {/* Why values this page never set appear here: the group's other bills share them. And, for an admin,
+          another bill that looks like an identical companion (#521). */}
+      {(() => {
+        const companions = (bill.groupBills ?? []).filter(g => g.billId !== bill.id)
+        const suggestion = isAdmin ? bill.companionSuggestion ?? null : null
+        if (companions.length === 0 && !suggestion) return null
+        // Indented to the comments heading below them (the card's 1px border and 16px of padding), so the lines
+        // and the heading start at the same x, and set closer to the comments and position boxes they describe
+        // than to the bill card above: 32px above the first line, and the columns' 24px of top padding less 8px
+        // below the last.
+        const lineStyle = (first: boolean, last: boolean): React.CSSProperties => ({
+          margin: `${first ? 32 : 4}px 0 ${last ? -8 : 0}px 17px`, fontSize: fontSize.sm, lineHeight: 1.6, color: color.textMuted,
+        })
+        const actionStyle = (disabled: boolean): React.CSSProperties => ({
+          background: 'none', border: 'none', padding: 0, font: 'inherit', color: color.linkBlue,
+          cursor: disabled ? 'not-allowed' : 'pointer', textDecoration: 'underline',
+        })
+        const actionsDisabled = suggestionBusy || demoLocked
+        return (
+          <>
+            {companions.length > 0 && (
+              <p data-testid="group-shares-line" style={lineStyle(true, !suggestion)}>
+                {upperFirst(groupSharedThings(config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0))} are shared with{' '}
+                {companions.map((g, i) => (
+                  <Fragment key={g.billId}>
+                    {i === 0 ? null : companions.length === 2 ? ' and ' : i === companions.length - 1 ? ', and ' : ', '}
+                    <BillBadge
+                      mini
+                      billNumber={g.billNumber}
+                      state={g.state}
+                      to={billUrl({ id: g.billId, state: g.state, sessionSlug: g.sessionSlug, billNumber: g.billNumber })}
+                    />
+                  </Fragment>
+                ))}
+                .
+              </p>
+            )}
+            {suggestion && (
+              <p data-testid="companion-suggestion-line" style={lineStyle(companions.length === 0, true)}>
+                Possibly the same as{' '}
+                <BillBadge
+                  mini
+                  billNumber={suggestion.billNumber}
+                  state={suggestion.state}
+                  to={billUrl({ id: suggestion.billId, state: suggestion.state, sessionSlug: suggestion.sessionSlug, billNumber: suggestion.billNumber })}
+                />
+                .{' '}
+                <button
+                  type="button"
+                  disabled={actionsDisabled}
+                  style={actionStyle(actionsDisabled)}
+                  title={`${bill.billNumber} and ${suggestion.billNumber} have the same title, one in each chamber. Grouping them shares ${groupSharedThings(config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0, 'and', true)}.`}
+                  onClick={async () => {
+                    if (actionsDisabled) return
+                    setSuggestionBusy(true)
+                    try {
+                      if (await groupByHand(bill.id, bill.billNumber, suggestion.billId, suggestion.billNumber)) await refetchBill()
+                    } catch (err) {
+                      // A refusal says why (two bills split apart, and how to undo the split).
+                      setCopyFeedback(err instanceof ApiError && err.status === 409 ? err.message : "Couldn't group the bills. Try again.")
+                      setTimeout(() => setCopyFeedback(null), 6000)
+                    } finally {
+                      setSuggestionBusy(false)
+                    }
+                  }}
+                >
+                  Group them
+                </button>
+                {' · '}
+                <button
+                  type="button"
+                  disabled={actionsDisabled}
+                  style={actionStyle(actionsDisabled)}
+                  title={`Don't suggest ${suggestion.billNumber} for ${bill.billNumber} again.`}
+                  onClick={async () => {
+                    if (actionsDisabled) return
+                    setSuggestionBusy(true)
+                    try {
+                      await apiFetch(`/bills/${bill.id}/companion-suggestion/dismiss`, { method: 'POST', body: JSON.stringify({ withBillId: suggestion.billId }) })
+                      setBill(b => (b ? { ...b, companionSuggestion: null } : b))
+                      void refetchBill()
+                    } catch {
+                      setCopyFeedback("Couldn't dismiss the suggestion. Try again.")
+                      setTimeout(() => setCopyFeedback(null), 4000)
+                    } finally {
+                      setSuggestionBusy(false)
+                    }
+                  }}
+                >
+                  Dismiss
+                </button>
+              </p>
+            )}
+          </>
+        )
+      })()}
 
       {/* Two-column layout */}
       <div className="bill-detail-columns" style={{ display: 'flex', gap: 24, padding: '24px 0' }}>
@@ -2876,18 +3276,18 @@ export function BillDetail() {
           <div id="section-comments" style={{ ...CARD, padding: 16, boxShadow: flashedSectionId === 'section-comments' ? `0 0 0 3px ${color.borderAmber}` : (CARD.boxShadow as string | undefined), transition: 'box-shadow 0.6s ease' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, marginBottom: 14 }}>
               <div style={SECTION_LABEL}>
-                Comments{comments.length > 0 && <span style={{ ...COUNT_BADGE, textTransform: 'none', letterSpacing: 0, marginLeft: 6 }}>{comments.length}</span>}
+                {hasActivity ? 'Comments and activity' : 'Comments'}{comments.length > 0 && <span style={{ ...COUNT_BADGE, textTransform: 'none', letterSpacing: 0, marginLeft: 6 }}>{comments.length}</span>}
               </div>
-              <CommentsMuteButton muted={commentsMute.muted} pending={commentsMute.pending} onToggle={commentsMute.toggle} />
+              {canMuteComments && <CommentsMuteButton muted={commentsMute.muted} pending={commentsMute.pending} onToggle={commentsMute.toggle} />}
             </div>
-            {commentsMute.muted && <CommentsMutedNote />}
             {comments.map((comment, idx) => (
               <Fragment key={comment.id}>
-              {groupingLines.before.get(comment.id)?.map(e => <GroupingLine key={e.id} event={e} />)}
+              {thread.before.get(comment.id)?.map(line => <ThreadLineView key={line.key} line={line} positionLabel={threadPositionLabel} renderBill={renderChangeBill} />)}
               <div id={`comment-${comment.id}`} className={newCommentIds.has(comment.id) ? 'comment-new' : ''} style={{ paddingBottom: 14, marginBottom: 14, borderBottom: idx < comments.length - 1 ? `1px solid ${color.surfaceMuted}` : 'none', borderRadius: radius.md, boxShadow: flashedCommentId === comment.id ? `0 0 0 3px ${color.borderAmber}` : 'none', transition: 'box-shadow 0.6s ease' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                   {/* Comment header (name / title / date) — shared with the
                       @-mention email's card row via COMMENT_STYLE; keep both in sync there. */}
+                  <span>
                   <span
                     style={{ fontSize: COMMENT_STYLE.nameSize, fontWeight: COMMENT_STYLE.nameWeight, color: COMMENT_STYLE.nameColor, position: 'relative', cursor: 'default' }}
                     onMouseEnter={() => setHoveredCommentUser(comment.id)}
@@ -2896,10 +3296,6 @@ export function BillDetail() {
                     {comment.userName}
                     {comment.userTitle && (
                       <span style={{ fontSize: COMMENT_STYLE.titleSize, fontWeight: COMMENT_STYLE.titleWeight, color: COMMENT_STYLE.titleColor, marginLeft: 4 }}>{comment.userTitle}</span>
-                    )}
-                    {/* A comment posted on a companion in this bill's group. */}
-                    {comment.billId && comment.billId !== bill.id && comment.billNumber && (
-                      <span title={`Posted on ${comment.billNumber}`} style={{ ...COMPANION_TAG, marginLeft: 6 }}>{comment.billNumber}</span>
                     )}
                     {hoveredCommentUser === comment.id && (() => {
                       const commenter = usersData.find(u => u.id === comment.userId)
@@ -2923,6 +3319,15 @@ export function BillDetail() {
                         </div>
                       )
                     })()}
+                  </span>
+                  {/* A comment posted on a companion in this bill's group: that bill's
+                      badge. One from a bill no longer in the group (split off since the
+                      page loaded) has no state or session here, so it links by id. */}
+                  {comment.billId && comment.billId !== bill.id && comment.billNumber && (
+                    <span style={{ marginLeft: 6 }}>
+                      {companionBadge(comment.billId, comment.billNumber, `posted-on-${comment.id}`, `This comment was posted on ${comment.billNumber}, a companion bill in this group.`)}
+                    </span>
+                  )}
                   </span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span title={absoluteTime(comment.createdAt)} style={{ fontSize: COMMENT_STYLE.dateSize, color: COMMENT_STYLE.dateColor, cursor: 'default' }}>{relativeTime(comment.createdAt)}</span>
@@ -2951,14 +3356,16 @@ export function BillDetail() {
                         onSubmit={(html) => handleSaveEdit(comment.id, html)}
                         onCancel={() => setEditingCommentId(null)}
                         submitLabel="Save"
+                        allowEmpty={(comment.attachments?.length ?? 0) > 0}
                         placeholder="Edit comment…"
                         // eslint-disable-next-line jsx-a11y/no-autofocus -- pre-existing: focus follows the user's own click/Enter into edit mode, out of scope for this task's focus-management redesign
                         autoFocus
                       />
                     </div>
                   )
-                  : <div style={{ margin: '0 0 8px' }}><CommentContent content={comment.content} users={usersData} roles={rolesData} fontSize={COMMENT_STYLE.bodySize} /></div>
+                  : comment.content.trim() && <div style={{ margin: '0 0 8px' }}><CommentContent content={comment.content} users={usersData} roles={rolesData} fontSize={COMMENT_STYLE.bodySize} /></div>
                 }
+                <CommentAttachments attachments={comment.attachments} />
                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center', position: 'relative' }}>
                   {comment.reactions.map((r) => (
                     <span key={r.emoji} style={{ position: 'relative', display: 'inline-block' }}
@@ -3045,14 +3452,17 @@ export function BillDetail() {
               </div>
               </Fragment>
             ))}
-            {groupingLines.after.map(e => <GroupingLine key={e.id} event={e} />)}
+            {thread.after.map(line => <ThreadLineView key={line.key} line={line} positionLabel={threadPositionLabel} renderBill={renderChangeBill} />)}
             <div style={{ marginTop: 12 }}>
               {/* Key on the bill so navigating to another bill remounts a fresh,
                   empty composer. Without this, the unkeyed editor keeps the prior
                   bill's draft text across the spinner-less prefetch navigation
                   (BillDetail stays mounted and just swaps data). */}
               <RichTextEditor
-                key={bill.id}
+                // Attachments are read when the editor is created, so the key also
+                // remounts it once /config says they are on. Never on a demo, whatever /config says.
+                key={`${bill.id}:${commentAttachments ? 'files' : 'text'}`}
+                attachments={commentAttachments}
                 onSubmit={handlePostComment}
                 placeholder="Add a comment…"
                 submitLabel="Post"
@@ -3118,7 +3528,7 @@ export function BillDetail() {
               : position
                 ? (
                   <div>
-                    <PositionBadge position={position} tooltip={`Your ${config?.orgNoun ?? DEFAULT_ORG_NOUN}'s official position on this bill`} />
+                    <PositionBadge position={position} />
                     {positionMeta && (
                       <div title={absoluteTime(positionMeta.updatedAt)} style={{ ...CHROME_TEXT, marginTop: 4, cursor: 'default' }}>
                         Set by {positionMeta.setByName} · {relativeTime(positionMeta.updatedAt)}
@@ -3148,6 +3558,7 @@ export function BillDetail() {
           billId={bill.id}
           billNumber={bill.billNumber}
           groupBillIds={(bill.groupBills ?? []).map(b => b.billId).concat(bill.id)}
+          shares={groupSharedThings(config?.orgNoun ?? DEFAULT_ORG_NOUN, customFieldDefs.length > 0, 'and', true)}
           onClose={() => setGroupWithOpen(false)}
           onGrouped={() => { setGroupWithOpen(false); void refetchBill() }}
         />

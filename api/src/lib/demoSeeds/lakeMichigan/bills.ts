@@ -1,4 +1,4 @@
-import type { DemoSeedCalendarEvent, DemoSeedFeedEvent } from '../types'
+import type { DemoSeed, DemoSeedCalendarEvent, DemoSeedFeedEvent, DemoSeedFieldChange } from '../types'
 
 // The 20 real bills the Lake Michigan Alliance tracks across Michigan, Wisconsin,
 // Illinois, Indiana, and Congress. Every id, committee name, sponsor, and action
@@ -49,10 +49,10 @@ export const LM_BILLS: Array<{
 ]
 
 export const LM_PRIORITIES: Array<{ externalId: string; priority: 'high' | 'medium' | 'low' }> = [
-  { externalId: 'legiscan:2029026', priority: 'high' },  // MI HB4427
+  { externalId: 'legiscan:2029026', priority: 'low' },  // MI HB4427
   { externalId: 'legiscan:2041788', priority: 'low' },  // MI HB4768
   { externalId: 'legiscan:2055958', priority: 'high' },  // MI HB5308
-  { externalId: 'legiscan:2129983', priority: 'medium' },  // MI HB5674
+  { externalId: 'legiscan:2129983', priority: 'high' },  // MI HB5674
   { externalId: 'legiscan:2095619', priority: 'high' },  // MI SB0771
   { externalId: 'legiscan:2006944', priority: 'medium' },  // WI AB129
   { externalId: 'legiscan:2006749', priority: 'high' },  // WI AB131
@@ -77,36 +77,99 @@ export const LM_PRIORITIES: Array<{ externalId: string; priority: 'high' | 'medi
 // (AB129, SB628) get Support too: they lost, and that's the point of tracking a
 // concluded bill. SB0771 and HB8876 carry Amend/Monitor so the vocabulary isn't
 // all Support.
-export const LM_POSITIONS: Array<{ id: string; externalId: string; position: string; setBy: string; daysAgo: number }> = [
+export const LM_POSITIONS: DemoSeed['positions'] = [
   { id: 'lm-pos-1',  externalId: 'legiscan:2029026', position: 'Support', setBy: 'demo-user',   daysAgo: 270 }, // MI HB4427
   { id: 'lm-pos-2',  externalId: 'legiscan:2055958', position: 'Support', setBy: 'demo-user',   daysAgo: 90 },  // MI HB5308
   { id: 'lm-pos-3',  externalId: 'legiscan:2095619', position: 'Monitor', setBy: 'demo-user',   daysAgo: 60 },  // MI SB0771
   { id: 'lm-pos-4',  externalId: 'legiscan:2006944', position: 'Support', setBy: 'lm-user-ed',  daysAgo: 200 }, // WI AB129 (died — supported anyway)
-  { id: 'lm-pos-5',  externalId: 'legiscan:2006749', position: 'Support', setBy: 'lm-user-ed',  daysAgo: 200 }, // WI AB131
-  { id: 'lm-pos-6',  externalId: 'legiscan:1979645', position: 'Support', setBy: 'lm-user-dep', daysAgo: 420 }, // WI SB56
+  { id: 'lm-pos-5',  externalId: 'legiscan:2006749', position: 'Support', setBy: 'lm-user-ed',  daysAgo: 121, minutesLater: 63 }, // WI AB131
+  { id: 'lm-pos-6',  externalId: 'legiscan:1979645', position: 'Support', setBy: 'lm-user-dep', daysAgo: 402, minutesLater: 3 }, // WI SB56
   { id: 'lm-pos-7',  externalId: 'legiscan:2052600', position: 'Support', setBy: 'lm-user-dep', daysAgo: 180 }, // WI SB628 (died — supported anyway)
   { id: 'lm-pos-8',  externalId: 'legiscan:1906052', position: 'Support', setBy: 'lm-user-dep', daysAgo: 300 }, // IL HB1175
   { id: 'lm-pos-9',  externalId: 'legiscan:1952725', position: 'Support', setBy: 'lm-user-dep', daysAgo: 420 }, // IL HB2516
   { id: 'lm-pos-10', externalId: 'legiscan:2111275', position: 'Support', setBy: 'lm-user-dep', daysAgo: 60 },  // IL SB4025
-  { id: 'lm-pos-11', externalId: 'legiscan:2061476', position: 'Support', setBy: 'demo-user',   daysAgo: 200 }, // IN HB1124
+  { id: 'lm-pos-11', externalId: 'legiscan:2061476', position: 'Support', setBy: 'demo-user',   daysAgo: 4, minutesLater: 94 }, // IN HB1124
   { id: 'lm-pos-12', externalId: 'legiscan:2056216', position: 'Support', setBy: 'lm-user-ed',  daysAgo: 180 }, // IN SB0006
-  { id: 'lm-pos-13', externalId: 'legiscan:1910159', position: 'Support', setBy: 'lm-user-ed',  daysAgo: 500 }, // US HB284
+  { id: 'lm-pos-13', externalId: 'legiscan:1910159', position: 'Support', setBy: 'lm-user-ed',  daysAgo: 6, minutesLater: 3 }, // US HB284
   { id: 'lm-pos-14', externalId: 'legiscan:2150744', position: 'Amend',   setBy: 'lm-user-ed',  daysAgo: 50 },  // US HB8876
+  // Monitor, not Support: lm-c-88 asks for the EPA-rule overlap to be sorted before a position.
+  { id: 'lm-pos-15', externalId: 'legiscan:2058690', position: 'Monitor', setBy: 'lm-user-dep', daysAgo: 3, minutesLater: 5 },   // US HB6668
+  // Recorded with its priority, on the day of the hearing notice (lm-c-113), as every high-priority bill carries one.
+  { id: 'lm-pos-16', externalId: 'legiscan:2129983', position: 'Support', setBy: 'demo-user',   daysAgo: 3, minutesLater: 94 },  // MI HB5674
 ]
+
+// Team field changes the activity lines show: who set what on a bill, oldest first within
+// a field. Each field's newest change ends on the value LM_PRIORITIES, LM_POSITIONS, or
+// LM_CUSTOM_FIELD_VALUES sets (a test checks), at about the time they give. Most land on the
+// bills with a real identical companion (WI AB131/SB128, SB56/AB59, AB129/SB104, SB628/AB635,
+// IN HB1124, US HB284/SB528, HB583/SB508, HB6668/SB3457), so a group's page shows a companion's
+// badge on a line once the companions are delivered. A bill the tenant lacks no-ops.
+type FieldChangeRow = Omit<DemoSeedFieldChange, 'id'>
+const prio = (externalId: string, userId: string, old: string | null, to: string, daysAgo: number, minutesLater = 0): FieldChangeRow =>
+  ({ externalId, userId, field: 'priority', old, new: to, daysAgo, minutesLater })
+const pos = (externalId: string, userId: string, to: string, daysAgo: number, minutesLater = 0): FieldChangeRow =>
+  ({ externalId, userId, field: 'position', old: null, new: to, daysAgo, minutesLater })
+const cf = (externalId: string, userId: string, fieldId: string, old: string | null, to: string, daysAgo: number, minutesLater = 0): FieldChangeRow =>
+  ({ externalId, userId, field: 'customField', fieldId, old, new: to, daysAgo, minutesLater })
+
+// Each change sits among the bill's comments and, for most, a few minutes from a comment by the
+// same persona that gives the reason (discussion.ts). The comment is the first line of the pair
+// wherever its minutes come earlier. LM_PRIORITIES' feed events (lm-fe-p*), LM_POSITIONS, and
+// the custom field values carry the time of the change that set them.
+const LM_FIELD_CHANGE_ROWS: FieldChangeRow[] = [
+  // WI AB131 (signed 127 days ago, so every change is a post-enactment one)
+  prio('legiscan:2006749', 'lm-user-dep', null, 'medium', 127, 124),
+  prio('legiscan:2006749', 'lm-user-ed', 'medium', 'high', 121, 3),
+  pos('legiscan:2006749', 'lm-user-ed', 'Support', 121, 63),
+  cf('legiscan:2006749', 'lm-user-ed', 'lm-cf-1', 'Unknown', 'Significant (>$100K)', 121, 64),
+  cf('legiscan:2006749', 'lm-user-ed', 'lm-cf-2', null, 'Contaminants', 121, 65),
+  // WI SB56 (signed 405 days ago)
+  prio('legiscan:1979645', 'lm-user-dep', 'medium', 'high', 404, 63),
+  pos('legiscan:1979645', 'lm-user-dep', 'Support', 402, 3),
+  cf('legiscan:1979645', 'lm-user-dep', 'lm-cf-1', null, 'Significant (>$100K)', 402, 4),
+  // WI AB129 (died 141 days ago)
+  prio('legiscan:2006944', 'lm-user-ed', null, 'low', 135, 3),
+  prio('legiscan:2006944', 'lm-user-dep', 'low', 'medium', 133, 3),
+  cf('legiscan:2006944', 'lm-user-ed', 'lm-cf-2', null, 'Infrastructure', 135, 4),
+  // WI SB628 (died 141 days ago)
+  prio('legiscan:2052600', 'lm-user-dep', 'medium', 'low', 136, 3),
+  // IN HB1124
+  prio('legiscan:2061476', 'lm-user-la1', null, 'medium', 5, 183),
+  prio('legiscan:2061476', 'demo-user', 'medium', 'high', 4, 93),
+  pos('legiscan:2061476', 'demo-user', 'Support', 4, 94),
+  cf('legiscan:2061476', 'demo-user', 'lm-cf-1', null, 'Minimal (<$10K)', 4, 95),
+  // US HB284, HB583, HB6668
+  prio('legiscan:1910159', 'lm-user-fed', 'medium', 'high', 8, 4),
+  pos('legiscan:1910159', 'lm-user-ed', 'Support', 6, 3),
+  prio('legiscan:1933798', 'lm-user-fed', 'low', 'medium', 60, 3),
+  prio('legiscan:2058690', 'lm-user-wq', null, 'medium', 14, 3),
+  pos('legiscan:2058690', 'lm-user-dep', 'Monitor', 3, 5),
+  // Ids follow the order of this list, so rows added later go last and leave the earlier ids as they were (#942).
+  // MI HB4427: lowered after its testimony went in, a comment from the same persona (lm-c-114) giving the reason
+  prio('legiscan:2029026', 'demo-user', 'high', 'low', 12, 3),
+  // MI HB5674: raised, with its position and fiscal impact, on the day of its hearing notice (lm-c-113)
+  prio('legiscan:2129983', 'demo-user', 'medium', 'high', 3, 93),
+  pos('legiscan:2129983', 'demo-user', 'Support', 3, 94),
+  cf('legiscan:2129983', 'demo-user', 'lm-cf-1', null, 'Moderate ($10K-$100K)', 3, 95),
+]
+
+export const LM_TEAM_FIELD_CHANGES: DemoSeedFieldChange[] =
+  LM_FIELD_CHANGE_ROWS.map((c, i) => ({ id: `lm-tfc-${i + 1}`, ...c }))
 
 // Spread across bills so custom-field filtering returns results in every column.
 export const LM_CUSTOM_FIELD_VALUES: Array<{ externalId: string; fieldId: string; value: string; setBy: string; daysAgo: number }> = [
-  // Fiscal Impact (lm-cf-1) — 10 bills
+  // Fiscal Impact (lm-cf-1) — 11 bills
   { externalId: 'legiscan:2029026', fieldId: 'lm-cf-1', value: 'Moderate ($10K-$100K)', setBy: 'demo-user',   daysAgo: 270 }, // MI HB4427
   { externalId: 'legiscan:2055958', fieldId: 'lm-cf-1', value: 'Minimal (<$10K)',       setBy: 'demo-user',   daysAgo: 90 },  // MI HB5308
   { externalId: 'legiscan:2095619', fieldId: 'lm-cf-1', value: 'Significant (>$100K)',  setBy: 'demo-user',   daysAgo: 60 },  // MI SB0771
-  { externalId: 'legiscan:2006749', fieldId: 'lm-cf-1', value: 'Significant (>$100K)',  setBy: 'lm-user-ed',  daysAgo: 200 }, // WI AB131
-  { externalId: 'legiscan:1979645', fieldId: 'lm-cf-1', value: 'Significant (>$100K)',  setBy: 'lm-user-dep', daysAgo: 420 }, // WI SB56
+  { externalId: 'legiscan:2006749', fieldId: 'lm-cf-1', value: 'Significant (>$100K)',  setBy: 'lm-user-ed',  daysAgo: 121 }, // WI AB131
+  { externalId: 'legiscan:1979645', fieldId: 'lm-cf-1', value: 'Significant (>$100K)',  setBy: 'lm-user-dep', daysAgo: 402 }, // WI SB56
   { externalId: 'legiscan:1906052', fieldId: 'lm-cf-1', value: 'Unknown',               setBy: 'lm-user-dep', daysAgo: 300 }, // IL HB1175
   { externalId: 'legiscan:1952725', fieldId: 'lm-cf-1', value: 'Moderate ($10K-$100K)', setBy: 'lm-user-dep', daysAgo: 420 }, // IL HB2516
   { externalId: 'legiscan:2111275', fieldId: 'lm-cf-1', value: 'Significant (>$100K)',  setBy: 'lm-user-dep', daysAgo: 60 },  // IL SB4025
-  { externalId: 'legiscan:2061476', fieldId: 'lm-cf-1', value: 'Minimal (<$10K)',       setBy: 'demo-user',   daysAgo: 200 }, // IN HB1124
+  { externalId: 'legiscan:2061476', fieldId: 'lm-cf-1', value: 'Minimal (<$10K)',       setBy: 'demo-user',   daysAgo: 4 }, // IN HB1124
   { externalId: 'legiscan:2150744', fieldId: 'lm-cf-1', value: 'Moderate ($10K-$100K)', setBy: 'lm-user-ed',  daysAgo: 50 },  // US HB8876
+  { externalId: 'legiscan:2129983', fieldId: 'lm-cf-1', value: 'Moderate ($10K-$100K)', setBy: 'demo-user',   daysAgo: 3 },   // MI HB5674
 
   // Working Group (lm-cf-2) — 12 bills, mapped from each bill's theme
   { externalId: 'legiscan:2029026', fieldId: 'lm-cf-2', value: 'Habitat',        setBy: 'demo-user',   daysAgo: 270 }, // MI HB4427 — Beaches & Shoreline
@@ -114,8 +177,8 @@ export const LM_CUSTOM_FIELD_VALUES: Array<{ externalId: string; fieldId: string
   { externalId: 'legiscan:2055958', fieldId: 'lm-cf-2', value: 'Habitat',        setBy: 'demo-user',   daysAgo: 90 },  // MI HB5308 — Invasive Species
   { externalId: 'legiscan:2129983', fieldId: 'lm-cf-2', value: 'Infrastructure', setBy: 'demo-user',   daysAgo: 159 }, // MI HB5674 — Drinking Water
   { externalId: 'legiscan:2095619', fieldId: 'lm-cf-2', value: 'Infrastructure', setBy: 'demo-user',   daysAgo: 60 },  // MI SB0771 — Septic & Wastewater
-  { externalId: 'legiscan:2006944', fieldId: 'lm-cf-2', value: 'Infrastructure', setBy: 'lm-user-ed',  daysAgo: 210 }, // WI AB129 — Drinking Water
-  { externalId: 'legiscan:2006749', fieldId: 'lm-cf-2', value: 'Contaminants',   setBy: 'lm-user-ed',  daysAgo: 200 }, // WI AB131 — PFAS
+  { externalId: 'legiscan:2006944', fieldId: 'lm-cf-2', value: 'Infrastructure', setBy: 'lm-user-ed',  daysAgo: 135 }, // WI AB129 — Drinking Water
+  { externalId: 'legiscan:2006749', fieldId: 'lm-cf-2', value: 'Contaminants',   setBy: 'lm-user-ed',  daysAgo: 121 }, // WI AB131 — PFAS
   { externalId: 'legiscan:1979645', fieldId: 'lm-cf-2', value: 'Infrastructure', setBy: 'lm-user-dep', daysAgo: 420 }, // WI SB56 — Lead Service Lines
   { externalId: 'legiscan:2052600', fieldId: 'lm-cf-2', value: 'Infrastructure', setBy: 'lm-user-dep', daysAgo: 180 }, // WI SB628 — Water Withdrawal
   { externalId: 'legiscan:1906052', fieldId: 'lm-cf-2', value: 'Habitat',        setBy: 'lm-user-dep', daysAgo: 300 }, // IL HB1175 — Great Lakes
@@ -127,23 +190,23 @@ export const LM_CUSTOM_FIELD_VALUES: Array<{ externalId: string; fieldId: string
     value: '<p>Supports the brown alert requirement as a straightforward extension of existing county emergency-notice duties. Our only outstanding question is which county department bears the cost of maintaining the E. coli monitoring equipment the alert threshold depends on.</p>' },
   { externalId: 'legiscan:2095619', fieldId: 'lm-cf-3', setBy: 'demo-user', daysAgo: 60,
     value: '<p>The onsite wastewater assessment and evaluation requirements in the substitute are a meaningful step for septic oversight in the basin. We are watching how the evaluation cost is allocated between property owners and counties, since that detail was still being worked out in Committee of the Whole.</p>' },
-  { externalId: 'legiscan:2006749', fieldId: 'lm-cf-3', setBy: 'lm-user-ed', daysAgo: 200,
+  { externalId: 'legiscan:2006749', fieldId: 'lm-cf-3', setBy: 'lm-user-ed', daysAgo: 121,
     value: '<p>The PFAS program bill enacted as 2026 Wisconsin Act 201 is the strongest state-level contaminant framework we track. We are now focused on how the agency implements the testing and remediation programs it authorizes, since the statute itself leaves most of that to rulemaking.</p>' },
-  { externalId: 'legiscan:2111275', fieldId: 'lm-cf-3', setBy: 'lm-user-dep', daysAgo: 60,
+  { externalId: 'legiscan:2111275', fieldId: 'lm-cf-3', setBy: 'lm-user-dep', daysAgo: 31,
     value: '<p>Lead service line replacement funding enacted as Public Act 104-0572. Our concern now shifts to implementation — whether disadvantaged communities get prioritized access to the replacement funds, and how quickly utilities can staff up to do the work.</p>' },
 
   // Compliance Deadline (lm-cf-4) — 3 enacted bills, real effective dates from the manifest
-  { externalId: 'legiscan:2006749', fieldId: 'lm-cf-4', value: '2026-04-07', setBy: 'lm-user-ed',  daysAgo: 130 }, // WI AB131 — published 4-7-2026
+  { externalId: 'legiscan:2006749', fieldId: 'lm-cf-4', value: '2026-04-07', setBy: 'lm-user-ed',  daysAgo: 127 }, // WI AB131 — published 4-7-2026
   { externalId: 'legiscan:1952725', fieldId: 'lm-cf-4', value: '2025-08-15', setBy: 'lm-user-dep', daysAgo: 361 }, // IL HB2516 — effective 8-15-2025
   { externalId: 'legiscan:2111275', fieldId: 'lm-cf-4', value: '2026-07-10', setBy: 'lm-user-dep', daysAgo: 32 },  // IL SB4025 — effective 7-10-2026
 
   // Testimony Submitted (lm-cf-5, binary) — 3 bills the team has filed on. Each
   // date is pinned to the thread that says so, since the flag and the comment are
-  // the same claim rendered two ways: lm-c-6 ("Testimony is submitted", daysAgo 1),
+  // the same claim rendered two ways: lm-c-6 ("Testimony is submitted", daysAgo 31),
   // lm-c-17 ("Testimony is in the record", daysAgo 3), and IL HB1175 where the ask
   // to lock in written testimony is lm-c-41 at daysAgo 5 and the drafting is still
   // in progress at lm-c-45 (daysAgo 2), so the filing has to postdate both.
-  { externalId: 'legiscan:2029026', fieldId: 'lm-cf-5', value: '1', setBy: 'demo-user',   daysAgo: 1 }, // MI HB4427
+  { externalId: 'legiscan:2029026', fieldId: 'lm-cf-5', value: '1', setBy: 'demo-user',   daysAgo: 31 }, // MI HB4427
   { externalId: 'legiscan:2095619', fieldId: 'lm-cf-5', value: '1', setBy: 'demo-user',   daysAgo: 3 }, // MI SB0771
   { externalId: 'legiscan:1906052', fieldId: 'lm-cf-5', value: '1', setBy: 'lm-user-dep', daysAgo: 1 }, // IL HB1175
 ]
@@ -163,9 +226,9 @@ export const LM_CUSTOM_FIELD_VALUES: Array<{ externalId: string; fieldId: string
 // goes to MI HB5674 instead — introduced, still sitting in the House Government
 // Operations Committee, and a House bill in a House committee.
 export const LM_CALENDAR_EVENTS: DemoSeedCalendarEvent[] = [
-  { id: 'lm-hearing-1', externalId: 'legiscan:2029026', source: 'hearing', offsetDays: 2,  time: '10:00:00', location: 'Binsfeld Office Building, Room 1100, Lansing', description: 'Senate Local Government Committee — hearing' },
+  { id: 'lm-hearing-1', externalId: 'legiscan:2029026', source: 'hearing', offsetDays: 9,  time: '10:00:00', location: 'Binsfeld Office Building, Room 1100, Lansing', description: 'Senate Local Government Committee — hearing' },
   { id: 'lm-hearing-2', externalId: 'legiscan:2055958', source: 'hearing', offsetDays: 5,  time: '10:00:00', location: 'Binsfeld Office Building, Room 1200, Lansing', description: 'Senate Natural Resources and Agriculture Committee — hearing' },
-  { id: 'lm-hearing-3', externalId: 'legiscan:2129983', source: 'hearing', offsetDays: 9,  time: '10:00:00', location: 'Anderson House Office Building, Room 519, Lansing', description: 'House Government Operations Committee — hearing' },
+  { id: 'lm-hearing-3', externalId: 'legiscan:2129983', source: 'hearing', offsetDays: 2,  time: '10:00:00', location: 'Anderson House Office Building, Room 519, Lansing', description: 'House Government Operations Committee — hearing' },
   // Energy & Environment, not Rules: Rules is where this bill was re-referred to
   // die (twice), so a hearing notice from Rules would be the least plausible thing
   // in the seed. Energy & Environment is the substantive IL House committee that
@@ -173,6 +236,13 @@ export const LM_CALENDAR_EVENTS: DemoSeedCalendarEvent[] = [
   { id: 'lm-hearing-4', externalId: 'legiscan:1906052', source: 'hearing', offsetDays: 13, time: '10:00:00', location: 'Illinois State Capitol, Room 118, Springfield', description: 'House Energy & Environment Committee — hearing' },
   { id: 'lm-hearing-5', externalId: 'legiscan:2061476', source: 'hearing', offsetDays: 18, time: '10:00:00', location: 'Indiana Statehouse, Room 156-B, Indianapolis', description: 'House Public Health Committee — hearing' },
   { id: 'lm-hearing-6', externalId: 'legiscan:2150744', source: 'hearing', offsetDays: 26, time: '10:00:00', location: 'Rayburn House Office Building, Washington DC', description: 'Subcommittee on Water, Wildlife and Fisheries — hearing' },
+  // One legislative hearing taking up three bills, as a subcommittee often does: US
+  // HB284, HB583, and HB6668 were all really referred to Water Resources and
+  // Environment, and none has moved since. One row per bill because a calendar row
+  // names one bill.
+  { id: 'lm-hearing-7', externalId: 'legiscan:1910159', source: 'hearing', offsetDays: 11, time: '10:00:00', location: 'Rayburn House Office Building, Room 2167, Washington DC', description: 'Subcommittee on Water Resources and Environment — hearing' },
+  { id: 'lm-hearing-8', externalId: 'legiscan:1933798', source: 'hearing', offsetDays: 11, time: '10:00:00', location: 'Rayburn House Office Building, Room 2167, Washington DC', description: 'Subcommittee on Water Resources and Environment — hearing' },
+  { id: 'lm-hearing-9', externalId: 'legiscan:2058690', source: 'hearing', offsetDays: 11, time: '10:00:00', location: 'Rayburn House Office Building, Room 2167, Washington DC', description: 'Subcommittee on Water Resources and Environment — hearing' },
 
   { id: 'lm-event-1', externalId: null, source: 'custom', offsetDays: -5, time: null, location: 'Zoom', description: 'Monthly all-staff call' },
   { id: 'lm-event-2', externalId: 'legiscan:2055958', source: 'custom', offsetDays: 3, time: '17:00:00', location: null, description: 'Testimony deadline — MI HB5308 (watercraft invasive species decals)' },
@@ -186,8 +256,10 @@ export const LM_CALENDAR_EVENTS: DemoSeedCalendarEvent[] = [
   //
   // The two past hearings are pinned to bills that have no UPCOMING hearing, so
   // no bill ends up with the same committee meeting twice, and each lines up with
-  // that bill's own invented activity: SB0771's 'Committee Hearing Held' at day
-  // 27, and HB5268 sitting in Energy & Environment since day 10.
+  // that bill's own feed: SB0771's 'Committee Hearing Held' at day 27, and
+  // HB5268's notice at day 9, which its thread reports on (lm-c-53). HB5268's
+  // amendment went to Energy & Environment, so that committee taking it up is
+  // plausible even though the bill itself sits in Rules.
   { id: 'lm-hearing-past-1', externalId: 'legiscan:2095619', source: 'hearing', offsetDays: -27, time: '09:00:00', location: 'Binsfeld Office Building, Room 1100, Lansing', description: 'Senate Natural Resources and Agriculture Committee — hearing' },
   { id: 'lm-hearing-past-2', externalId: 'legiscan:2109237', source: 'hearing', offsetDays: -6,  time: '13:00:00', location: 'Illinois State Capitol, Room 118, Springfield', description: 'House Energy & Environment Committee — hearing' },
 
@@ -208,7 +280,7 @@ const chg = (changeType: string, f: { oldValue?: string | null; newValue?: strin
 // HB5268, for instance, never leave the "Introduced" bucket despite committee
 // activity, so no status_change is claimed for them.
 export const LM_BILL_UPDATED_EVENTS: DemoSeedFeedEvent[] = [
-  // MI HB4427 — Beaches & Shoreline, high, live (hearing +2)
+  // MI HB4427 — low, live (hearing +9)
   { id: 'lm-fe-u-mi-hb4427-1', type: 'bill_updated', externalId: 'legiscan:2029026', userId: 'system', daysAgo: 285, metadata: { changes: [
     chg('status_change', { oldValue: 'Introduced', newValue: 'Engrossed (passed one chamber)' }),
     chg('action_added', { newValue: 'Passed; Given Immediate Effect Roll Call #283 Yeas 94 Nays 10 Excused 0 Not Voting 6' }),
@@ -243,7 +315,7 @@ export const LM_BILL_UPDATED_EVENTS: DemoSeedFeedEvent[] = [
     chg('action_added', { newValue: 'Referred To Committee On Natural Resources And Agriculture' }),
   ] } },
 
-  // MI HB5674 — Drinking Water, medium, live (hearing +9)
+  // MI HB5674 — Drinking Water, high, live (hearing +2)
   { id: 'lm-fe-u-mi-hb5674-1', type: 'bill_updated', externalId: 'legiscan:2129983', userId: 'system', daysAgo: 159, metadata: { changes: [
     chg('status_change', { newValue: 'Introduced' }),
     chg('action_added', { newValue: 'Introduced By Representative Rep. Jennifer Wortz' }),
@@ -462,13 +534,15 @@ export const LM_BILL_UPDATED_EVENTS: DemoSeedFeedEvent[] = [
  * absent parts, so the row still reads "Hearing scheduled: 10:00 AM · <location> ·
  * <committee> — hearing".
  */
-const hearingNotice = (id: string, calendarId: string, daysAgo: number): DemoSeedFeedEvent => {
+const hearingNotice = (
+  id: string, calendarId: string, daysAgo: number, type: 'hearing_added' | 'hearing_changed' = 'hearing_added',
+): DemoSeedFeedEvent => {
   const h = LM_CALENDAR_EVENTS.find(e => e.id === calendarId)
   if (!h || h.source !== 'hearing' || h.externalId === null) {
     throw new Error(`hearingNotice: no bill-linked hearing calendar entry ${calendarId}`)
   }
   return {
-    id, type: 'hearing_added', externalId: h.externalId, userId: 'system',
+    id, type, externalId: h.externalId, userId: 'system',
     metadata: { time: h.time, location: h.location, description: h.description },
     daysAgo,
   }
@@ -497,36 +571,81 @@ const LM_HEARING_NOTICES: Array<{ eventId: string; calendarId: string; daysAgo: 
   { eventId: 'lm-fe-h-il-hb1175', calendarId: 'lm-hearing-4', daysAgo: 16 },
   { eventId: 'lm-fe-h-in-hb1124', calendarId: 'lm-hearing-5', daysAgo: 6 },
   { eventId: 'lm-fe-h-us-hb8876', calendarId: 'lm-hearing-6', daysAgo: 5 },
+  // Ahead of the testimony thread (lm-c-1, daysAgo 33), which is planning for it.
+  { eventId: 'lm-fe-h-mi-hb4427', calendarId: 'lm-hearing-1', daysAgo: 34 },
+  // After HB284's own thread asks when it will move (lm-c-74, lm-c-75), and ahead of
+  // the replies to the notice (lm-c-103, lm-c-104, lm-c-105).
+  { eventId: 'lm-fe-h-us-hb284', calendarId: 'lm-hearing-7', daysAgo: 2 },
+  { eventId: 'lm-fe-h-us-hb583', calendarId: 'lm-hearing-8', daysAgo: 2 },
+  { eventId: 'lm-fe-h-us-hb6668', calendarId: 'lm-hearing-9', daysAgo: 2 },
+  // Three days ahead of the hearing itself (lm-hearing-past-2, 6 days ago), which
+  // lm-c-53 reports on that day.
+  { eventId: 'lm-fe-h-il-hb5268', calendarId: 'lm-hearing-past-2', daysAgo: 9 },
 ]
 
 export const LM_HEARING_NOTICE_SOURCES: ReadonlyArray<{ eventId: string; calendarId: string }> =
   LM_HEARING_NOTICES
 
-export const LM_HEARING_EVENTS: DemoSeedFeedEvent[] =
-  LM_HEARING_NOTICES.map(n => hearingNotice(n.eventId, n.calendarId, n.daysAgo))
+/**
+ * Updates to an announced hearing, which is what the calendar reconciler emits when
+ * a committee moves one. The calendar row is the hearing as it now stands, so the
+ * update carries its fields, and the notice carries the room it was first set for. Each lands after its own notice, and
+ * on one of the busiest threads at the top of the feed, where it puts the hearing
+ * those threads are planning for back in view.
+ */
+const LM_HEARING_CHANGES: Array<{ eventId: string; calendarId: string; daysAgo: number; minutesLater?: number; previousLocation: string }> = [
+  { eventId: 'lm-fe-hc-in-hb1124', calendarId: 'lm-hearing-5', daysAgo: 1, minutesLater: -40, previousLocation: 'Indiana Statehouse, Room 156-C, Indianapolis' },
+  { eventId: 'lm-fe-hc-mi-hb5308', calendarId: 'lm-hearing-2', daysAgo: 0, minutesLater: -170, previousLocation: 'Binsfeld Office Building, Room 1300, Lansing' },
+  { eventId: 'lm-fe-hc-mi-hb5674', calendarId: 'lm-hearing-3', daysAgo: 2, minutesLater: -240, previousLocation: 'Anderson House Office Building, Room 521, Lansing' },
+  // HB4427's thread has been quiet since its notice. The room change lands the day before the
+  // team's last comments on it, and nothing of its own is newer than 7 days (#942).
+  { eventId: 'lm-fe-hc-mi-hb4427', calendarId: 'lm-hearing-1', daysAgo: 9, previousLocation: 'Binsfeld Office Building, Room 1200, Lansing' },
+  // These two stand in for re-dated copies of real actions (see LM_RECENT_ACTIVITY_EVENTS).
+  { eventId: 'lm-fe-hc-il-hb1175', calendarId: 'lm-hearing-4', daysAgo: 12, previousLocation: 'Illinois State Capitol, Room 114, Springfield' },
+  { eventId: 'lm-fe-hc-us-hb8876', calendarId: 'lm-hearing-6', daysAgo: 2, previousLocation: 'Longworth House Office Building, Washington DC' },
+]
+
+export const LM_HEARING_CHANGE_SOURCES: ReadonlyArray<{ eventId: string; calendarId: string; previousLocation: string }> =
+  LM_HEARING_CHANGES
+
+// A moved hearing's notice went out with its earlier room, so the change shows the
+// move rather than repeating the notice.
+const announced = (n: { eventId: string; calendarId: string; daysAgo: number }): DemoSeedFeedEvent => {
+  const e = hearingNotice(n.eventId, n.calendarId, n.daysAgo)
+  const moved = LM_HEARING_CHANGES.find(c => c.calendarId === n.calendarId)
+  return moved ? { ...e, metadata: { ...e.metadata, location: moved.previousLocation } } : e
+}
+
+export const LM_HEARING_EVENTS: DemoSeedFeedEvent[] = [
+  ...LM_HEARING_NOTICES.map(announced),
+  ...LM_HEARING_CHANGES.map(n => ({
+    ...hearingNotice(n.eventId, n.calendarId, n.daysAgo, 'hearing_changed'),
+    ...(n.minutesLater !== undefined ? { minutesLater: n.minutesLater } : {}),
+  })),
+]
 
 // Hand-written priority_set and position_set events. Task 4 imports this name.
 export const LM_ENGAGEMENT_EVENTS: DemoSeedFeedEvent[] = [
   // Priority set — one per tracked bill
-  { id: 'lm-fe-p1',  type: 'priority_set', externalId: 'legiscan:2029026', userId: 'demo-user',   metadata: { priority: 'high' },   daysAgo: 280 }, // MI HB4427
+  { id: 'lm-fe-p1',  type: 'priority_set', externalId: 'legiscan:2029026', userId: 'demo-user',   metadata: { priority: 'low' },    daysAgo: 12, minutesLater: 3 }, // MI HB4427
   { id: 'lm-fe-p2',  type: 'priority_set', externalId: 'legiscan:2041788', userId: 'demo-user',   metadata: { priority: 'low' },    daysAgo: 363 }, // MI HB4768
   { id: 'lm-fe-p3',  type: 'priority_set', externalId: 'legiscan:2055958', userId: 'demo-user',   metadata: { priority: 'high' },   daysAgo: 100 }, // MI HB5308
-  { id: 'lm-fe-p4',  type: 'priority_set', externalId: 'legiscan:2129983', userId: 'demo-user',   metadata: { priority: 'medium' }, daysAgo: 159 }, // MI HB5674
+  { id: 'lm-fe-p4',  type: 'priority_set', externalId: 'legiscan:2129983', userId: 'demo-user',   metadata: { priority: 'high' },   daysAgo: 3, minutesLater: 93 }, // MI HB5674
   { id: 'lm-fe-p5',  type: 'priority_set', externalId: 'legiscan:2095619', userId: 'demo-user',   metadata: { priority: 'high' },   daysAgo: 68 },  // MI SB0771
-  { id: 'lm-fe-p6',  type: 'priority_set', externalId: 'legiscan:2006944', userId: 'lm-user-ed',  metadata: { priority: 'medium' }, daysAgo: 210 }, // WI AB129
-  { id: 'lm-fe-p7',  type: 'priority_set', externalId: 'legiscan:2006749', userId: 'lm-user-ed',  metadata: { priority: 'high' },   daysAgo: 210 }, // WI AB131
-  { id: 'lm-fe-p8',  type: 'priority_set', externalId: 'legiscan:1979645', userId: 'lm-user-dep', metadata: { priority: 'high' },   daysAgo: 430 }, // WI SB56
-  { id: 'lm-fe-p9',  type: 'priority_set', externalId: 'legiscan:2052600', userId: 'lm-user-dep', metadata: { priority: 'low' },    daysAgo: 190 }, // WI SB628
+  { id: 'lm-fe-p6',  type: 'priority_set', externalId: 'legiscan:2006944', userId: 'lm-user-dep',  metadata: { priority: 'medium' }, daysAgo: 133, minutesLater: 3 }, // WI AB129
+  { id: 'lm-fe-p7',  type: 'priority_set', externalId: 'legiscan:2006749', userId: 'lm-user-ed',  metadata: { priority: 'high' },   daysAgo: 121, minutesLater: 3 }, // WI AB131
+  { id: 'lm-fe-p8',  type: 'priority_set', externalId: 'legiscan:1979645', userId: 'lm-user-dep', metadata: { priority: 'high' },   daysAgo: 404, minutesLater: 63 }, // WI SB56
+  { id: 'lm-fe-p9',  type: 'priority_set', externalId: 'legiscan:2052600', userId: 'lm-user-dep', metadata: { priority: 'low' },    daysAgo: 136, minutesLater: 3 }, // WI SB628
   { id: 'lm-fe-p10', type: 'priority_set', externalId: 'legiscan:1906052', userId: 'lm-user-dep', metadata: { priority: 'high' },   daysAgo: 310 }, // IL HB1175
   { id: 'lm-fe-p11', type: 'priority_set', externalId: 'legiscan:1952725', userId: 'lm-user-dep', metadata: { priority: 'medium' }, daysAgo: 430 }, // IL HB2516
   { id: 'lm-fe-p12', type: 'priority_set', externalId: 'legiscan:2109237', userId: 'lm-user-dep', metadata: { priority: 'medium' }, daysAgo: 187 }, // IL HB5268
   { id: 'lm-fe-p13', type: 'priority_set', externalId: 'legiscan:2111275', userId: 'lm-user-dep', metadata: { priority: 'high' },   daysAgo: 70 },  // IL SB4025
-  { id: 'lm-fe-p14', type: 'priority_set', externalId: 'legiscan:2061476', userId: 'demo-user',   metadata: { priority: 'high' },   daysAgo: 210 }, // IN HB1124
+  { id: 'lm-fe-p14', type: 'priority_set', externalId: 'legiscan:2061476', userId: 'demo-user',   metadata: { priority: 'high' },   daysAgo: 4, minutesLater: 93 }, // IN HB1124
   { id: 'lm-fe-p15', type: 'priority_set', externalId: 'legiscan:2056216', userId: 'lm-user-ed',  metadata: { priority: 'medium' }, daysAgo: 190 }, // IN SB0006
   { id: 'lm-fe-p16', type: 'priority_set', externalId: 'legiscan:2065860', userId: 'demo-user',   metadata: { priority: 'low' },    daysAgo: 217 }, // IN SB0188
-  { id: 'lm-fe-p17', type: 'priority_set', externalId: 'legiscan:1910159', userId: 'lm-user-ed',  metadata: { priority: 'high' },   daysAgo: 510 }, // US HB284
-  { id: 'lm-fe-p18', type: 'priority_set', externalId: 'legiscan:1933798', userId: 'lm-user-ed',  metadata: { priority: 'medium' }, daysAgo: 567 }, // US HB583
-  { id: 'lm-fe-p19', type: 'priority_set', externalId: 'legiscan:2058690', userId: 'lm-user-ed',  metadata: { priority: 'medium' }, daysAgo: 243 }, // US HB6668
+  { id: 'lm-fe-p17', type: 'priority_set', externalId: 'legiscan:1910159', userId: 'lm-user-fed',  metadata: { priority: 'high' },   daysAgo: 8, minutesLater: 4 }, // US HB284
+  { id: 'lm-fe-p18', type: 'priority_set', externalId: 'legiscan:1933798', userId: 'lm-user-fed',  metadata: { priority: 'medium' }, daysAgo: 60, minutesLater: 3 }, // US HB583
+  { id: 'lm-fe-p19', type: 'priority_set', externalId: 'legiscan:2058690', userId: 'lm-user-wq',  metadata: { priority: 'medium' }, daysAgo: 14, minutesLater: 3 }, // US HB6668
   { id: 'lm-fe-p20', type: 'priority_set', externalId: 'legiscan:2150744', userId: 'lm-user-ed',  metadata: { priority: 'high' },   daysAgo: 60 },  // US HB8876
 
   // Position set — mirrors LM_POSITIONS exactly
@@ -534,16 +653,18 @@ export const LM_ENGAGEMENT_EVENTS: DemoSeedFeedEvent[] = [
   { id: 'lm-fe-o2',  type: 'position_set', externalId: 'legiscan:2055958', userId: 'demo-user',   metadata: { position: 'Support' }, daysAgo: 90 },
   { id: 'lm-fe-o3',  type: 'position_set', externalId: 'legiscan:2095619', userId: 'demo-user',   metadata: { position: 'Monitor' }, daysAgo: 60 },
   { id: 'lm-fe-o4',  type: 'position_set', externalId: 'legiscan:2006944', userId: 'lm-user-ed',  metadata: { position: 'Support' }, daysAgo: 200 },
-  { id: 'lm-fe-o5',  type: 'position_set', externalId: 'legiscan:2006749', userId: 'lm-user-ed',  metadata: { position: 'Support' }, daysAgo: 200 },
-  { id: 'lm-fe-o6',  type: 'position_set', externalId: 'legiscan:1979645', userId: 'lm-user-dep', metadata: { position: 'Support' }, daysAgo: 420 },
+  { id: 'lm-fe-o5',  type: 'position_set', externalId: 'legiscan:2006749', userId: 'lm-user-ed',  metadata: { position: 'Support' }, daysAgo: 121, minutesLater: 63 },
+  { id: 'lm-fe-o6',  type: 'position_set', externalId: 'legiscan:1979645', userId: 'lm-user-dep', metadata: { position: 'Support' }, daysAgo: 402, minutesLater: 3 },
   { id: 'lm-fe-o7',  type: 'position_set', externalId: 'legiscan:2052600', userId: 'lm-user-dep', metadata: { position: 'Support' }, daysAgo: 180 },
   { id: 'lm-fe-o8',  type: 'position_set', externalId: 'legiscan:1906052', userId: 'lm-user-dep', metadata: { position: 'Support' }, daysAgo: 300 },
   { id: 'lm-fe-o9',  type: 'position_set', externalId: 'legiscan:1952725', userId: 'lm-user-dep', metadata: { position: 'Support' }, daysAgo: 420 },
   { id: 'lm-fe-o10', type: 'position_set', externalId: 'legiscan:2111275', userId: 'lm-user-dep', metadata: { position: 'Support' }, daysAgo: 60 },
-  { id: 'lm-fe-o11', type: 'position_set', externalId: 'legiscan:2061476', userId: 'demo-user',   metadata: { position: 'Support' }, daysAgo: 200 },
+  { id: 'lm-fe-o11', type: 'position_set', externalId: 'legiscan:2061476', userId: 'demo-user',   metadata: { position: 'Support' }, daysAgo: 4, minutesLater: 94 },
   { id: 'lm-fe-o12', type: 'position_set', externalId: 'legiscan:2056216', userId: 'lm-user-ed',  metadata: { position: 'Support' }, daysAgo: 180 },
-  { id: 'lm-fe-o13', type: 'position_set', externalId: 'legiscan:1910159', userId: 'lm-user-ed',  metadata: { position: 'Support' }, daysAgo: 500 },
+  { id: 'lm-fe-o13', type: 'position_set', externalId: 'legiscan:1910159', userId: 'lm-user-ed',  metadata: { position: 'Support' }, daysAgo: 6, minutesLater: 3 },
   { id: 'lm-fe-o14', type: 'position_set', externalId: 'legiscan:2150744', userId: 'lm-user-ed',  metadata: { position: 'Amend' },   daysAgo: 50 },
+  { id: 'lm-fe-o15', type: 'position_set', externalId: 'legiscan:2058690', userId: 'lm-user-dep', metadata: { position: 'Monitor' }, daysAgo: 3, minutesLater: 5 },
+  { id: 'lm-fe-o16', type: 'position_set', externalId: 'legiscan:2129983', userId: 'demo-user',   metadata: { position: 'Support' }, daysAgo: 3, minutesLater: 94 },
 ]
 
 // ── Recent legislative activity (fictional) ─────────────────────────────────
@@ -556,20 +677,22 @@ export const LM_ENGAGEMENT_EVENTS: DemoSeedFeedEvent[] = [
 // any legislative activity appears. That misrepresents the product, whose whole
 // point is legislative activity arriving alongside the team's reaction to it.
 //
-// These events are INVENTED, unlike every other event in this file. They are
-// written to be plausible for each bill's real chamber and status: nothing here
-// advances a bill that is dead, enacts one that is pending, or claims a roll
-// call. They are committee referrals, hearings, substitutions and readings —
-// the procedural texture of a live session. The seed's bannerText names them as
-// fictional alongside the hearing dates.
+// These events are INVENTED, unlike every other event in this file: either the
+// action is made up, or its date is (several are a bill's real actions moved into
+// the window). They are written to be plausible for each bill's real chamber and
+// status: nothing here advances a bill that is dead, enacts one that is pending,
+// or claims a roll call. They are committee referrals, hearings, substitutions
+// and readings — the procedural texture of a live session. The seed's bannerText
+// names them as fictional alongside the hearing dates.
 //
 // If the manifest is ever refreshed with newer real actions, delete this block
 // rather than growing it.
 export const LM_RECENT_ACTIVITY_EVENTS: DemoSeedFeedEvent[] = [
-  // MI HB5308 — Invasive Species, Engrossed, so second-chamber committee work.
-  { id: 'lm-fe-r-mi-hb5308-2', type: 'bill_updated', externalId: 'legiscan:2055958', userId: 'system', daysAgo: 12, metadata: { changes: [
-    chg('action_added', { newValue: 'Referred To Committee On Natural Resources And Agriculture' }),
-  ] } },
+  // None of these repeats an action LM_BILL_UPDATED_EVENTS already reports for its
+  // bill (a seed test holds that): a copy at a recent date shows the bill doing the
+  // same thing twice, months apart. Where a bill's thread needs recent activity and
+  // its record has nothing new, it gets a hearing notice or a hearing change from
+  // its calendar row instead (LM_HEARING_NOTICES, LM_HEARING_CHANGES).
 
   // MI SB0771 — Septic & Wastewater, still Introduced; committee activity only.
   { id: 'lm-fe-r-mi-sb0771-1', type: 'bill_updated', externalId: 'legiscan:2095619', userId: 'system', daysAgo: 27, metadata: { changes: [
@@ -577,55 +700,188 @@ export const LM_RECENT_ACTIVITY_EVENTS: DemoSeedFeedEvent[] = [
     chg('action_added', { newValue: 'Substitute S-2 Offered' }),
   ] } },
 
-  // IN HB1124 — Drinking Water, Introduced; Indiana reads bills by number.
-
-  // US HB8876 — Invasive Species, Introduced; federal committee referral.
-  { id: 'lm-fe-r-us-hb8876-1', type: 'bill_updated', externalId: 'legiscan:2150744', userId: 'system', daysAgo: 6, metadata: { changes: [
-    chg('action_added', { newValue: 'Referred to the Subcommittee on Water, Wildlife and Fisheries' }),
-  ] } },
-
-  // IL HB5268 — Water Withdrawal, Introduced; IL uses committee deadlines.
-
-  // MI HB5674 — Drinking Water, Introduced.
-  { id: 'lm-fe-r-mi-hb5674-1', type: 'bill_updated', externalId: 'legiscan:2129983', userId: 'system', daysAgo: 3, metadata: { changes: [
-    chg('action_added', { newValue: 'Referred To Committee On Government Operations' }),
-  ] } },
-
-  // ── Top-of-feed coverage ───────────────────────────────────────────────────
-  // The six bills a visitor meets first are the ones carrying the newest
-  // comments: MI HB4427, MI SB0771, IL HB1175, IN HB1124, MI HB5308 and US
-  // HB8876. Without these, five of the six showed only social activity above the
-  // fold, and the feed read as a comment stream rather than as legislation and
-  // reaction interleaved — the single thing this view exists to demonstrate.
-  // Each entry below continues that bill's own sequence rather than contradicting
-  // it, and none claims a roll call.
-
-  // MI HB4427 — Engrossed, sitting in Senate Local Government per its real history.
-
-  // IL HB1175 — still Introduced; a Rules re-referral moves nothing, which suits
-  // a bill the manifest never advances out of that bucket.
-  { id: 'lm-fe-r-il-hb1175-1', type: 'bill_updated', externalId: 'legiscan:1906052', userId: 'system', daysAgo: 12, metadata: { changes: [
-    chg('action_added', { newValue: 'Re-referred to Rules Committee' }),
-  ] } },
-
-  // MI SB0771 — follows lm-fe-r-mi-sb0771-1 (hearing held, substitute offered) at day 5.
-  { id: 'lm-fe-r-mi-sb0771-2', type: 'bill_updated', externalId: 'legiscan:2095619', userId: 'system', daysAgo: 24, metadata: { changes: [
-    chg('action_added', { newValue: 'Substitute S-2 Adopted' }),
-    chg('action_added', { newValue: 'Placed On Order Of Third Reading With Substitute (s-2)' }),
-  ] } },
-
-  // US HB8876 — follows lm-fe-r-us-hb8876-1 (subcommittee referral) at day 6.
-  { id: 'lm-fe-r-us-hb8876-2', type: 'bill_updated', externalId: 'legiscan:2150744', userId: 'system', daysAgo: 2, metadata: { changes: [
-    chg('action_added', { newValue: 'Subcommittee Hearings Held' }),
-  ] } },
-
   // MI HB4768 — Drinking Water, Introduced.
   { id: 'lm-fe-r-mi-hb4768-1', type: 'bill_updated', externalId: 'legiscan:2041788', userId: 'system', daysAgo: 3, metadata: { changes: [
     chg('action_added', { newValue: 'Referred To Committee On Regulatory Reform' }),
   ] } },
 
-  // US HB6668 — PFAS, Introduced.
-  { id: 'lm-fe-r-us-hb6668-1', type: 'bill_updated', externalId: 'legiscan:2058690', userId: 'system', daysAgo: 4, metadata: { changes: [
-    chg('action_added', { newValue: 'Referred to the Subcommittee on Water Resources and Environment.' }),
+  // ── Activity between the discussion cards ──────────────────────────────────
+  // These give the feed cards that are activity alone, on days nobody commented,
+  // the way bills move in a real session. Both are SB528's own latest real actions,
+  // verbatim, moved into the window; neither is in LM_BILL_UPDATED_EVENTS.
+
+  // US SB528 — HB284's Senate companion, so the feed shows these on HB284's card. It
+  // really did pass the Senate by unanimous consent and is held at the House desk,
+  // which is what the team's letter naming both bills (lm-c-sb528-1) is for.
+  { id: 'lm-fe-r-us-sb528-1', type: 'bill_updated', externalId: 'legiscan:1966402', userId: 'system', daysAgo: 13, metadata: { changes: [
+    chg('status_change', { oldValue: 'Introduced', newValue: 'Engrossed (passed one chamber)' }),
+    chg('action_added', { newValue: 'S.Amdt.6843 Amendment SA 6843 agreed to in Senate by Unanimous Consent.' }),
+    chg('action_added', { newValue: 'Passed Senate with an amendment by Unanimous Consent. (text: CR S5184)' }),
+  ] } },
+  { id: 'lm-fe-r-us-sb528-2', type: 'bill_updated', externalId: 'legiscan:1966402', userId: 'system', daysAgo: 9, metadata: { changes: [
+    chg('action_added', { newValue: 'Received in the House.' }),
+    chg('action_added', { newValue: 'Held at the desk.' }),
+  ] } },
+
+  // ── Top of the feed: bills moving on their own ─────────────────────────────
+  // The first screen opens on bills changing with no one commenting yet, in the
+  // kinds of change the provider reports besides hearings: cosponsors, documents,
+  // amendments, and floor actions. None advances a bill or claims a vote. The
+  // cosponsors are real ones (bills.co_sponsors); only when they joined is invented.
+  // Formats follow central's detect-changes.ts: a sponsor as "Rep. Name
+  // (Party)", a document or amendment by its type or title in `detail`, and only
+  // the newest action when several arrive together.
+
+  // The order within a day is the feed's: a card sorts by its newest event, so
+  // minutesLater sets the sequence. Today runs mixed (HB284), discussion (HB5674),
+  // activity (HB1175), mixed (HB5308); yesterday mixed (HB1124), discussion
+  // (HB6668), activity (SB0771), discussion (HB583).
+
+  // US HB284 — two of its real cosponsors, under the team noticing them.
+  { id: 'lm-fe-t-us-hb284', type: 'bill_updated', externalId: 'legiscan:1910159', userId: 'system', daysAgo: 0, minutesLater: -140, metadata: { changes: [
+    chg('sponsor_added', { newValue: 'Rep. Marcy Kaptur (D)' }),
+    chg('sponsor_added', { newValue: 'Rep. Pete Stauber (R)' }),
+  ] } },
+  // IN HB1124 — Indiana's nonpartisan fiscal staff publish a note for a bill in
+  // committee; this one has its Public Health hearing coming.
+  { id: 'lm-fe-t-in-hb1124', type: 'bill_updated', externalId: 'legiscan:2061476', userId: 'system', daysAgo: 1, minutesLater: -30, metadata: { changes: [
+    chg('supplement_added', { detail: 'Fiscal Note' }),
+  ] } },
+  // MI SB0771 — on the order of third reading since June (its real record), which
+  // is where the Michigan Senate routinely postpones a bill day to day.
+  { id: 'lm-fe-t-mi-sb0771', type: 'bill_updated', externalId: 'legiscan:2095619', userId: 'system', daysAgo: 1, minutesLater: -180, metadata: { changes: [
+    chg('action_added', { newValue: 'Postponed For The Day' }),
+  ] } },
+  // MI HB5674 — the House Fiscal Agency analyzes a bill ahead of its committee
+  // hearing (lm-hearing-3, two days out when the thread picks it up today, lm-c-110).
+  { id: 'lm-fe-t-mi-hb5674', type: 'bill_updated', externalId: 'legiscan:2129983', userId: 'system', daysAgo: 2, minutesLater: -180, metadata: { changes: [
+    chg('supplement_added', { detail: 'Analysis' }),
+  ] } },
+  // IL HB1175 — its Committee Amendment No. 1 was tabled in 2025 (real record); a
+  // second one ahead of the Energy & Environment hearing (lm-hearing-4) goes to
+  // Rules first, as every IL committee amendment does.
+  { id: 'lm-fe-t-il-hb1175', type: 'bill_updated', externalId: 'legiscan:1906052', userId: 'system', daysAgo: 0, minutesLater: -95, metadata: { changes: [
+    chg('amendment_added', { detail: 'House Committee Amendment No. 2' }),
+    chg('action_added', { newValue: 'House Committee Amendment No. 2 Referred to Rules Committee' }),
   ] } },
 ]
+
+/**
+ * The companion bills the seed engages (#867): the identical companions of four tracked
+ * bills, which the operator delivers into the demo tenant so each pair forms a group.
+ * Until then a row on one of these bills no-ops, as any seed row whose bill is missing
+ * does. They are not among the 20 tracked bills, so the seed's priorities and the
+ * tests that count tracked bills leave them out.
+ */
+export const LM_COMPANION_BILLS: Array<{
+  externalId: string
+  jurisdiction: 'WI' | 'US'
+  billNumber: string
+  /** The tracked bill this one is the identical companion of. */
+  companionOf: string
+}> = [
+  { externalId: 'legiscan:2007625', jurisdiction: 'WI', billNumber: 'SB128',  companionOf: 'legiscan:2006749' },
+  { externalId: 'legiscan:1981854', jurisdiction: 'WI', billNumber: 'AB59',   companionOf: 'legiscan:1979645' },
+  { externalId: 'legiscan:1966402', jurisdiction: 'US', billNumber: 'SB528',  companionOf: 'legiscan:1910159' },
+  { externalId: 'legiscan:2058679', jurisdiction: 'US', billNumber: 'SB3457', companionOf: 'legiscan:2058690' },
+]
+
+// ── Activity on bills with no priority (#925) ───────────────────────────────
+//
+// The demo holds about 2,100 more bills than the 20 above, delivered by central
+// with their real histories, and nobody has set a priority on any of them. They
+// never get feed events of their own: the demo's central runs no crons, so nothing
+// updates them. With the feed's daily row for bills with no priority (#918) a
+// visitor would never see it. These events give a dozen of them activity across
+// the recent window, so the row shows, among the team's cards.
+//
+// The row counts only bills the demo has analyzed (a bill with a match type), and the
+// demo analyzes a delivered bill only when it matches the demo's keywords. So every
+// bill here is one that does (the guard in demoSeeds.lakeMichigan.analyzed.test.ts
+// runs the real matcher on each); a bill that matches no keyword is delivered but
+// never analyzed, and its events would write no row.
+//
+// Each action below is one of the bill's own, verbatim from its stored history,
+// shown on a recent day instead of its real date (the dates differ, as in
+// LM_RECENT_ACTIVITY_EVENTS, and the banner names the recent activity as fictional).
+// A bill's actions keep their real order. They are procedural (assignments,
+// reports, readings, deadlines), never a vote, a passage, or an enactment, so
+// nothing here advances a bill past where its record has it. None of these bills
+// is tracked, has a companion, or has a comment, vote, or position, so each has no
+// earlier feed event and none repeats an action shown elsewhere.
+//
+// The cadence is the feed's: most days of the last 14 have a row of two or more
+// bills, two have a lone bill, and a few have none. Every row day has team cards
+// above it (the row ends its day), and the rows number about one for every five
+// cards of the team's. A lone bill is its own full card once the feed shows one
+// (#921), ordered by its events' time like any card, so it is dated 45 minutes
+// earlier than the team's cards that day, below them and never first. Every other event has no
+// minutesLater, so a reset on any minute of the day keeps one day's bills in one
+// UTC day, which is what the row is keyed by.
+
+/** One real action of a bill with no priority, and the recent day it is shown on. */
+export type NoPriorityAction = {
+  externalId: string
+  /** For reading the table only. The feed shows the bill's own number and title. */
+  billNumber: string
+  /** The date the bill's history gives the action. */
+  actionDate: string
+  /** Verbatim from the bill's stored history. */
+  action: string
+  daysAgo: number
+  minutesLater?: number
+}
+
+const np = (
+  externalId: string, billNumber: string, actionDate: string, daysAgo: number, action: string, minutesLater?: number,
+): NoPriorityAction => ({ externalId, billNumber, actionDate, action, daysAgo, ...(minutesLater !== undefined ? { minutesLater } : {}) })
+
+export const LM_NO_PRIORITY_ACTIONS: NoPriorityAction[] = [
+  // Today: three bills.
+  np('legiscan:2104855', 'IL SB3309', '2026-07-02', 0, 'Pursuant to Senate Rule 3-9(b) / Referred to Assignments'),
+  np('legiscan:2065195', 'IN HB1239', '2026-01-05', 0, 'First reading: referred to Committee on Environmental Affairs'),
+  np('legiscan:2065523', 'IN HB1297', '2026-01-06', 0, 'First reading: referred to Committee on Utilities, Energy and Telecommunications'),
+  // Yesterday: three.
+  np('legiscan:2135407', 'MI SB0855', '2026-04-21', 1, 'Referred To Committee Of The Whole With Substitute (s-1)'),
+  np('legiscan:2061495', 'IN HB1110', '2026-01-05', 1, 'First reading: referred to Committee on Environmental Affairs'),
+  np('legiscan:2155128', 'MI HB6143', '2026-06-30', 1, 'Referred To Committee On Natural Resources And Tourism'),
+  // 2 days ago: three.
+  np('legiscan:2041821', 'MI SB0505', '2026-03-11', 2, 'Referred To Committee Of The Whole With Substitute (s-1)'),
+  np('legiscan:2153386', 'MI HB6066', '2026-06-09', 2, 'Referred To Committee On Government Operations'),
+  np('legiscan:2144527', 'MI HB5842', '2026-04-21', 2, 'Referred To Committee On Appropriations'),
+  // 3 days ago: none.
+  // 4 days ago: two.
+  np('legiscan:2104855', 'IL SB3309', '2026-05-15', 4, 'Rule 2-10 Committee/3rd Reading Deadline Established As May 22, 2026'),
+  np('legiscan:1928265', 'IL SB0117', '2025-01-17', 4, 'Referred to Assignments'),
+  // 5 days ago: three.
+  np('legiscan:2135407', 'MI SB0855', '2026-04-21', 5, 'Reported Favorably With Substitute (s-1) 4/16/2026'),
+  np('legiscan:2041821', 'MI SB0505', '2026-03-11', 5, 'Reported Favorably With Substitute (s-1) 3/10/2026'),
+  np('legiscan:2035723', 'MI HB4568', '2025-06-05', 5, 'Referred To Committee On Appropriations'),
+  // 6 days ago: none.
+  // 7 days ago: a lone bill, ahead of that day's team card.
+  np('legiscan:2156259', 'US HB9836', '2026-07-22', 7, 'Introduced in House', -45),
+  // 8 days ago: none.
+  // 9 days ago: two.
+  np('legiscan:2104855', 'IL SB3309', '2026-04-24', 9, 'Rule 2-10 Committee/3rd Reading Deadline Established As May 15, 2026'),
+  np('legiscan:2153386', 'MI HB6066', '2026-06-09', 9, 'Read A First Time'),
+  // 10 days ago: two.
+  np('legiscan:2135407', 'MI SB0855', '2026-04-14', 10, 'Reassigned To Committee On Appropriations'),
+  np('legiscan:2041821', 'MI SB0505', '2025-08-14', 10, 'Referred To Committee On Natural Resources And Agriculture'),
+  // 11 days ago: none, since the team has no card that day for a row to follow.
+  // 12 days ago: two.
+  np('legiscan:2104855', 'IL SB3309', '2026-02-17', 12, 'Assigned to Appropriations'),
+  np('legiscan:1928265', 'IL SB0117', '2025-01-17', 12, 'First Reading'),
+  // 13 days ago: a lone bill.
+  np('legiscan:2135407', 'MI SB0855', '2026-03-18', 13, 'Rules Suspended', -45),
+]
+
+export const LM_NO_PRIORITY_EVENTS: DemoSeedFeedEvent[] = LM_NO_PRIORITY_ACTIONS.map((a, i) => ({
+  // `lm-fe-n-2104855-1` is that bill's first action in the table above.
+  id: `lm-fe-n-${a.externalId.replace('legiscan:', '')}-${LM_NO_PRIORITY_ACTIONS.slice(0, i).filter(x => x.externalId === a.externalId).length + 1}`,
+  type: 'bill_updated' as const,
+  externalId: a.externalId,
+  userId: 'system',
+  daysAgo: a.daysAgo,
+  ...(a.minutesLater !== undefined ? { minutesLater: a.minutesLater } : {}),
+  metadata: { changes: [chg('action_added', { newValue: a.action })] },
+}))

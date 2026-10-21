@@ -1,12 +1,12 @@
 import { env } from 'cloudflare:test'
 import { describe, it, expect, vi } from 'vitest'
 
-// The fork's cron hook in src/index-legiscan.ts (runOcaCrons). An upstream
+// The fork's cron hook in src/index.ts (runOcaCrons). An upstream
 // merge that drops it would stop the directory, seat, and term refresh with
 // no error anywhere. The route hook is checked in directory-job.test.ts.
 vi.mock('../../src/lib/jobAlert', () => ({ runJob: vi.fn(async () => undefined) }))
 
-import worker from '../../src/index-legiscan'
+import worker from '../../src/index'
 import { runJob } from '../../src/lib/jobAlert'
 
 describe('the fork\'s hooks into central', () => {

@@ -1,12 +1,13 @@
 import { env, SELF } from 'cloudflare:test'
 import { describe, it, expect, beforeEach } from 'vitest'
 import { app } from '../../src/index'
-import { resetDb, applyMigrations, appFetch, stubFetch, seedUser, seedSession, seedMagicLink } from '../helpers'
+import { clearDb, appFetch, seedUser, seedSession, seedMagicLink } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { users, authEvents, sessions } from '../../src/db/schema'
 import { eq } from 'drizzle-orm'
 import { signSuperadminJwt } from '../../../shared/superadminJwt'
 import { _resetSuperadminAllowlistCache } from '../../src/lib/superadminCentral'
+import { stubResend } from '../../../shared/emailTestKit'
 
 // Throwaway ES256 test keypair (no production value); its public half is set as
 // SUPERADMIN_JWT_PUBLIC_KEY in vitest.config.mts so signed tokens verify in tests.
@@ -44,9 +45,8 @@ function centralMockFor(opts: { superadminEmails?: string[] }): { fetch: (req: R
 }
 
 beforeEach(async () => {
-  stubFetch() // the sign-in email goes out through fetch
-  await resetDb()
-  await applyMigrations()
+  stubResend() // the sign-in email goes out through Resend
+  await clearDb()
   // In-isolate superadmin allowlist cache (D3) persists across tests in the same
   // isolate — reset it so each test's centralMockFor allowlist is honored.
   _resetSuperadminAllowlistCache()
@@ -646,7 +646,7 @@ describe('GET /auth/me — superadmin JWT fallback', () => {
 })
 
 describe('auth event logging — verify', () => {
-  beforeEach(async () => { await resetDb(); await applyMigrations() })
+  beforeEach(async () => { await clearDb() })
 
   it('records verify_success', async () => {
     const db = getDb(env.DB)
@@ -689,7 +689,7 @@ describe('auth event logging — verify', () => {
 })
 
 describe('auth event logging — magic-link request', () => {
-  beforeEach(async () => { await resetDb(); await applyMigrations() })
+  beforeEach(async () => { await clearDb() })
 
   it('records link_requested for a known user', async () => {
     const db = getDb(env.DB)
@@ -721,7 +721,7 @@ describe('auth event logging — magic-link request', () => {
 })
 
 describe('auth event logging — logout', () => {
-  beforeEach(async () => { await resetDb(); await applyMigrations() })
+  beforeEach(async () => { await clearDb() })
 
   it('records logout for the session owner', async () => {
     const db = getDb(env.DB)
@@ -756,8 +756,7 @@ describe('POST /auth/demo-login', () => {
   const demoEnv = { ...env, DEMO_MODE: 'true' }
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     // seedUser can't set the id, and the route looks up the fixed 'demo-user'.
     await getDb(env.DB).insert(users).values({
       id: 'demo-user',

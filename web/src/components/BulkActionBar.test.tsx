@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { BulkActionBar, buildFilterBody, buildBulkValuesParams, type Selection } from './BulkActionBar'
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { BulkActionBar, type Selection } from './BulkActionBar'
+import { EMPTY_BILL_FILTER, parseBillFilter, serializeBillFilter } from '../../../shared/billFilter'
 
 vi.mock('../lib/api', () => ({ apiFetch: vi.fn(() => Promise.resolve({ dismissed: 1 })) }))
 import { apiFetch } from '../lib/api'
@@ -13,17 +14,16 @@ vi.mock('../context/DemoContext', () => ({
   useDemo: () => ({ demoMode: false, demoLocked: demoState.demoLocked }),
 }))
 
-const noFilters = {
-  status: [], stage: [], priority: [], position: [], year: [], state: [], tag: [], subject: [],
-  q: '', minRelevance: 0, myBills: false, unvoted: false, newMatches: false, drafts: false, matchAny: false, cf: {},
-}
+const noFilters = EMPTY_BILL_FILTER
 
 function Harness({
   selectedBills = [{ id: 'bill-1', priority: null as string | null, position: null as string | null }],
   onApplied = vi.fn(),
+  onDraftsDeleted = vi.fn(),
 }: {
-  selectedBills?: Array<{ id: string; priority: string | null; position: string | null; matchType?: string | null; newMatchAt?: string | null; triagedAt?: string | null }>
+  selectedBills?: Array<{ id: string; priority: string | null; position: string | null; matchType?: string | null; newMatchAt?: string | null; triagedAt?: string | null; isDraft?: boolean }>
   onApplied?: (updatedIds: string[] | 'filter', updates: Record<string, unknown>) => void
+  onDraftsDeleted?: (ids: string[]) => void
 }) {
   const [selection] = useState<Selection>({ mode: 'ids', ids: new Set(selectedBills.map(b => b.id)) })
   return (
@@ -37,6 +37,7 @@ function Harness({
       selectedBills={selectedBills}
       onClearSelection={vi.fn()}
       onApplied={onApplied}
+      onDraftsDeleted={onDraftsDeleted}
     />
   )
 }
@@ -82,6 +83,40 @@ describe('BulkActionBar single-select pills', () => {
       />,
     )
     expect(priorityPill()).toHaveTextContent(/Priority:\s*High/)
+  })
+})
+
+describe('BulkActionBar: the empty choice in the priority and position menus', () => {
+  const positionPill = () => screen.getByRole('button', { name: /Position:/i })
+  const radioLabels = () => screen.getAllByRole('radio').map(r => r.closest('label')?.textContent ?? r.getAttribute('aria-label'))
+
+  it('names the empty priority choice "No priority", not "Not set"', () => {
+    render(<Harness />)
+    fireEvent.click(priorityPill())
+    expect(screen.getByText('No priority')).toBeInTheDocument()
+    expect(radioLabels()).toEqual(['No priority', 'High', 'Medium', 'Low'])
+    expect(radioLabels()).not.toContain('Not set')
+  })
+
+  it('keeps "Not set" for the empty position choice, since "No Position" can be a real stance in the vocabulary', () => {
+    render(<Harness />)
+    fireEvent.click(positionPill())
+    expect(radioLabels()).toEqual(['Not set', 'Support', 'Oppose'])
+  })
+
+  it('staging "No priority" on a prioritized bill queues a clear', () => {
+    render(<Harness selectedBills={[{ id: 'bill-1', priority: 'high', position: null }]} />)
+    fireEvent.click(priorityPill())
+    fireEvent.click(screen.getByText('No priority'))
+    expect(screen.getByTitle('Undo Priority change')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Apply to 1 bill/i })).toBeEnabled()
+  })
+
+  it('staging "Not set" on a bill with a position queues a clear', () => {
+    render(<Harness selectedBills={[{ id: 'bill-1', priority: null, position: 'Support' }]} />)
+    fireEvent.click(positionPill())
+    fireEvent.click(screen.getByText('Not set'))
+    expect(screen.getByTitle('Undo Position change')).toBeInTheDocument()
   })
 })
 
@@ -133,11 +168,12 @@ describe('BulkActionBar new-match dismiss (filter mode)', () => {
     const selection: Selection = { mode: 'filter' }
     render(
       <BulkActionBar
+        onDraftsDeleted={vi.fn()}
         selection={selection}
         total={682}
         positionVocabulary={['Support', 'Oppose']}
         customFieldDefs={[]}
-        currentFilters={{ ...noFilters, newMatches: true }}
+        currentFilters={parseBillFilter('newMatches=1')}
         filterNewMatchCount={682}
         selectedBills={[]}
         onClearSelection={vi.fn()}
@@ -151,13 +187,13 @@ describe('BulkActionBar new-match dismiss (filter mode)', () => {
         '/bills/bulk-dismiss',
         expect.objectContaining({
           method: 'POST',
-          body: expect.stringContaining('"newMatches":"1"'),
+          body: JSON.stringify({ filter: 'newMatches=1' }),
         }),
       )
     })
   })
 
-  // CRITICAL 1 regression: buildFilterBody previously dropped `subject` entirely,
+  // CRITICAL 1 regression: the bulk filter body previously dropped `subject` entirely,
   // so a bulk action taken while a subject filter was active would silently
   // resolve against every bill matching the other filters — not just the ones
   // the admin saw and confirmed. The request body must carry the active subject
@@ -167,11 +203,12 @@ describe('BulkActionBar new-match dismiss (filter mode)', () => {
     const selection: Selection = { mode: 'filter' }
     render(
       <BulkActionBar
+        onDraftsDeleted={vi.fn()}
         selection={selection}
         total={12}
         positionVocabulary={['Support', 'Oppose']}
         customFieldDefs={[]}
-        currentFilters={{ ...noFilters, newMatches: true, subject: ['UT:Election Law'] }}
+        currentFilters={parseBillFilter('newMatches=1&subject=UT%3AElection+Law')}
         filterNewMatchCount={12}
         selectedBills={[]}
         onClearSelection={vi.fn()}
@@ -185,7 +222,7 @@ describe('BulkActionBar new-match dismiss (filter mode)', () => {
         '/bills/bulk-dismiss',
         expect.objectContaining({
           method: 'POST',
-          body: expect.stringContaining('"subject":["UT:Election Law"]'),
+          body: JSON.stringify({ filter: 'subject=UT%3AElection+Law&newMatches=1' }),
         }),
       )
     })
@@ -196,11 +233,12 @@ describe('BulkActionBar new-match dismiss (filter mode)', () => {
     const selection: Selection = { mode: 'filter' }
     render(
       <BulkActionBar
+        onDraftsDeleted={vi.fn()}
         selection={selection}
         total={1500}
         positionVocabulary={['Support', 'Oppose']}
         customFieldDefs={[]}
-        currentFilters={{ ...noFilters, newMatches: true }}
+        currentFilters={parseBillFilter('newMatches=1')}
         filterNewMatchCount={1500}
         selectedBills={[]}
         onClearSelection={vi.fn()}
@@ -268,6 +306,7 @@ describe('BulkActionBar multi-select custom field (filter mode)', () => {
     })
     return render(
       <BulkActionBar
+        onDraftsDeleted={vi.fn()}
         selection={{ mode: 'filter' }}
         total={count}
         positionVocabulary={['Support', 'Oppose']}
@@ -325,6 +364,48 @@ describe('BulkActionBar multi-select custom field (filter mode)', () => {
   })
 })
 
+// A status and a stage are one filter fact on the server, matched as a union (#677), and a bulk action carries the
+// same serialized bill filter the list sends, so "select all matching" acts on the bills the list shows.
+describe('BulkActionBar with a status and a stage in the filter', () => {
+  const filter = parseBillFilter('status=Passed&stage=vetoed')
+
+  function renderWithFilter() {
+    vi.mocked(apiFetch).mockClear()
+    vi.mocked(apiFetch).mockImplementation((path: string) => {
+      if (path.startsWith('/bills/bulk-values')) {
+        return Promise.resolve({ count: 2, priorities: {}, positions: {}, customFields: {}, multiCustomFields: {}, nullMatchCount: 0 })
+      }
+      return Promise.resolve({ updated: 2 })
+    })
+    return render(
+      <BulkActionBar
+        onDraftsDeleted={vi.fn()}
+        selection={{ mode: 'filter' }} total={2} positionVocabulary={['Support']} customFieldDefs={[]}
+        currentFilters={filter} filterNewMatchCount={0} selectedBills={[]} onClearSelection={vi.fn()} onApplied={vi.fn()}
+      />,
+    )
+  }
+
+  it('asks for the pre-fill values of the same string the list sends', async () => {
+    renderWithFilter()
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/bills/bulk-values?status=Passed&stage=vetoed'))
+  })
+
+  it('sends the same string as the filter of a bulk edit', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderWithFilter()
+    fireEvent.click(priorityPill())
+    fireEvent.click(screen.getByText('High'))
+    fireEvent.click(screen.getByRole('button', { name: /Apply to 2 bills/i }))
+    await waitFor(() => {
+      const call = vi.mocked(apiFetch).mock.calls.find(c => c[0] === '/bills/bulk')
+      expect(call).toBeDefined()
+      expect(JSON.parse((call![1] as { body: string }).body).filter).toBe(serializeBillFilter(filter))
+      expect(serializeBillFilter(filter)).toBe('status=Passed&stage=vetoed')
+    })
+  })
+})
+
 // Every one of these states used to render as "Not set" — a claim about data
 // that was never fetched. The silent-failure case is the consequential one: it
 // told an admin that no bill in the selection had a value, which is exactly the
@@ -355,6 +436,7 @@ describe('BulkActionBar unknown current values', () => {
     })
     return render(
       <BulkActionBar
+        onDraftsDeleted={vi.fn()}
         selection={{ mode: 'filter' }}
         total={count}
         positionVocabulary={['Support', 'Oppose']}
@@ -441,62 +523,146 @@ describe('BulkActionBar unknown current values', () => {
   })
 })
 
-describe('BulkActionBar — match=any (Task 6b)', () => {
-  // Task 6 made the list view's group operator settable (match=any). Task 2
-  // hardcoded the bulk routes to AND-only because no client could set it then.
-  // These lock in that both bulk call paths — the write (buildFilterBody) and
-  // the read that pre-populates the bulk-edit form (buildBulkValuesParams) —
-  // now carry the operator, and that an unset operator still serialises
-  // exactly as it did before this field existed.
-  const baseFilters = noFilters
+// A bulk action sends the bill filter the way the list does: the shared serialize, a query string. The write
+// (the filter in the request body) and the read that pre-populates the bulk-edit form (GET /bills/bulk-values)
+// carry the same string, so the form never shows the values of one set of bills before a write to another.
+describe('BulkActionBar sends the serialized bill filter', () => {
+  const QS = 'status=Passed&stage=enacted&year=2026&state=UT&position=none&priority=high&tag=Water&subject=UT%3AElections&minRelevance=4&search=water&myBills=1&unvoted=1&newMatches=1&drafts=1&match=any&field.f1=Alpha&field.f1=__any__'
 
-  it('sends match=any in the bulk-values query when the operator is set', () => {
-    const params = buildBulkValuesParams({ ...baseFilters, matchAny: true })
-    expect(params.get('match')).toBe('any')
+  function renderFilterMode(filter: ReturnType<typeof parseBillFilter>, total = 5) {
+    vi.mocked(apiFetch).mockClear()
+    vi.mocked(apiFetch).mockImplementation((path: string) => {
+      if (path.startsWith('/bills/bulk-values')) {
+        return Promise.resolve({ count: total, priorities: {}, positions: {}, customFields: {}, multiCustomFields: {}, nullMatchCount: 0 })
+      }
+      return Promise.resolve({ dismissed: 1, updated: 1 })
+    })
+    return render(
+      <BulkActionBar
+        onDraftsDeleted={vi.fn()}
+        selection={{ mode: 'filter' }}
+        total={total}
+        positionVocabulary={['Support']}
+        customFieldDefs={[]}
+        currentFilters={filter}
+        filterNewMatchCount={total}
+        selectedBills={[]}
+        onClearSelection={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+  }
+  const sent = (path: string) => {
+    const call = vi.mocked(apiFetch).mock.calls.find(c => c[0] === path)
+    return call ? JSON.parse((call[1] as { body: string }).body) as { filter?: unknown } : undefined
+  }
+
+  it('reads the bulk-edit form values with the filter as the shared serialize writes it', async () => {
+    renderFilterMode(parseBillFilter(QS))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(`/bills/bulk-values?${serializeBillFilter(parseBillFilter(QS))}`))
   })
 
-  it('omits match from the bulk-values query when the operator is not set', () => {
-    const params = buildBulkValuesParams({ ...baseFilters, matchAny: false })
-    expect(params.get('match')).toBeNull()
+  it('sends match=any in the bulk-values query when the operator is set, and not otherwise', async () => {
+    renderFilterMode(parseBillFilter('status=Passed&match=any'))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/bills/bulk-values?status=Passed&match=any'))
+    cleanup()
+    renderFilterMode(parseBillFilter('status=Passed'))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/bills/bulk-values?status=Passed'))
   })
 
-  it('sends match=any in the filter body when the operator is set', () => {
-    const body = buildFilterBody({ ...baseFilters, matchAny: true })
-    expect(body.match).toBe('any')
+  it('sends drafts=1 in the bulk-values query when the Drafts chip is on, and not otherwise', async () => {
+    renderFilterMode(parseBillFilter('drafts=1'))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/bills/bulk-values?drafts=1'))
+    cleanup()
+    renderFilterMode(parseBillFilter('status=Passed'))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/bills/bulk-values?status=Passed'))
   })
 
-  it('omits match from the filter body when the operator is not set', () => {
-    const body = buildFilterBody({ ...baseFilters, matchAny: false })
-    expect(body.match).toBeUndefined()
-  })
-})
-
-// CRITICAL regression: FilterState previously had no `drafts` member, so
-// index.tsx's f.currentFilters (which does carry it) was structurally
-// truncated the moment it passed through this type, and both builders below
-// silently omitted it from the write and the read. That let "select all
-// matching filters" with Drafts on quietly bulk-edit every bill, not just the
-// drafts the admin saw (see api/test/bills/draft-filter.test.ts for the
-// server-side half of this regression).
-describe('BulkActionBar — drafts filter', () => {
-  it('sends drafts=1 in the filter body when the Drafts chip is on', () => {
-    const body = buildFilterBody({ ...noFilters, drafts: true })
-    expect(body.drafts).toBe('1')
+  it('sends the serialized filter as a string in the bulk-dismiss body, every filter in it', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderFilterMode(parseBillFilter(QS))
+    fireEvent.click(await screen.findByRole('button', { name: /Dismiss new matches/i }))
+    await waitFor(() => expect(sent('/bills/bulk-dismiss')).toBeDefined())
+    const body = sent('/bills/bulk-dismiss')!
+    expect(typeof body.filter).toBe('string')
+    expect(body.filter).toBe(serializeBillFilter(parseBillFilter(QS)))
+    expect(parseBillFilter(body.filter as string)).toEqual(parseBillFilter(QS))
   })
 
-  it('omits drafts from the filter body when the chip is off', () => {
-    const body = buildFilterBody({ ...noFilters, drafts: false })
-    expect(body.drafts).toBeUndefined()
+  it('sends match=any in the filter when the operator is set, and omits it when not', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderFilterMode(parseBillFilter('newMatches=1&match=any'))
+    fireEvent.click(await screen.findByRole('button', { name: /Dismiss new matches/i }))
+    await waitFor(() => expect(sent('/bills/bulk-dismiss')).toBeDefined())
+    expect(sent('/bills/bulk-dismiss')!.filter).toBe('newMatches=1&match=any')
+    cleanup()
+    renderFilterMode(parseBillFilter('newMatches=1'))
+    fireEvent.click(await screen.findByRole('button', { name: /Dismiss new matches/i }))
+    await waitFor(() => expect(sent('/bills/bulk-dismiss')).toBeDefined())
+    expect(sent('/bills/bulk-dismiss')!.filter).toBe('newMatches=1')
   })
 
-  it('sends drafts=1 in the bulk-values query when the Drafts chip is on', () => {
-    const params = buildBulkValuesParams({ ...noFilters, drafts: true })
-    expect(params.get('drafts')).toBe('1')
+  // CRITICAL regression: the filter once had no `drafts` member, so "select all matching filters" with Drafts on
+  // bulk-edited every bill, not just the drafts the admin saw (api/test/bills/draft-filter.test.ts is the server half).
+  it('sends drafts=1 in the filter when the Drafts chip is on', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderFilterMode(parseBillFilter('newMatches=1&drafts=1'))
+    fireEvent.click(await screen.findByRole('button', { name: /Dismiss new matches/i }))
+    await waitFor(() => expect(sent('/bills/bulk-dismiss')).toBeDefined())
+    expect(sent('/bills/bulk-dismiss')!.filter).toBe('newMatches=1&drafts=1')
   })
 
-  it('omits drafts from the bulk-values query when the chip is off', () => {
-    const params = buildBulkValuesParams({ ...noFilters, drafts: false })
-    expect(params.get('drafts')).toBeNull()
+  it('sends the filter of a bulk edit the same way, as a string', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.mocked(apiFetch).mockClear()
+    vi.mocked(apiFetch).mockImplementation((path: string) => {
+      if (path.startsWith('/bills/bulk-values')) {
+        return Promise.resolve({ count: 3, priorities: {}, positions: {}, customFields: {}, multiCustomFields: {}, nullMatchCount: 0 })
+      }
+      return Promise.resolve({ updated: 3 })
+    })
+    render(
+      <BulkActionBar
+        onDraftsDeleted={vi.fn()}
+        selection={{ mode: 'filter' }}
+        total={3}
+        positionVocabulary={['Support']}
+        customFieldDefs={[]}
+        currentFilters={parseBillFilter('status=Passed&priority=high')}
+        filterNewMatchCount={0}
+        selectedBills={[]}
+        onClearSelection={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /Priority:/i }))
+    fireEvent.click(screen.getByText('Low'))
+    fireEvent.click(screen.getByRole('button', { name: /Apply to 3 bills/i }))
+    await waitFor(() => expect(sent('/bills/bulk')).toBeDefined())
+    expect(sent('/bills/bulk')!.filter).toBe('status=Passed&priority=high')
+  })
+
+  it('sends ids, and no filter, when bills are picked one by one', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.mocked(apiFetch).mockClear()
+    vi.mocked(apiFetch).mockImplementation(() => Promise.resolve({ dismissed: 1 }))
+    render(
+      <BulkActionBar
+        onDraftsDeleted={vi.fn()}
+        selection={{ mode: 'ids', ids: new Set(['a']) }}
+        total={1}
+        positionVocabulary={['Support']}
+        customFieldDefs={[]}
+        currentFilters={parseBillFilter('status=Passed')}
+        filterNewMatchCount={0}
+        selectedBills={[{ id: 'a', priority: null, position: null, matchType: 'keyword', newMatchAt: '2026-01-01 00:00:00', triagedAt: null }]}
+        onClearSelection={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /Dismiss new matches/i }))
+    await waitFor(() => expect(sent('/bills/bulk-dismiss')).toBeDefined())
+    expect(sent('/bills/bulk-dismiss')).toEqual({ ids: ['a'] })
   })
 })
 
@@ -524,6 +690,7 @@ describe('BulkActionBar multi-select confirmation wording', () => {
     })
     return render(
       <BulkActionBar
+        onDraftsDeleted={vi.fn()}
         selection={{ mode: 'filter' }}
         total={3}
         positionVocabulary={['Support', 'Oppose']}
@@ -691,6 +858,7 @@ describe('BulkActionBar — AI analysis count before Apply', () => {
     })
     render(
       <BulkActionBar
+        onDraftsDeleted={vi.fn()}
         selection={{ mode: 'filter' }}
         total={40}
         positionVocabulary={['Support', 'Oppose']}
@@ -720,5 +888,327 @@ describe('BulkActionBar — AI analysis count before Apply', () => {
     render(<Harness selectedBills={[untracked('a'), untracked('b')]} />)
     stagePriority('High')
     expect(screen.getByRole('button', { name: 'Apply to 2 bills' })).toBeInTheDocument()
+  })
+})
+
+describe('BulkActionBar — delete drafts', () => {
+  const deleteBtn = () => screen.queryByRole('button', { name: /Delete drafts/i })
+  const bill = (id: string, isDraft: boolean) => ({ id, priority: null, position: null, matchType: 'manual', isDraft })
+  type Preview = { draftIds: string[]; drafts: number; filed: number; engagedDrafts: number; engagement: { votes: number; comments: number; notes: number; positions: number } }
+  /** A preview counting `drafts` drafts, named d1, d2, and so on unless `draftIds` names them. */
+  const preview = (drafts: number, filed = 0, engagedDrafts = 0, engagement: Partial<Preview['engagement']> = {}, draftIds?: string[]): Preview =>
+    ({ draftIds: draftIds ?? Array.from({ length: drafts }, (_, i) => `d${i + 1}`), drafts, filed, engagedDrafts, engagement: { votes: 0, comments: 0, notes: 0, positions: 0, ...engagement } })
+
+  /** Answers POST /bills/bulk-delete: `onPreview` for a preview request, `onDelete` for the delete itself. */
+  function mockBulkDelete(onPreview: (body: Record<string, unknown>) => unknown, onDelete: (body: Record<string, unknown>) => unknown = () => ({ deleted: [], skipped: [] })) {
+    vi.mocked(apiFetch).mockReset()
+    vi.mocked(apiFetch).mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path !== '/bills/bulk-delete') return {} as never
+      const body = JSON.parse(init!.body as string) as Record<string, unknown>
+      return (body.preview ? onPreview(body) : onDelete(body)) as never
+    })
+  }
+  const bulkDeleteBodies = () => vi.mocked(apiFetch).mock.calls
+    .filter(c => c[0] === '/bills/bulk-delete')
+    .map(c => JSON.parse((c[1] as RequestInit).body as string) as Record<string, unknown>)
+  const deleteBodies = () => bulkDeleteBodies().filter(b => !b.preview)
+  const previewBodies = () => bulkDeleteBodies().filter(b => b.preview)
+
+  afterEach(() => {
+    demoState.demoLocked = false
+    vi.restoreAllMocks()
+    vi.mocked(apiFetch).mockReset()
+    vi.mocked(apiFetch).mockImplementation(() => Promise.resolve({ dismissed: 1 }))
+  })
+
+  describe('a selection of rows', () => {
+    it('is hidden when no selected bill is a draft', () => {
+      render(<Harness selectedBills={[bill('f1', false), bill('f2', false)]} />)
+      expect(deleteBtn()).not.toBeInTheDocument()
+    })
+
+    it('is hidden for a bill whose isDraft flag is absent', () => {
+      render(<Harness selectedBills={[{ id: 'a', priority: null, position: null }]} />)
+      expect(deleteBtn()).not.toBeInTheDocument()
+    })
+
+    it('counts only the drafts in a mixed selection', () => {
+      render(<Harness selectedBills={[bill('d1', true), bill('f1', false), bill('d2', true)]} />)
+      expect(screen.getByRole('button', { name: /Delete drafts \(2\)/ })).toBeInTheDocument()
+    })
+
+    it('asks the server what the whole selection holds, then confirms with its numbers', async () => {
+      mockBulkDelete(() => preview(2, 1))
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+      render(<Harness selectedBills={[bill('d1', true), bill('f1', false), bill('d2', true)]} />)
+
+      fireEvent.click(deleteBtn()!)
+
+      await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1))
+      expect(previewBodies()).toEqual([{ ids: ['d1', 'f1', 'd2'], preview: true }])
+      expect(confirm.mock.calls[0][0]).toBe("Delete 2 draft bills? This can't be undone. The 1 filed bill in your selection is not deleted.")
+    })
+
+    it('deletes nothing when cancelled', async () => {
+      mockBulkDelete(() => preview(2))
+      const onDraftsDeleted = vi.fn()
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+      render(<Harness onDraftsDeleted={onDraftsDeleted} selectedBills={[bill('d1', true), bill('d2', true)]} />)
+
+      fireEvent.click(deleteBtn()!)
+
+      await waitFor(() => expect(confirm).toHaveBeenCalled())
+      await waitFor(() => expect(deleteBtn()).toBeEnabled())
+      expect(deleteBodies()).toEqual([])
+      expect(onDraftsDeleted).not.toHaveBeenCalled()
+    })
+
+    it('names the work on engaged drafts in the confirm and sends includeEngaged', async () => {
+      mockBulkDelete(() => preview(5, 0, 2, { votes: 4, comments: 3, positions: 1 }), b => ({ deleted: b.ids, skipped: [] }))
+      const onDraftsDeleted = vi.fn()
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const ids = ['d1', 'd2', 'd3', 'd4', 'd5']
+      render(<Harness onDraftsDeleted={onDraftsDeleted} selectedBills={ids.map(id => bill(id, true))} />)
+
+      fireEvent.click(deleteBtn()!)
+
+      await waitFor(() => expect(onDraftsDeleted).toHaveBeenCalledWith(ids))
+      expect(confirm.mock.calls[0][0]).toBe(
+        "Delete 5 draft bills? 2 of them have your team's work on them: 4 votes, 3 comments, and 1 position, which will be deleted too. To keep it, link those drafts to their filed bills instead. This can't be undone.",
+      )
+      expect(deleteBodies()).toEqual([{ ids, includeEngaged: true }])
+    })
+
+    it('sends no includeEngaged when the preview found no engagement, and only the drafts of a mixed selection', async () => {
+      mockBulkDelete(() => preview(2, 1), () => ({ deleted: ['d1', 'd2'], skipped: [] }))
+      const onDraftsDeleted = vi.fn()
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      render(<Harness onDraftsDeleted={onDraftsDeleted} selectedBills={[bill('d1', true), bill('f1', false), bill('d2', true)]} />)
+
+      fireEvent.click(deleteBtn()!)
+
+      await waitFor(() => expect(onDraftsDeleted).toHaveBeenCalledWith(['d1', 'd2']))
+      expect(deleteBodies()).toEqual([{ ids: ['d1', 'd2'] }])
+    })
+
+    it('uses the single-draft wording for one selected draft', async () => {
+      mockBulkDelete(() => preview(1, 0, 1, { votes: 3, comments: 2, notes: 1 }))
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+      render(<Harness selectedBills={[bill('d1', true)]} />)
+
+      fireEvent.click(deleteBtn()!)
+
+      await waitFor(() => expect(confirm).toHaveBeenCalled())
+      expect(confirm.mock.calls[0][0]).toBe(
+        "Delete this draft bill? Your team's 3 votes, 2 comments, and 1 note on it will be deleted too. To keep them, link the draft to its filed bill instead. This can't be undone.",
+      )
+    })
+
+    it('shows a failed preview in the bar, asks nothing, and deletes nothing', async () => {
+      mockBulkDelete(() => { throw new Error('Preview unavailable') })
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      render(<Harness selectedBills={[bill('d1', true)]} />)
+
+      fireEvent.click(deleteBtn()!)
+
+      expect(await screen.findByText('Preview unavailable')).toBeInTheDocument()
+      expect(confirm).not.toHaveBeenCalled()
+      expect(deleteBodies()).toEqual([])
+      expect(deleteBtn()).toBeEnabled()
+    })
+
+    it('reports a draft another admin already deleted as gone, and says nothing is wrong', async () => {
+      mockBulkDelete(() => preview(2), () => ({ deleted: ['d1'], skipped: [{ id: 'd2', reason: 'not_found' }] }))
+      const onDraftsDeleted = vi.fn()
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      render(<Harness onDraftsDeleted={onDraftsDeleted} selectedBills={[bill('d1', true), bill('d2', true)]} />)
+
+      fireEvent.click(deleteBtn()!)
+
+      await waitFor(() => expect(onDraftsDeleted).toHaveBeenCalledWith(['d1', 'd2']))
+      expect(screen.queryByText(/kept|could not/i)).not.toBeInTheDocument()
+    })
+
+    it('names a draft that gained engagement after a clean preview and was kept', async () => {
+      mockBulkDelete(() => preview(2), () => ({ deleted: ['d1'], skipped: [{ id: 'd2', reason: 'engaged' }] }))
+      const onDraftsDeleted = vi.fn()
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      render(<Harness onDraftsDeleted={onDraftsDeleted} selectedBills={[bill('d1', true), bill('d2', true)]} />)
+
+      fireEvent.click(deleteBtn()!)
+
+      await waitFor(() => expect(onDraftsDeleted).toHaveBeenCalledWith(['d1']))
+      expect(await screen.findByText(/1 draft was kept: it gained votes, comments, notes, or positions since you asked\. Try again to see what goes with it\./i)).toBeInTheDocument()
+    })
+
+    it('names drafts the server could not delete in the bar', async () => {
+      mockBulkDelete(() => preview(1), () => ({ deleted: [], skipped: [{ id: 'd1', reason: 'error' }] }))
+      const onDraftsDeleted = vi.fn()
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      render(<Harness onDraftsDeleted={onDraftsDeleted} selectedBills={[bill('d1', true)]} />)
+
+      fireEvent.click(deleteBtn()!)
+
+      expect(await screen.findByText(/1 draft could not be deleted/i)).toBeInTheDocument()
+      expect(onDraftsDeleted).not.toHaveBeenCalled()
+    })
+
+    it('shows the error in the bar and removes nothing when the delete fails', async () => {
+      mockBulkDelete(() => preview(1), () => { throw new Error('Server on fire') })
+      const onDraftsDeleted = vi.fn()
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      render(<Harness onDraftsDeleted={onDraftsDeleted} selectedBills={[bill('d1', true)]} />)
+
+      fireEvent.click(deleteBtn()!)
+
+      expect(await screen.findByText('Server on fire')).toBeInTheDocument()
+      expect(onDraftsDeleted).not.toHaveBeenCalled()
+      expect(deleteBtn()).toBeEnabled()
+    })
+
+    it('disables itself while the request is in flight, so a second click sends nothing', async () => {
+      let finish: (v: unknown) => void = () => {}
+      mockBulkDelete(() => preview(1), () => new Promise(res => { finish = res }))
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      render(<Harness selectedBills={[bill('d1', true)]} />)
+
+      fireEvent.click(deleteBtn()!)
+      await waitFor(() => expect(deleteBodies()).toHaveLength(1))
+      expect(deleteBtn()).toBeDisabled()
+      fireEvent.click(deleteBtn()!)
+
+      expect(previewBodies()).toHaveLength(1)
+      expect(deleteBodies()).toHaveLength(1)
+      finish({ deleted: ['d1'], skipped: [] })
+    })
+
+    it('is disabled with the locked hover in a demo, and sends nothing', () => {
+      demoState.demoLocked = true
+      vi.mocked(apiFetch).mockClear()
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      render(<Harness selectedBills={[bill('d1', true)]} />)
+
+      const btn = screen.getByRole('button', { name: /Delete drafts/i })
+      expect(btn).toBeDisabled()
+      expect(btn).toHaveAttribute('title', 'Locked in demo mode')
+      fireEvent.click(btn)
+
+      expect(confirm).not.toHaveBeenCalled()
+      expect(bulkDeleteBodies()).toEqual([])
+    })
+  })
+
+  describe('select all matching the filters', () => {
+    const DRAFTS = parseBillFilter(new URLSearchParams('drafts=1&state=RI'))
+    function renderFilterMode(opts: { filters?: typeof DRAFTS; total?: number; onDraftsDeleted?: (ids: string[]) => void; onClearSelection?: () => void } = {}) {
+      return render(
+        <BulkActionBar
+          selection={{ mode: 'filter' }}
+          total={opts.total ?? 5}
+          positionVocabulary={[]}
+          customFieldDefs={[]}
+          currentFilters={opts.filters ?? DRAFTS}
+          filterNewMatchCount={0}
+          selectedBills={[]}
+          onClearSelection={opts.onClearSelection ?? vi.fn()}
+          onApplied={vi.fn()}
+          onDraftsDeleted={opts.onDraftsDeleted ?? vi.fn()}
+        />,
+      )
+    }
+
+    it('is hidden, and asks nothing, without the Drafts filter', async () => {
+      mockBulkDelete(() => preview(5))
+      renderFilterMode({ filters: noFilters })
+      await waitFor(() => expect(apiFetch).toHaveBeenCalled())
+      expect(deleteBtn()).not.toBeInTheDocument()
+      expect(previewBodies()).toEqual([])
+    })
+
+    it('shows with the Drafts filter on, counting the drafts the preview finds', async () => {
+      mockBulkDelete(() => preview(7))
+      renderFilterMode()
+      expect(await screen.findByRole('button', { name: /Delete drafts \(7\)/ })).toBeInTheDocument()
+      expect(previewBodies()).toEqual([{ filter: serializeBillFilter(DRAFTS), preview: true }])
+    })
+
+    it('stays hidden when the preview finds no drafts, or fails', async () => {
+      mockBulkDelete(() => preview(0))
+      const { unmount } = renderFilterMode()
+      await waitFor(() => expect(previewBodies()).toHaveLength(1))
+      expect(deleteBtn()).not.toBeInTheDocument()
+      unmount()
+
+      mockBulkDelete(() => { throw new Error('no') })
+      renderFilterMode()
+      await waitFor(() => expect(previewBodies()).toHaveLength(1))
+      expect(deleteBtn()).not.toBeInTheDocument()
+    })
+
+    it('asks nothing and shows nothing past 1,000 bills', async () => {
+      mockBulkDelete(() => preview(1500))
+      renderFilterMode({ total: 1500 })
+      await waitFor(() => expect(screen.getByText(/Current values not shown above 1,000 bills/)).toBeInTheDocument())
+      expect(previewBodies()).toEqual([])
+      expect(deleteBtn()).not.toBeInTheDocument()
+    })
+
+    it('confirms with a fresh preview, deletes the drafts it counted with includeEngaged, and ends the selection', async () => {
+      let previews = 0
+      mockBulkDelete(
+        () => (++previews === 1 ? preview(3) : preview(3, 0, 1, { notes: 2 })),
+        () => ({ deleted: ['d1', 'd2', 'd3'], skipped: [] }),
+      )
+      const onDraftsDeleted = vi.fn()
+      const onClearSelection = vi.fn()
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      renderFilterMode({ onDraftsDeleted, onClearSelection })
+
+      fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(3\)/ }))
+
+      await waitFor(() => expect(onDraftsDeleted).toHaveBeenCalledWith(['d1', 'd2', 'd3']))
+      expect(confirm.mock.calls[0][0]).toBe(
+        "Delete 3 draft bills? 1 of them has your team's work on it: 2 notes, which will be deleted too. To keep it, link that draft to its filed bill instead. This can't be undone.",
+      )
+      expect(deleteBodies()).toEqual([{ ids: ['d1', 'd2', 'd3'], includeEngaged: true }])
+      expect(onClearSelection).toHaveBeenCalled()
+    })
+
+    it('deletes only the drafts the confirm counted, not one made since', async () => {
+      // The count on the button came from an earlier preview. The click's preview names d1 and d2. A draft d9
+      // made after that preview, while the confirm is open, still matches the filter, but is never named.
+      mockBulkDelete(() => preview(2, 0, 0, {}, ['d1', 'd2']), () => ({ deleted: ['d1', 'd2'], skipped: [] }))
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      renderFilterMode()
+
+      fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(2\)/ }))
+
+      await waitFor(() => expect(deleteBodies()).toHaveLength(1))
+      expect(deleteBodies()[0]).toEqual({ ids: ['d1', 'd2'] })
+      expect(deleteBodies()[0]).not.toHaveProperty('filter')
+    })
+
+    it('keeps the selection when some drafts could not be deleted', async () => {
+      mockBulkDelete(() => preview(2), () => ({ deleted: ['d1'], skipped: [{ id: 'd2', reason: 'error' }] }))
+      const onClearSelection = vi.fn()
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      renderFilterMode({ onClearSelection })
+
+      fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(2\)/ }))
+
+      expect(await screen.findByText(/1 draft could not be deleted/i)).toBeInTheDocument()
+      expect(onClearSelection).not.toHaveBeenCalled()
+    })
+
+    it('deletes nothing when cancelled', async () => {
+      mockBulkDelete(() => preview(2))
+      vi.spyOn(window, 'confirm').mockReturnValue(false)
+      renderFilterMode()
+
+      fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(2\)/ }))
+
+      await waitFor(() => expect(previewBodies()).toHaveLength(2))
+      expect(deleteBodies()).toEqual([])
+    })
   })
 })

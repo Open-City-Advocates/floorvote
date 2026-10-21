@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
-import { resetDb, applyMigrations, appFetch, stubFetch, seedUser, seedSession, seedBill, seedCalendarEvent } from '../helpers'
+import { clearDb, appFetch, stubFetch, seedUser, seedSession, seedBill, seedCalendarEvent } from '../helpers'
 import { getDb } from '../../src/db/client'
 import {
   bills, memberVotes, officialPositions, comments, notes,
-  customFieldDefinitions, billCustomFieldValues, calendarEventBills,
+  customFieldDefinitions, billCustomFieldValues, calendarEventBills, teamEvents,
 } from '../../src/db/schema'
 import { eq } from 'drizzle-orm'
 
@@ -30,8 +30,7 @@ describe('POST /api/bills/:id/link', () => {
 
   beforeEach(async () => {
     stubFetch() // central lookups and background backfills are answered, never real
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     adminId = await seedUser({ email: 'admin@x.com', role: 'admin' })
     adminToken = await seedSession(adminId)
     memberId = await seedUser({ email: 'member@x.com', role: 'member' })
@@ -291,6 +290,25 @@ describe('POST /api/bills/:id/link', () => {
     expect(await db.select().from(calendarEventBills).where(eq(calendarEventBills.billId, filedId)).all())
       .toEqual([{ eventId, billId: filedId }])
     expect((await db.select().from(calendarEventBills).where(eq(calendarEventBills.billId, draftId)).all())).toHaveLength(0)
+  })
+
+  it('moves the draft field-change history onto the filed bill', async () => {
+    const filedId = await seedBill({ billNumber: 'HB 11', externalId: 'legiscan:1111' })
+    const draftId = await createDraft(adminToken, 'Draft for HB 11')
+    const res = await appFetch(`https://x/api/bills/${draftId}/priority`, {
+      method: 'PATCH',
+      headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ priority: 'high' }),
+    })
+    expect(res.status).toBe(200)
+    const db = getDb(env.DB)
+    expect(await db.select().from(teamEvents).where(eq(teamEvents.billId, draftId)).all()).toHaveLength(1)
+
+    await link(draftId, filedId)
+
+    const events = await db.select().from(teamEvents).where(eq(teamEvents.billId, filedId)).all()
+    expect(events).toHaveLength(1)
+    expect(JSON.parse(events[0].metadata)).toMatchObject({ field: 'priority', new: 'high' })
   })
 
   it('drops the draft calendar link when the filed bill is already linked to the same event', async () => {

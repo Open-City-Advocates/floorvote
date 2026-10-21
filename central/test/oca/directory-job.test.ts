@@ -10,7 +10,7 @@ import * as oca from '../../src/oca/schema'
 import { setupLsDb } from '../helpers/setupLsDb'
 import { refreshTerms, runDcDirectory } from '../../src/oca/directory'
 import { isTenantSurfaceAllowed } from '../../src/lib/tenantSurface'
-import { app } from '../../src/index-legiscan'
+import { app } from '../../src/index'
 
 // The fork's term refresh and directory route on upstream central, where
 // LIMS's provider owns DC's people and the fork writes only its own columns.

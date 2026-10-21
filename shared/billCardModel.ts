@@ -1,6 +1,6 @@
 import { color, fontSize, fontWeight } from './tokens'
 import { PRIORITY_COLORS, POSITION_FEED_ICON } from './billChipColors'
-import { COMMENT_PREVIEW_MAX, formatBillUpdateDetail, stripHtml, type ChangeRecord, type FeedEvent, type GroupedBillEvents } from './feedUtils'
+import { COMMENT_PREVIEW_MAX, formatBillUpdateDetail, stripHtml, type ChangeRecord, type FeedEvent, type GroupedBill, type GroupedBillEvents } from './feedUtils'
 import { formatHearingTime } from './hearingTime'
 import { stripMarkdown } from './markdown'
 import { billDisplayTitle } from './billTitle'
@@ -22,6 +22,29 @@ export const USER_EVENT_ICONS: Record<string, { name: string; color: string; fil
   position_set:   { name: 'thumbs_up_down', color: color.textSuccess, fill: 1 },
   comment_added:  { name: 'chat',           color: color.brandViolet },
   vote_milestone: { name: 'how_to_vote',    color: color.textTealSenate },
+  // A custom field change. The feed has no row for one yet, so only the bill page's comment thread draws it,
+  // in the same muted color as an amendment row (textSecondary) so the email icon set needs no new PNG.
+  custom_field_set: { name: 'edit_note',  color: color.textSecondary },
+}
+
+/** `hollow` marks a cleared priority: the square is drawn empty, outlined in `color`, like the "no priority" look. */
+export type UserEventIcon = { name: string; color: string; fill: 0 | 1; square: boolean; hollow?: true }
+
+/**
+ * The icon a person's change shows with, in one place for every surface that draws it: the feed's card rows,
+ * a bulk edit's row, and the bill page's comment thread (the digest email reads USER_EVENT_ICONS for its PNGs).
+ * A priority change is a square in the priority's color, not a glyph (`square`). A position change is a glyph
+ * in the position's color. A type or value the tables have no color for keeps the table's own.
+ */
+export function userEventIcon(type: string, metadata?: Record<string, unknown> | null): UserEventIcon {
+  const cfg = USER_EVENT_ICONS[type] ?? { name: 'circle', color: color.textMuted }
+  let iconColor = cfg.color
+  // A cleared priority is an empty square with the border the priority dropdown's "none" has, not a color.
+  const cleared = type === 'priority_set' && metadata != null && metadata.priority == null
+  if (cleared) iconColor = color.borderDefault
+  else if (type === 'priority_set') iconColor = PRIORITY_COLORS[String(metadata?.priority ?? '')]?.fill ?? iconColor
+  else if (type === 'position_set') iconColor = POSITION_FEED_ICON[String(metadata?.position ?? '')] ?? iconColor
+  return { name: cfg.name, color: iconColor, fill: cfg.fill ?? 0, square: type === 'priority_set', ...(cleared ? { hollow: true as const } : {}) }
 }
 const HEARING_TYPES = new Set(['hearing_added', 'hearing_changed', 'hearing_cancelled'])
 
@@ -31,11 +54,29 @@ export type BillCardRow = {
   userId: string
   /** When true, render a priority square instead of a glyph (priority_set events). */
   square?: boolean
+  /** With `square`: draw it empty, outlined in `iconColor` (a cleared priority). */
+  hollow?: boolean
+  /** The bill the row's event is on, so a row in a companion group's card opens its own bill. */
+  billId: string | null
+  /**
+   * The number of the bill the row's event is on, shown in front of the text, in
+   * a companion group's card whose header shows more than one bill, so each row
+   * says which of them it happened on. Null in a bill's own card, and in a group's
+   * card with one bill in its header, where the chip already names it.
+   */
+  billLabel: string | null
 }
 export type BillCardModel = {
   billNumber: string; state: string | null; sessionSlug: string | null
   title: string; summary: string | null; priority: 'high' | 'medium' | 'low' | null
   rows: BillCardRow[]
+  /** A companion group's card: the bills with events in it, for the header. Absent in a bill's own card. */
+  bills?: GroupedBill[]
+}
+
+/** A row's text as it reads in a card: in front of it, the number of its bill when the card's header shows several. */
+export function billCardRowText(row: Pick<BillCardRow, 'text' | 'billLabel'>): string {
+  return row.billLabel ? `${row.billLabel}: ${row.text}` : row.text
 }
 export const CARD_STYLE = {
   headerBg: color.surfaceSubtle, border: color.borderDefault,
@@ -101,42 +142,43 @@ function hearingLine(event: FeedEvent): string {
 
 export function buildBillCardModel(group: GroupedBillEvents): BillCardModel {
   const rows: BillCardRow[] = []
+  const inGroup = group.groupKey != null
+  // With one bill in the header, its chip already says which bill every row is on.
+  const labelRows = inGroup && (group.bills?.length ?? 0) > 1
   for (const event of group.events) {
+    const ofBill = { billId: event.billId, billLabel: labelRows && event.billId !== null ? event.billNumber : null }
     if (event.type === 'bill_updated') {
       getBillUpdateChanges(event).forEach((change, idx) => {
         rows.push({
           key: `${event.id}-change-${idx}`, iconName: CHANGE_ICONS[change.changeType] ?? 'change_history',
           iconColor: color.textSecondary, iconFill: 0, text: formatBillUpdateDetail(change),
           bg: SUMMARY_BG, hash: changeRowHash(change), createdAt: event.createdAt, showTime: true,
-          userId: event.userId,
+          userId: event.userId, ...ofBill,
         })
       })
     } else if (HEARING_TYPES.has(event.type)) {
       rows.push({
         key: event.id, iconName: 'gavel', iconColor: color.billBadgeNavy, iconFill: 0,
         text: hearingLine(event), bg: SUMMARY_BG, hash: '#section-hearings',
-        createdAt: event.createdAt, showTime: true, userId: event.userId,
+        createdAt: event.createdAt, showTime: true, userId: event.userId, ...ofBill,
       })
     } else if (event.type === 'bill_matched') {
       // Passive, system-generated: a new keyword match became fully analyzed. Handled
       // inline (not via USER_EVENT_ICONS) so it stays out of the email-icon generator —
-      // this event never appears in digest emails, only the "analyzed" feed scope.
+      // this event never appears in digest emails, only on the card of a bill with a priority.
       rows.push({
         key: event.id, iconName: 'new_releases', iconColor: color.accentBlue, iconFill: 0,
         text: 'New bill matching your keywords', bg: color.white, hash: '',
-        createdAt: event.createdAt, showTime: true, userId: event.userId,
+        createdAt: event.createdAt, showTime: true, userId: event.userId, ...ofBill,
       })
     } else {
-      const cfg = USER_EVENT_ICONS[event.type] ?? { name: 'circle', color: color.textMuted }
-      let iconColor = cfg.color
-      const isPriority = event.type === 'priority_set'
-      if (isPriority) iconColor = PRIORITY_COLORS[String((event.metadata as Record<string, unknown>)?.priority ?? '')]?.fill ?? iconColor
-      else if (event.type === 'position_set') iconColor = POSITION_FEED_ICON[String((event.metadata as Record<string, unknown>)?.position ?? '')] ?? iconColor
+      const icon = userEventIcon(event.type, event.metadata as Record<string, unknown>)
       rows.push({
-        key: event.id, iconName: cfg.name, iconColor, iconFill: cfg.fill ?? 0,
+        key: event.id, iconName: icon.name, iconColor: icon.color, iconFill: icon.fill,
         text: userDetailLine(event), bg: color.white, hash: userEventHash(event),
-        createdAt: event.createdAt, showTime: true, userId: event.userId,
-        ...(isPriority ? { square: true } : {}),
+        createdAt: event.createdAt, showTime: true, userId: event.userId, ...ofBill,
+        ...(icon.square ? { square: true } : {}),
+        ...(icon.hollow ? { hollow: true } : {}),
       })
     }
   }
@@ -144,6 +186,7 @@ export function buildBillCardModel(group: GroupedBillEvents): BillCardModel {
     billNumber: group.billNumber, state: group.billState, sessionSlug: group.billSessionSlug,
     title: billDisplayTitle({ title: group.billTitle, isDraft: group.billIsDraft }), summary: group.billSummary != null ? stripMarkdown(group.billSummary) : null,
     priority: group.billPriority as 'high' | 'medium' | 'low' | null, rows,
+    ...(inGroup && group.bills ? { bills: group.bills } : {}),
   }
 }
 
@@ -152,6 +195,8 @@ export type ActivityRowModel = {
   text: string; createdAt: string; userId: string
   /** Render a priority square instead of a glyph (priority_set events). */
   square?: boolean
+  /** With `square`: draw it empty, outlined in `iconColor` (a cleared priority). */
+  hollow?: boolean
   /** How many bills the event is about, or null when it doesn't say. */
   billCount: number | null
 }
@@ -173,17 +218,17 @@ export function buildActivityRowModel(event: FeedEvent): ActivityRowModel {
   const base = { key: event.id, createdAt: event.createdAt, userId: event.userId, billCount: count }
   if (type === 'priority_set') {
     const priority = String(metadata.priority ?? '')
+    const icon = userEventIcon(type, metadata)
     return {
-      ...base, iconName: 'flag', iconFill: 1, square: true,
-      iconColor: PRIORITY_COLORS[priority]?.fill ?? USER_EVENT_ICONS.priority_set.color,
+      ...base, iconName: icon.name, iconFill: icon.fill, square: true, iconColor: icon.color, ...(icon.hollow ? { hollow: true } : {}),
       text: `${who} set priority to ${priority}${onBills}`,
     }
   }
   if (type === 'position_set') {
     const position = metadata.position == null ? null : String(metadata.position)
+    const icon = userEventIcon(type, metadata)
     return {
-      ...base, iconName: 'thumbs_up_down', iconFill: 1,
-      iconColor: (position && POSITION_FEED_ICON[position]) || USER_EVENT_ICONS.position_set.color,
+      ...base, iconName: icon.name, iconFill: icon.fill, iconColor: icon.color,
       text: position === null ? `${who} cleared the position${onBills}` : `${who} set position to ${position}${onBills}`,
     }
   }

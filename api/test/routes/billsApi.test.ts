@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { env, createExecutionContext } from 'cloudflare:test'
 import { inArray, eq } from 'drizzle-orm'
-import { resetDb, applyMigrations, appFetch, stubFetch, seedUser, seedSession, seedBill, seedBillText } from '../helpers'
+import { clearDb, appFetch, stubFetch, seedUser, seedSession, seedBill, seedBillText } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { memberVotes, officialPositions, comments, notes, calendarEvents, associationConfig } from '../../src/db/schema'
 import { app } from '../../src/index'
@@ -15,8 +15,7 @@ describe('GET /bills', () => {
   let memberToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const memberId = await seedUser()
     memberToken = await seedSession(memberId)
     await seedBill({ billNumber: 'HB 1', title: 'Election Act', priority: 'high', status: 'In Committee' })
@@ -62,7 +61,7 @@ describe('GET /bills', () => {
   })
 
   it('filters by text search (q)', async () => {
-    const res = await appFetch('http://localhost/api/bills?q=Voter', {
+    const res = await appFetch('http://localhost/api/bills?search=Voter', {
       headers: { Cookie: `session=${memberToken}` },
     })
     const body = await res.json() as { bills: unknown[]; pagination: { total: number } }
@@ -71,7 +70,7 @@ describe('GET /bills', () => {
   })
 
   it('searches by bill number with space (q="HB 1")', async () => {
-    const res = await appFetch('http://localhost/api/bills?q=HB+1', {
+    const res = await appFetch('http://localhost/api/bills?search=HB+1', {
       headers: { Cookie: `session=${memberToken}` },
     })
     const body = await res.json() as { bills: unknown[] }
@@ -80,7 +79,7 @@ describe('GET /bills', () => {
   })
 
   it('searches by bare bill number (q="1")', async () => {
-    const res = await appFetch('http://localhost/api/bills?q=1', {
+    const res = await appFetch('http://localhost/api/bills?search=1', {
       headers: { Cookie: `session=${memberToken}` },
     })
     const body = await res.json() as { bills: unknown[] }
@@ -89,7 +88,7 @@ describe('GET /bills', () => {
   })
 
   it('searches by compact bill number without space (q="HB1")', async () => {
-    const res = await appFetch('http://localhost/api/bills?q=HB1', {
+    const res = await appFetch('http://localhost/api/bills?search=HB1', {
       headers: { Cookie: `session=${memberToken}` },
     })
     const body = await res.json() as { bills: unknown[] }
@@ -246,8 +245,7 @@ describe('GET /bills — comma multi-search', () => {
   let memberToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const memberId = await seedUser()
     memberToken = await seedSession(memberId)
     await seedBill({ billNumber: 'H 7377', title: 'Mail Ballot Modernization Act' })
@@ -259,7 +257,7 @@ describe('GET /bills — comma multi-search', () => {
 
   // Returns sorted bill numbers for a search query.
   async function search(q: string): Promise<string[]> {
-    const res = await appFetch(`http://localhost/api/bills?q=${encodeURIComponent(q)}`, {
+    const res = await appFetch(`http://localhost/api/bills?search=${encodeURIComponent(q)}`, {
       headers: { Cookie: `session=${memberToken}` },
     })
     expect(res.status).toBe(200)
@@ -305,7 +303,7 @@ describe('GET /bills — comma multi-search', () => {
 
   it('composes with the state filter on multi-state data', async () => {
     await seedBill({ billNumber: 'H 7377', title: 'Utah Mail Ballots', state: 'UT' })
-    const res = await appFetch(`http://localhost/api/bills?q=7377&state=UT`, {
+    const res = await appFetch(`http://localhost/api/bills?search=7377&state=UT`, {
       headers: { Cookie: `session=${memberToken}` },
     })
     expect(res.status).toBe(200)
@@ -316,7 +314,7 @@ describe('GET /bills — comma multi-search', () => {
 
   it('caps segments instead of erroring on absurd comma counts', async () => {
     const q = Array.from({ length: 200 }, (_, i) => String(9000 + i)).join(',')
-    const res = await appFetch(`http://localhost/api/bills?q=${encodeURIComponent(q)}`, {
+    const res = await appFetch(`http://localhost/api/bills?search=${encodeURIComponent(q)}`, {
       headers: { Cookie: `session=${memberToken}` },
     })
     expect(res.status).toBe(200)
@@ -326,15 +324,14 @@ describe('GET /bills — comma multi-search', () => {
 describe('GET /bills — long search terms (D1 LIKE 50-byte limit)', () => {
   let token: string
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const uid = await seedUser()
     token = await seedSession(uid)
     await seedBill({ billNumber: 'HB 1', title: 'Election administration and voter registration procedures act', tenantSummary: 'A bill about elections' })
     await seedBill({ billNumber: 'SB 2', title: 'Unrelated transportation act' })
   })
   const get = (q: string) =>
-    appFetch(`http://localhost/api/bills?q=${encodeURIComponent(q)}`, { headers: { Cookie: `session=${token}` } })
+    appFetch(`http://localhost/api/bills?search=${encodeURIComponent(q)}`, { headers: { Cookie: `session=${token}` } })
 
   it('does not 500 on a single over-long token', async () => {
     expect((await get('a'.repeat(60))).status).toBe(200)
@@ -370,8 +367,7 @@ describe('GET /bills — monitoring-only bills are visible to all roles', () => 
   let normalBillId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const memberId = await seedUser({ role: 'member' })
     memberToken = await seedSession(memberId)
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com' })
@@ -413,8 +409,7 @@ describe('GET /bills — tag filter', () => {
   let memberToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const memberId = await seedUser()
     memberToken = await seedSession(memberId)
     // Bill with Elections tag only
@@ -486,8 +481,7 @@ describe('GET /bills/:id', () => {
   let billId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     memberId = await seedUser({ role: 'member', name: 'Alice' })
     memberToken = await seedSession(memberId)
     adminId = await seedUser({ role: 'admin', name: 'Admin' })
@@ -668,8 +662,7 @@ describe('POST /bills/:id/votes', () => {
   let billId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     memberId = await seedUser()
     memberToken = await seedSession(memberId)
     billId = await seedBill()
@@ -727,8 +720,7 @@ describe('DELETE /bills/:id/votes', () => {
   let billId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     memberId = await seedUser()
     memberToken = await seedSession(memberId)
     billId = await seedBill()
@@ -754,8 +746,7 @@ describe('PATCH /bills/:id/priority (admin only)', () => {
   let billId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
     const memberId = await seedUser({ role: 'member' })
@@ -831,8 +822,7 @@ describe('PATCH /bills/:id/priority — promotion to full analysis', () => {
   let adminToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
     // central promote + calendar backfill both go through global fetch in tests
@@ -901,8 +891,7 @@ describe('POST /bills/:id/position (admin only)', () => {
   let billId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
     billId = await seedBill()
@@ -962,8 +951,7 @@ describe('DELETE /bills/:id/position (admin only)', () => {
   let adminId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
     const memberId = await seedUser({ role: 'member' })
@@ -1044,8 +1032,7 @@ describe('POST /bills/:id/comments', () => {
   let billId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const memberId = await seedUser()
     memberToken = await seedSession(memberId)
     billId = await seedBill()
@@ -1095,8 +1082,7 @@ describe('POST /bills/:id/comments — demo per-bill cap', () => {
   const demoEnv = { ...env, DEMO_MODE: 'true' }
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     userId = await seedUser()
     cookie = `session=${await seedSession(userId)}`
     billId = await seedBill()
@@ -1160,8 +1146,7 @@ describe('GET /bills — pagination', () => {
   let memberToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const memberId = await seedUser()
     memberToken = await seedSession(memberId)
     // Seed 5 bills
@@ -1218,8 +1203,7 @@ describe('GET /bills — sort', () => {
   let token: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const userId = await seedUser()
     token = await seedSession(userId)
     // Seed 3 bills with distinct sortable values
@@ -1342,8 +1326,7 @@ describe('PUT /bills/:id/note', () => {
   let billId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const memberId = await seedUser()
     memberToken = await seedSession(memberId)
     billId = await seedBill()
@@ -1390,8 +1373,7 @@ describe('GET /bills — multi-value filters', () => {
   let token: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const userId = await seedUser()
     token = await seedSession(userId)
     await seedBill({ billNumber: 'HB 1', status: 'In Committee', priority: 'high', session: '2025' })
@@ -1420,7 +1402,7 @@ describe('GET /bills — multi-value filters', () => {
   })
 
   it('filters by two sessions (OR)', async () => {
-    const res = await appFetch('http://localhost/api/bills?session=2025&session=2024', {
+    const res = await appFetch('http://localhost/api/bills?sessionName=2025&sessionName=2024', {
       headers: { Cookie: `session=${token}` },
     })
     const body = await res.json() as { bills: Array<{ billNumber: string }> }
@@ -1436,8 +1418,7 @@ describe('GET /bills — tag filter with long tag names', () => {
   const LONG_TAG = 'County Election Officials & Voter Registrars Duties' // 51 chars → 55-byte LIKE pattern
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const userId = await seedUser()
     token = await seedSession(userId)
     // Facets filter tag counts to the current taxonomy; seed one covering this fixture's tags.
@@ -1463,8 +1444,8 @@ describe('GET /bills — tag filter with long tag names', () => {
     })
     expect(res.status).toBe(200)
     // The tag facet excludes its own filter, so the long tag still reports its count.
-    const body = await res.json() as { tags: Record<string, number> }
-    expect(body.tags[LONG_TAG]).toBe(1)
+    const body = await res.json() as { tag: Record<string, number> }
+    expect(body.tag[LONG_TAG]).toBe(1)
   })
 })
 
@@ -1473,8 +1454,7 @@ describe('GET /bills/facets', () => {
   let adminId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     adminId = await seedUser({ role: 'admin' })
     token = await seedSession(adminId)
     // Facets filter tag counts to the current taxonomy; seed one covering this fixture's tags.
@@ -1500,7 +1480,7 @@ describe('GET /bills/facets', () => {
       status: Record<string, number>
       priority: Record<string, number>
       session: Record<string, number>
-      tags: Record<string, number>
+      tag: Record<string, number>
       position: Record<string, number>
       myBillsCount: number
     }
@@ -1509,23 +1489,23 @@ describe('GET /bills/facets', () => {
     expect(body.priority['high']).toBe(1)
     expect(body.priority['low']).toBe(1)
     expect(body.priority['medium']).toBe(1)
-    expect(body.session['2025']).toBe(2)
-    expect(body.session['2024']).toBe(1)
-    expect(body.tags['Voting']).toBe(2)
-    expect(body.tags['Election Admin']).toBe(1)
+    expect(body.sessionName['2025']).toBe(2)
+    expect(body.sessionName['2024']).toBe(1)
+    expect(body.tag['Voting']).toBe(2)
+    expect(body.tag['Election Admin']).toBe(1)
     expect(body.position['none']).toBe(3)
     expect(body.myBillsCount).toBe(0)
   })
 
   it('facet counts respect active filters', async () => {
     // Filter to session=2025; tag counts should only include 2025 bills
-    const res = await appFetch('http://localhost/api/bills/facets?session=2025', {
+    const res = await appFetch('http://localhost/api/bills/facets?sessionName=2025', {
       headers: { Cookie: `session=${token}` },
     })
-    const body = await res.json() as { tags: Record<string, number>; status: Record<string, number> }
+    const body = await res.json() as { tag: Record<string, number>; status: Record<string, number> }
     // Only HB 1 (session 2025, tags: Voting, Election Admin) and AB 3 (session 2025, no tags)
-    expect(body.tags['Voting']).toBe(1) // only HB 1 contributes; SB 2 is session 2024
-    expect(body.tags['Election Admin']).toBe(1)
+    expect(body.tag['Voting']).toBe(1) // only HB 1 contributes; SB 2 is session 2024
+    expect(body.tag['Election Admin']).toBe(1)
     expect(body.status['In Committee']).toBe(2)
     expect(body.status['Passed House']).toBeUndefined()
   })
@@ -1575,7 +1555,7 @@ describe('GET /bills/facets', () => {
   })
 
   it('applies comma multi-search to facet counts', async () => {
-    const res = await appFetch(`http://localhost/api/bills/facets?q=${encodeURIComponent('HB1, SB 2')}`, {
+    const res = await appFetch(`http://localhost/api/bills/facets?search=${encodeURIComponent('HB1, SB 2')}`, {
       headers: { Cookie: `session=${token}` },
     })
     expect(res.status).toBe(200)
@@ -1687,8 +1667,7 @@ describe('GET /bills — unvoted filter', () => {
   let token: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     userId = await seedUser({ canVote: true })
     token = await seedSession(userId)
     await seedBill({ billNumber: 'HB 1' })
@@ -1727,8 +1706,7 @@ describe('POST /bills/bulk (admin only)', () => {
   let billId3: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
     const memberId = await seedUser({ role: 'member' })
@@ -1751,7 +1729,7 @@ describe('POST /bills/bulk (admin only)', () => {
     const res = await appFetch('http://localhost/api/bills/bulk', {
       method: 'POST',
       headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: [billId1], filter: {}, priority: 'high' }),
+      body: JSON.stringify({ ids: [billId1], filter: '', priority: 'high' }),
     })
     expect(res.status).toBe(400)
   })
@@ -1794,7 +1772,7 @@ describe('POST /bills/bulk (admin only)', () => {
     const res = await appFetch('http://localhost/api/bills/bulk', {
       method: 'POST',
       headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: { status: ['In Committee'] }, priority: 'medium' }),
+      body: JSON.stringify({ filter: 'status=In+Committee', priority: 'medium' }),
     })
     expect(res.status).toBe(200)
     const body = await res.json() as { updated: number }
@@ -1823,7 +1801,7 @@ describe('POST /bills/bulk (admin only)', () => {
     const res = await appFetch('http://localhost/api/bills/bulk', {
       method: 'POST',
       headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: { subject: ['RI:Election Law'] }, priority: 'high' }),
+      body: JSON.stringify({ filter: 'subject=RI%3AElection+Law', priority: 'high' }),
     })
     expect(res.status).toBe(200)
     const body = await res.json() as { updated: number }
@@ -1992,8 +1970,7 @@ describe('POST /bills/bulk — match=any', () => {
   let adminToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
 
@@ -2008,7 +1985,7 @@ describe('POST /bills/bulk — match=any', () => {
     const res = await appFetch('http://localhost/api/bills/bulk', {
       method: 'POST',
       headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: { subject: ['UT:Elections'], tag: ['Clerk'], match: 'any' }, priority: 'high' }),
+      body: JSON.stringify({ filter: 'subject=UT%3AElections&tag=Clerk&match=any', priority: 'high' }),
     })
     expect(res.status).toBe(200)
     expect((await res.json() as { updated: number }).updated).toBe(2)
@@ -2018,7 +1995,7 @@ describe('POST /bills/bulk — match=any', () => {
     const res = await appFetch('http://localhost/api/bills/bulk', {
       method: 'POST',
       headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: { subject: ['UT:Elections'], tag: ['Clerk'] }, priority: 'high' }),
+      body: JSON.stringify({ filter: 'subject=UT%3AElections&tag=Clerk', priority: 'high' }),
     })
     expect(res.status).toBe(200)
     expect((await res.json() as { updated: number }).updated).toBe(0)
@@ -2030,8 +2007,7 @@ describe('POST /bills/bulk-dismiss — match=any', () => {
   let adminToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
 
@@ -2047,7 +2023,7 @@ describe('POST /bills/bulk-dismiss — match=any', () => {
     const res = await appFetch('http://localhost/api/bills/bulk-dismiss', {
       method: 'POST',
       headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: { subject: ['UT:Elections'], tag: ['Clerk'], match: 'any' } }),
+      body: JSON.stringify({ filter: 'subject=UT%3AElections&tag=Clerk&match=any' }),
     })
     expect(res.status).toBe(200)
     expect((await res.json() as { dismissed: number }).dismissed).toBe(2)
@@ -2057,7 +2033,7 @@ describe('POST /bills/bulk-dismiss — match=any', () => {
     const res = await appFetch('http://localhost/api/bills/bulk-dismiss', {
       method: 'POST',
       headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: { subject: ['UT:Elections'], tag: ['Clerk'] } }),
+      body: JSON.stringify({ filter: 'subject=UT%3AElections&tag=Clerk' }),
     })
     expect(res.status).toBe(200)
     expect((await res.json() as { dismissed: number }).dismissed).toBe(0)
@@ -2068,8 +2044,7 @@ describe('POST /bills/bulk — priority promotion', () => {
   let adminToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
@@ -2115,8 +2090,7 @@ describe('GET /bills/bulk-values — nullMatchCount', () => {
   let adminToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
   })
@@ -2145,8 +2119,7 @@ describe('GET /bills/bulk-values (admin only)', () => {
   let billId3: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
     const memberId = await seedUser({ role: 'member' })
@@ -2237,8 +2210,7 @@ describe('GET /bills/bulk-values — match=any', () => {
   let adminToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
 
@@ -2278,8 +2250,7 @@ describe('stored timestamps are space-format', () => {
   let adminId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     adminId = await seedUser({ role: 'admin' })
     adminToken = await seedSession(adminId)
   })
@@ -2364,8 +2335,7 @@ describe('GET /bills — broadened search fields', () => {
   let memberToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const memberId = await seedUser()
     memberToken = await seedSession(memberId)
     // Term lives ONLY in tenant_summary:
@@ -2382,7 +2352,7 @@ describe('GET /bills — broadened search fields', () => {
   })
 
   async function search(q: string): Promise<string[]> {
-    const res = await appFetch(`http://localhost/api/bills?q=${encodeURIComponent(q)}`, {
+    const res = await appFetch(`http://localhost/api/bills?search=${encodeURIComponent(q)}`, {
       headers: { Cookie: `session=${memberToken}` },
     })
     expect(res.status).toBe(200)
@@ -2415,15 +2385,14 @@ describe('GET /bills — bill-number ranking', () => {
   let memberToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const memberId = await seedUser()
     memberToken = await seedSession(memberId)
   })
 
   // Order-PRESERVING search helper (the comma-search helper sorts; this keeps rank order).
   async function searchOrdered(q: string, extra = ''): Promise<string[]> {
-    const res = await appFetch(`http://localhost/api/bills?q=${encodeURIComponent(q)}${extra}`, {
+    const res = await appFetch(`http://localhost/api/bills?search=${encodeURIComponent(q)}${extra}`, {
       headers: { Cookie: `session=${memberToken}` },
     })
     expect(res.status).toBe(200)
@@ -2479,8 +2448,7 @@ describe('GET /bills — bill-number ranking', () => {
 
 describe('GET /bills/:id legislator votes', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
   })
 
   it("carries central's per-legislator votes into the bill's vote summary", async () => {
@@ -2505,16 +2473,169 @@ describe('GET /bills/:id legislator votes', () => {
     expect(res.status).toBe(200)
     const body = await res.json() as { voteSummary: { desc: string; legislatorVotes: unknown[] }[] }
     expect(body.voteSummary.map(v => [v.desc, v.legislatorVotes])).toEqual([
-      ['Third Reading', legislatorVotes],
+      // No link from central, so none on the page.
+      ['Third Reading', legislatorVotes.map(v => ({ ...v, url: null, party: null }))],
       ['Concurrence', []],
     ])
+  })
+
+  describe('provider extras', () => {
+    async function extrasFor(extras: unknown) {
+      const token = await seedSession(await seedUser({ role: 'member' }))
+      const billId = await seedBill({ externalId: 'legiscan:102' })
+      const central = {
+        fetch: vi.fn(async (req: Request) => new URL(req.url).pathname === '/api/bills/legiscan:102'
+          ? Response.json({ extras })
+          : Response.json({}, { status: 404 })),
+      }
+      const res = await app.request(`/api/bills/${billId}`, { headers: { Cookie: `session=${token}` } }, { ...env, CENTRAL: central })
+      expect(res.status).toBe(200)
+      return await res.json() as { extras: unknown }
+    }
+    const field = (key: string, placement?: string) => ({ key, label: key, explainer: null, display: 'text', ...(placement ? { placement } : {}), value: 'v' })
+
+    it('passes each field\'s placement through unchanged, in central\'s order', async () => {
+      const extras = { providerName: 'Example Legislature', fields: [field('a', 'meta'), field('b', 'detail'), field('c', 'flag'), field('d', 'panel')] }
+      expect((await extrasFor(extras)).extras).toEqual(extras)
+    })
+
+    it('passes through a central payload with no placement, without error', async () => {
+      const extras = { providerName: 'Example Legislature', fields: [field('a'), field('b')] }
+      const body = await extrasFor(extras)
+      expect(body.extras).toEqual(extras)
+      expect((body.extras as { fields: object[] }).fields.every(f => !('placement' in f))).toBe(true)
+    })
+
+    it('has no extras when central sends none', async () => {
+      expect((await extrasFor(null)).extras).toBeNull()
+    })
+  })
+
+  describe("a sponsor's profile link", () => {
+    async function billFor(sponsors: unknown[]) {
+      const token = await seedSession(await seedUser({ role: 'member' }))
+      const billId = await seedBill({ externalId: 'legiscan:102' })
+      const central = {
+        fetch: vi.fn(async (req: Request) => new URL(req.url).pathname === '/api/bills/legiscan:102'
+          ? Response.json({ sponsors })
+          : Response.json({}, { status: 404 })),
+      }
+      const res = await app.request(`/api/bills/${billId}`, { headers: { Cookie: `session=${token}` } }, { ...env, CENTRAL: central })
+      expect(res.status).toBe(200)
+      return await res.json() as { sponsorUrl: string | null; coSponsors: { name: string; url: string | null }[] }
+    }
+    const sponsor = (name: string, url: unknown, primary = false) => ({ name, party: null, role: null, primary, personId: null, url })
+
+    it('passes an http(s) url through for the primary sponsor and co-sponsors', async () => {
+      const body = await billFor([sponsor('Ann Able', 'https://legislature.example/able', true), sponsor('Bo Baker', 'http://legislature.example/baker')])
+      expect(body.sponsorUrl).toBe('https://legislature.example/able')
+      expect(body.coSponsors.find(s => s.name === 'Bo Baker')?.url).toBe('http://legislature.example/baker')
+    })
+
+    it.each([['javascript:', 'javascript:alert(1)'], ['data:', 'data:text/html,<script>alert(1)</script>'], ['protocol-relative', '//legislature.example/able']])(
+      'drops a %s url for the primary sponsor and for a co-sponsor', async (_label, url) => {
+        const body = await billFor([sponsor('Ann Able', url, true), sponsor('Bo Baker', url)])
+        expect(body.sponsorUrl).toBeNull()
+        expect(body.coSponsors.find(s => s.name === 'Bo Baker')?.url).toBeNull()
+      })
+
+    it('drops a url that is not a string', async () => {
+      const body = await billFor([sponsor('Ann Able', { href: 'https://x.example' }, true), sponsor('Bo Baker', 123)])
+      expect(body.sponsorUrl).toBeNull()
+      expect(body.coSponsors.find(s => s.name === 'Bo Baker')?.url).toBeNull()
+    })
+  })
+
+  describe("a voter's party", () => {
+    const counts = [{ option: 'yes', value: 4 }, { option: 'no', value: 0 }, { option: 'not voting', value: 0 }, { option: 'absent', value: 0 }]
+    async function votersFor(legislatorVotes: unknown[]) {
+      const token = await seedSession(await seedUser({ role: 'member' }))
+      const billId = await seedBill({ externalId: 'legiscan:102' })
+      const central = {
+        fetch: vi.fn(async (req: Request) => new URL(req.url).pathname === '/api/bills/legiscan:102'
+          ? Response.json({ votes: [{ id: '31', motionText: 'Third Reading', date: '2026-03-01', result: 'pass', chamber: 'H', counts, legislatorVotes }] })
+          : Response.json({}, { status: 404 })),
+      }
+      const res = await app.request(`/api/bills/${billId}`, { headers: { Cookie: `session=${token}` } }, { ...env, CENTRAL: central })
+      expect(res.status).toBe(200)
+      return (await res.json() as { voteSummary: { legislatorVotes: { name: string; party?: string | null }[] }[] }).voteSummary[0].legislatorVotes
+    }
+
+    it("passes central's party through for each voter", async () => {
+      const voters = await votersFor([
+        { personId: '1', name: 'Ann Able', vote: 'Yea', party: 'D' },
+        { personId: '2', name: 'Bo Baker', vote: 'Yea', party: 'R' },
+        { personId: '3', name: 'Cy Cole', vote: 'Yea', party: 'Green' },
+      ])
+      expect(voters.map(v => [v.name, v.party])).toEqual([['Ann Able', 'D'], ['Bo Baker', 'R'], ['Cy Cole', 'Green']])
+    })
+
+    it('sends null for a voter central sends no party for, whether null, missing, or blank (an older central sends no field)', async () => {
+      const voters = await votersFor([
+        { personId: '1', name: 'Ann Able', vote: 'Yea', party: null },
+        { personId: '2', name: 'Bo Baker', vote: 'Yea' },
+        { personId: '3', name: 'Cy Cole', vote: 'Yea', party: '  ' },
+      ])
+      expect(voters.map(v => v.party)).toEqual([null, null, null])
+    })
+
+    it('keeps the voter list intact when a party is not a string', async () => {
+      const voters = await votersFor([
+        { personId: '1', name: 'Ann Able', vote: 'Yea', party: 7 },
+        { personId: '2', name: 'Bo Baker', vote: 'Yea', party: { code: 'D' } },
+      ])
+      expect(voters.map(v => [v.name, v.party])).toEqual([['Ann Able', null], ['Bo Baker', null]])
+    })
+  })
+
+  describe("a voter's profile link", () => {
+    const counts = [{ option: 'yes', value: 3 }, { option: 'no', value: 0 }, { option: 'not voting', value: 0 }, { option: 'absent', value: 0 }]
+    async function voteSummaryFor(legislatorVotes: unknown[]) {
+      const token = await seedSession(await seedUser({ role: 'member' }))
+      const billId = await seedBill({ externalId: 'legiscan:102' })
+      const central = {
+        fetch: vi.fn(async (req: Request) => new URL(req.url).pathname === '/api/bills/legiscan:102'
+          ? Response.json({ votes: [{ id: '31', motionText: 'Third Reading', date: '2026-03-01', result: 'pass', chamber: 'H', counts, legislatorVotes }] })
+          : Response.json({}, { status: 404 })),
+      }
+      const res = await app.request(`/api/bills/${billId}`, { headers: { Cookie: `session=${token}` } }, { ...env, CENTRAL: central })
+      expect(res.status).toBe(200)
+      return (await res.json() as { voteSummary: { legislatorVotes: { name: string; url?: string | null }[] }[] }).voteSummary[0].legislatorVotes
+    }
+
+    it("passes central's url through for each voter, and null where central sends none", async () => {
+      const voters = await voteSummaryFor([
+        { personId: '1', name: 'Ann Able', vote: 'Yea', url: 'https://legislature.example/members/able' },
+        { personId: '2', name: 'Bo Baker', vote: 'Yea', url: null },
+        // A central from before voter links sends no url field.
+        { personId: '3', name: 'Cy Cole', vote: 'Yea' },
+      ])
+      expect(voters.map(v => [v.name, v.url])).toEqual([
+        ['Ann Able', 'https://legislature.example/members/able'],
+        ['Bo Baker', null],
+        ['Cy Cole', null],
+      ])
+    })
+
+    it('drops a url that is not http or https', async () => {
+      const voters = await voteSummaryFor([
+        { personId: '1', name: 'Ann Able', vote: 'Yea', url: 'javascript:alert(1)' },
+        { personId: '2', name: 'Bo Baker', vote: 'Yea', url: 'data:text/html,<script>alert(1)</script>' },
+        { personId: '3', name: 'Cy Cole', vote: 'Yea', url: '//legislature.example/cole' },
+      ])
+      expect(voters.map(v => v.url)).toEqual([null, null, null])
+    })
+
+    it('keeps the voter list intact when a url is not a string', async () => {
+      const voters = await voteSummaryFor([{ personId: '1', name: 'Ann Able', vote: 'Yea', url: { href: 'https://x.example' } }])
+      expect(voters).toEqual([{ personId: '1', name: 'Ann Able', vote: 'Yea', url: null, party: null }])
+    })
   })
 })
 
 describe('GET /bills/:id provider extras', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
   })
 
   it("passes central's extras through as central labeled them, and null when central sends none", async () => {
@@ -2547,8 +2668,7 @@ describe('GET /bills/:id provider extras', () => {
 
 describe('GET /bills/:id committees', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
   })
 
   it("names the bill's committee and referrals as central does, and keeps the stored committee when central has none", async () => {
@@ -2595,5 +2715,34 @@ describe('GET /bills/:id committees', () => {
     const central = { fetch: vi.fn(async () => Response.json({})) }
     const res = await app.request(`/api/bills/${bill}`, { headers: { Cookie: `session=${token}` } }, { ...env, CENTRAL: central })
     expect((await res.json() as { committee: unknown }).committee).toBeNull()
+  })
+})
+
+// Central refreshes a stale stub's detail when its page is viewed
+// (central/src/lib/stubRefresh.ts), and tells a view from any other read of the
+// bill by the `view` flag, which only the bill page sends.
+describe('GET /bills/:id tells central it is a page view', () => {
+  beforeEach(async () => {
+    await clearDb()
+  })
+
+  function recordingCentral() {
+    const urls: URL[] = []
+    return { urls, central: { fetch: vi.fn(async (req: Request) => { urls.push(new URL(req.url)); return Response.json({}) }) } }
+  }
+
+  it("flags the bill page's read of the bill as a view, except on a demo instance, whose visitors are anonymous", async () => {
+    const token = await seedSession(await seedUser({ role: 'member' }))
+    const bill = await seedBill({ billNumber: 'AB 7', externalId: 'legiscan:707' })
+    const read = async (bindings: Record<string, unknown>) => {
+      const { urls, central } = recordingCentral()
+      const res = await app.request(`/api/bills/${bill}`, { headers: { Cookie: `session=${token}` } }, { ...env, CENTRAL: central, ...bindings })
+      expect(res.status).toBe(200)
+      const url = urls.find(u => u.pathname === '/api/bills/legiscan:707')
+      expect(url).toBeDefined()
+      return url!.searchParams.get('view')
+    }
+    expect(await read({})).toBe('1')
+    expect(await read({ DEMO_MODE: 'true' })).toBeNull()
   })
 })

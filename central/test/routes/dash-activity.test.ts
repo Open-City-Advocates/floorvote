@@ -2,13 +2,13 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { drizzle } from 'drizzle-orm/d1'
 import * as schema from '../../src/db/schema'
-import { app } from '../../src/index-legiscan'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { app } from '../../src/index'
+import { clearDb } from '../helpers/migrations'
 
 const TEST_ENV: any = { ...env, ADMIN_SECRET: 'sek' }
 const AUTH = { Authorization: 'Bearer sek' }
 
-beforeEach(async () => { await setupLsDb() })
+beforeEach(async () => { await clearDb() })
 
 async function seed() {
   const db = drizzle(env.DB, { schema })

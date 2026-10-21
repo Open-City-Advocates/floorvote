@@ -36,7 +36,7 @@ vi.mock('./lib/api', () => ({
   apiFetch: async (path: string) => {
     hoisted.calls.push(path)
     if (path === '/auth/me') {
-      return { id: 'u1', email: 'a@b.c', name: 'A', role: 'owner', subtitle: null, canVote: true, emailDigestEnabled: false, lastSeenFeed: null }
+      return { id: 'u1', email: 'a@b.c', name: 'A', role: 'owner', canVote: true, emailDigestEnabled: false, lastSeenFeed: null }
     }
     if (path === '/views') return { views: [{ id: 'v1', slug: 'urgent', name: 'Urgent', query: 'priority=high&sort=bill&dir=desc' }] }
     if (path.startsWith('/bills?')) {
@@ -103,6 +103,33 @@ describe('bill list beside a bill (split pane)', () => {
     expect(within(pane).getByRole('link', { name: /Draft three/ })).toHaveTextContent('Draft')
     // Pane comes before <main> in the DOM, matching its place on screen.
     expect(pane.compareDocumentPosition(document.getElementById('main-content')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('lets the reader resize the list on a wide viewport, and stores the width', async () => {
+    setViewport(1600)
+    const realInner = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1600 })
+    try {
+      localStorage.clear()
+      renderAt('/RI/2026/HB%202')
+      const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+      await within(pane).findByText('Bill number 1')
+      const sep = within(pane).getByRole('separator', { name: 'Resize bill list' })
+      expect(pane.style.width).toBe('300px')
+      fireEvent.keyDown(sep, { key: 'End' })
+      expect(pane.style.width).toBe('670px')
+      expect(localStorage.getItem('billListPaneWidth')).toBe('670')
+    } finally {
+      localStorage.clear()
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: realInner })
+    }
+  })
+
+  it('has no resize handle where there is no list', async () => {
+    setViewport(1200)
+    renderAt('/RI/2026/HB%202')
+    expect(await screen.findByText('detail /RI/2026/HB%202')).toBeInTheDocument()
+    expect(screen.queryByRole('separator', { name: 'Resize bill list' })).toBeNull()
   })
 
   it('is not shown on the Bills page itself', async () => {

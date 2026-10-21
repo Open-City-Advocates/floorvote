@@ -2,11 +2,11 @@ import { env } from 'cloudflare:test'
 import { describe, it, expect, beforeEach } from 'vitest'
 import { drizzle } from 'drizzle-orm/d1'
 import * as schema from '../../src/db/schema'
-import { app } from '../../src/index-legiscan'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { app } from '../../src/index'
+import { clearDb } from '../helpers/migrations'
 
 beforeEach(async () => {
-  await setupLsDb()
+  await clearDb()
 })
 
 async function seed() {
@@ -136,8 +136,8 @@ describe('legislator votes', () => {
     expect(res.status).toBe(200)
     const body = await res.json() as any
     expect(body.votes[0].legislatorVotes).toEqual([
-      { personId: '2', name: 'Brooke Pinto', vote: 'No' },
-      { personId: '1', name: 'Zachary Parker', vote: 'Yes' },
+      { personId: '2', name: 'Brooke Pinto', vote: 'No', url: null, party: null },
+      { personId: '1', name: 'Zachary Parker', vote: 'Yes', url: null, party: null },
     ])
   })
 
@@ -160,6 +160,6 @@ describe('bill detail with many roll calls', () => {
     const res = await app.request('/api/bills/legiscan:102', { headers: { 'x-admin-secret': 'test-secret' } }, env)
     expect(res.status).toBe(200)
     const body = await res.json() as any
-    expect(body.votes.find((v: any) => v.id === '1129').legislatorVotes).toEqual([{ personId: '1', name: 'Zachary Parker', vote: 'Yes' }])
+    expect(body.votes.find((v: any) => v.id === '1129').legislatorVotes).toEqual([{ personId: '1', name: 'Zachary Parker', vote: 'Yes', url: null, party: null }])
   })
 })

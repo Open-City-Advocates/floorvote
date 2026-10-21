@@ -8,8 +8,14 @@
    mobile top bar — flip it to the brand's white below. */
 *:focus-visible { outline: 2px solid var(--fv-focus-ring); outline-offset: 2px; }
 *:focus:not(:focus-visible) { outline: none; }
+/* Switches hide their input (0x0), so ring the track that follows it instead. */
+.fv-switch-input:focus-visible + span { outline: 2px solid var(--fv-focus-ring); outline-offset: 2px; }
+
 .sidebar-brand { --fv-focus-ring: var(--fv-text-on-brand); }
 .mobile-topbar { --fv-focus-ring: var(--fv-text-on-brand); }
+
+/* The split pane's resize handle is an 8px strip: draw its ring inside it. */
+.pane-resize-handle:focus-visible { outline-offset: -2px; }
 
 /* Stretched-link overlay for sidebar widget headers (Prioritized bills /
    Upcoming hearings — see Sidebar.tsx). The header row lays out its title
@@ -121,7 +127,7 @@ body.nav-pending * { cursor: wait !important; }
    22.627px = 16 * sqrt(2), so the perpendicular shift is exactly one period. */
 @keyframes stripe-slide { to { background-position: 22.627px 0; } }
 
-/* "Analyzing" box — used in BillDetail for lightweight bills.
+/* "Analyzing" box — used in BillDetail for monitored bills.
    The stripe layer extends 23px past the visible left edge (ceil(16 * sqrt(2)))
    so the gradient's 0% origin sits in the clipped region, hiding the wedge-growth
    artifact that's otherwise visible as a "seam" at the left edge during animation. */
@@ -315,8 +321,8 @@ body.nav-pending * { cursor: wait !important; }
   }
   .bill-list-header-row,
   .bill-row-grid {
-    /* Priority keeps its full 120px so the dropdown isn't clipped when Team drops. */
-    grid-template-columns: 12px minmax(0, 1fr) 120px !important;
+    /* Priority keeps its full width (PRIORITY_COL_WIDTH in constants.ts, 140px) so the dropdown isn't clipped when Team drops. */
+    grid-template-columns: 12px minmax(0, 1fr) 140px !important;
   }
   .bill-row-chips-cell {
     grid-template-columns: var(--bill-col-w, 70px) auto !important;
@@ -381,11 +387,20 @@ body.nav-pending * { cursor: wait !important; }
   }
   .bill-list-header-row.bill-list-ms,
   .bill-row-grid.bill-list-ms {
-    grid-template-columns: 12px minmax(0, 1fr) 120px !important;
+    grid-template-columns: 12px minmax(0, 1fr) 140px !important;
   }
   .bill-list-ms .bill-row-chips-cell {
     grid-template-columns: var(--bill-col-w, 70px) auto !important;
   }
+}
+
+/* A companion group's chips cell (BillRow, data-group-rows) is a grid of rows:
+   one per shown bill, plus one for "+N" (groupRows.ts). Its number and status
+   cells are subgrids that place each bill and its status on a shared row; every
+   other cell (year, last action, relevance) spans all the rows, so it stays
+   centered on the whole group. -1 is the last line of the explicit rows. */
+.bill-row-chips-cell[data-group-rows] > * {
+  grid-row: 1 / -1;
 }
 
 /* Fallback for browsers WITHOUT container-query support. Gated behind @supports

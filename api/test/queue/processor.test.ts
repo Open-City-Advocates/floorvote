@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedBill } from '../helpers'
+import { clearDb, seedBill } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { processCentralNotification, processQueue, shedRetryDelay } from '../../src/queue/processor'
 import { eq, inArray, sql } from 'drizzle-orm'
@@ -65,8 +65,7 @@ const testEnv = {
 
 describe('processCentralNotification', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     vi.clearAllMocks()
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
       if (url.includes('/text')) {
@@ -546,6 +545,30 @@ describe('processCentralNotification', () => {
 
     const { processBill } = await import('../../src/lib/llm')
     expect(processBill).not.toHaveBeenCalled()
+  })
+
+  it('runs the model on a demo tenant for an operatorAi message', async () => {
+    const db = getDb(env.DB)
+    await db.insert(associationConfig).values({ key: 'keywords', value: JSON.stringify(['election']) })
+    const demoEnv = { ...testEnv, DEMO_MODE: 'true' }
+    const msg: TenantQueueMessage = { tenantId: 'test-org', billId: BILL_ID, forceAI: true, operatorAi: true }
+    await processCentralNotification(msg, demoEnv as any, db)
+
+    const { processBill } = await import('../../src/lib/llm')
+    expect(processBill).toHaveBeenCalledTimes(1)
+  })
+
+  it('an operatorAi analysis does not mark the bill new or write a bill_matched event', async () => {
+    const db = getDb(env.DB)
+    await db.insert(associationConfig).values({ key: 'keywords', value: JSON.stringify(['election']) })
+    const demoEnv = { ...testEnv, DEMO_MODE: 'true' }
+    await processCentralNotification({ tenantId: 'test-org', billId: BILL_ID, forceAI: true, operatorAi: true }, demoEnv as any, db)
+
+    const row = await db.select().from(bills).get()
+    expect(row!.aiProcessedAt).not.toBeNull()
+    expect(row!.newMatchAt).toBeNull()
+    const events = await db.select().from(feedEvents).where(eq(feedEvents.type, 'bill_matched')).all()
+    expect(events).toHaveLength(0)
   })
 
   it('forceMetadata does not bypass the AI text-hash dedup', async () => {

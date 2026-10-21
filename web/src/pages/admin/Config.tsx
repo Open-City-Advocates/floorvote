@@ -1,6 +1,8 @@
+import { newOptionRow, optionsFromRows, rowsFromOptions, type OptionRow } from './optionRows'
 import { useEffect, useRef, useState } from 'react'
 import { color, radius, fontSize, fontWeight } from '../../styles/tokens'
 import { actionRowStyle, actionRowStyleFirst, actionBtnBlue, actionBtnRed } from '../../styles/actionRow'
+import { primaryButtonColors } from '../../styles/primaryButton'
 import { apiFetch, ApiError } from '../../lib/api'
 import { normalizeOrgNoun, MAX_ORG_NOUN_LENGTH } from '../../lib/orgNoun'
 import { exportAllData } from '../../lib/exportData'
@@ -16,15 +18,24 @@ import { HintText } from '../../components/HintText'
 import { DropIndicator, ReorderLiveRegion, useDragReorder } from '../../components/dragReorder'
 import { inlineEditSaveStyle, inlineEditCancelStyle } from '../../lib/inlineEditStyles'
 import { ReprocessScopeModal, type ReprocessScope } from '../../components/ReprocessScopeModal'
+import { IosToggle } from '../../components/ui/IosToggle'
 import { aiInstructionsChanged, configChanged, type ConfigSnapshot, centralSyncWarning, type KeywordResyncResult } from './aiConfig'
 import { isWildcardKeyword } from '../../../../shared/keywords'
 import { buildDefaultAiContext, buildDefaultRelevanceQuestion, isAiConfigDefault } from '../../../../shared/aiDefaults'
 import { DEFAULT_TAXONOMY, serializeTaxonomy, type TaxonomyItem } from '../../../../shared/taxonomy'
+import { absoluteTime } from '../../lib/time'
 import { useUnsavedRegistration } from '../../lib/unsavedText'
+import { settingBox, SETTING_BOX_HEADER, SETTING_BOX_TITLE, SETTING_BOX_DESC } from '../../lib/settingBoxStyle'
 import { MissingRequiredReason, useRequiredSubmit } from '../../components/RequiredField'
 import TagTaxonomyTable from './TagTaxonomyTable'
 import { KeywordMatchSummary } from './KeywordMatchSummary'
+import { AttachmentStorage } from './AttachmentStorage'
 import { rowsFromTaxonomy, rowsToTaxonomy, type TaxonomyRow } from './taxonomyRows'
+
+type ChangedBy = { id: string; name: string | null; email: string } | null
+// Who last changed each AI setting and when (#602), from the admin config and a save's response.
+type AiSettingRecords = Record<`${AiSettingField}_changed_at`, string | null> & Record<`${AiSettingField}_changed_by`, ChangedBy>
+type AiSettingField = 'ai_context' | 'relevance_question' | 'tag_taxonomy'
 
 type ConfigData = {
   keywords?: string[]
@@ -36,7 +47,8 @@ type ConfigData = {
   matched_bills_count?: number
   prioritized_bills_count?: number
   new_match_min_relevance?: number
-}
+  claim_links_enabled?: boolean
+} & Partial<AiSettingRecords>
 
 type CustomFieldDef = {
   id: string
@@ -47,6 +59,28 @@ type CustomFieldDef = {
   multiple?: boolean
   displayOrder: number
   pinned: boolean
+}
+
+const AI_SETTING_FIELDS: AiSettingField[] = ['ai_context', 'relevance_question', 'tag_taxonomy']
+
+function pickAiRecords(data: Partial<AiSettingRecords>): Partial<AiSettingRecords> {
+  const out: Record<string, unknown> = {}
+  for (const f of AI_SETTING_FIELDS) {
+    out[`${f}_changed_at`] = data[`${f}_changed_at`] ?? null
+    out[`${f}_changed_by`] = data[`${f}_changed_by`] ?? null
+  }
+  return out as Partial<AiSettingRecords>
+}
+
+// "Last changed by Avery on October 20, 2026 at 2:05 PM", or nothing for a
+// setting nobody has changed. A removed admin reads as a neutral label, with
+// the date still shown.
+function ChangedLine({ field, records, testId }: { field: AiSettingField; records: Partial<AiSettingRecords>; testId: string }) {
+  const at = records[`${field}_changed_at`]
+  if (!at) return null
+  const by = records[`${field}_changed_by`]
+  const who = by ? (by.name?.trim() || by.email) : 'a removed user'
+  return <div data-testid={testId} style={{ ...HELPER_TEXT, marginTop: 4 }}>Last changed by {who} on {absoluteTime(at)}</div>
 }
 
 const PRESET_NOUNS = ['team', 'association', 'coalition'] as const
@@ -62,6 +96,12 @@ const aiTextareaStyle: React.CSSProperties = {
 
 // The add-custom-field form's labels keep its compact, muted look.
 const CF_LABEL: React.CSSProperties = { fontWeight: fontWeight.normal, color: color.textSecondary, marginBottom: 2 }
+
+// The scope dialog's text when summary citations (claim links inside) are turned on, rather than AI instructions saved.
+const CLAIM_LINKS_SCOPE_COPY = {
+  title: 'Summary citations turned on',
+  intro: 'New bill summaries will include citations. Existing summaries get them only when the AI is re-run on them. Do you want to re-run it on existing bills?',
+}
 
 export function Config() {
   usePageTitle('Settings')
@@ -110,6 +150,8 @@ export function Config() {
   const [saveAiError, setSaveAiError] = useState<string | null>(null)
   const [saveAiResult, setSaveAiResult] = useState<{ queued: number } | null>(null)
   const [showScopeModal, setShowScopeModal] = useState(false)
+  // What the scope dialog is for: saved AI instructions, or claim links turned on.
+  const [scopeModalReason, setScopeModalReason] = useState<'instructions' | 'claimLinks'>('instructions')
   // Snapshot of every savable field, as last loaded or successfully saved.
   // Backs both the "did AI instructions change" reprocess-modal decision (via
   // aiInstructionsChanged, ai-fields subset) and the page's unsaved-changes
@@ -119,6 +161,17 @@ export function Config() {
   // for this: reverting the unsaved-changes guard through it would flatten a
   // multi-line description and drop a row that has one but no name yet.
   const savedTaxonomyRows = useRef<TaxonomyRow[]>([])
+
+  // The claim links setting (#570). It saves the moment it's toggled, apart from
+  // the AI instructions above it, so it never rides along with unsaved edits.
+  const [claimLinks, setClaimLinks] = useState(true)
+  // Who last changed each AI setting (#602). Empty for a setting nobody has changed.
+  const [aiRecords, setAiRecords] = useState<Partial<AiSettingRecords>>({})
+  const [savingClaimLinks, setSavingClaimLinks] = useState(false)
+  const [saveClaimLinksError, setSaveClaimLinksError] = useState<string | null>(null)
+  // What the polite live region says after a save, so a screen reader user hears
+  // the result. Empty until the first toggle.
+  const [claimLinksAnnouncement, setClaimLinksAnnouncement] = useState('')
 
   const [newMatchMinRelevance, setNewMatchMinRelevance] = useState(0)
   const [savingNewMatch, setSavingNewMatch] = useState(false)
@@ -151,9 +204,19 @@ export function Config() {
   const [cfAdding, setCfAdding] = useState(false)
   const [cfEditing, setCfEditing] = useState<string | null>(null)
   const [cfEditName, setCfEditName] = useState('')
-  const [cfEditOptions, setCfEditOptions] = useState('')
+  const [cfEditOptions, setCfEditOptions] = useState<OptionRow[]>([])
   const [cfEditMultiple, setCfEditMultiple] = useState(false)
+  // Where focus goes once the option rows next render: a row's id, or the Add option button.
+  const [cfOptionFocus, setCfOptionFocus] = useState<number | 'add' | null>(null)
+  const cfOptionInputs = useRef(new Map<number, HTMLInputElement>())
+  const cfAddOptionButton = useRef<HTMLButtonElement | null>(null)
   const [cfEditError, setCfEditError] = useState<string | null>(null)
+  useEffect(() => {
+    if (cfOptionFocus === null) return
+    if (cfOptionFocus === 'add') cfAddOptionButton.current?.focus()
+    else cfOptionInputs.current.get(cfOptionFocus)?.focus()
+    setCfOptionFocus(null)
+  }, [cfOptionFocus, cfEditOptions])
   // Drag- and keyboard-reorder, shared with the tag table
   // (TagTaxonomyTable.tsx) and saved views (BillList/ViewSwitcher.tsx) — see
   // components/dragReorder.tsx. Persistence stays here, because it is this
@@ -209,6 +272,9 @@ export function Config() {
         setRelevanceQuestion(relevanceQuestionValue)
         const newMatchMinRelevanceValue = typeof data.new_match_min_relevance === 'number' ? data.new_match_min_relevance : 0
         setNewMatchMinRelevance(newMatchMinRelevanceValue)
+        // On unless an admin turned it off, as the server reads it.
+        setClaimLinks(data.claim_links_enabled !== false)
+        setAiRecords(pickAiRecords(data))
         const loadedRows = rowsFromTaxonomy(
           Array.isArray(data.tag_taxonomy) ? data.tag_taxonomy as TaxonomyItem[] : [],
         )
@@ -329,7 +395,7 @@ export function Config() {
       // call and go straight to copy that describes what actually happens.
       // This is the most consequential action on the page — it turns off
       // future bill capture entirely — so it must not read as a no-op.
-      confirmMsg = 'Save an empty keyword list?\n\nNo new bills will be captured for full analysis from now on. Bills already analyzed keep their summaries and stay in the tracker. Nothing will be downgraded.'
+      confirmMsg = 'Save an empty keyword list?\n\nNo new bills will be captured for analysis from now on. Bills already analyzed keep their summaries and stay in the tracker. Nothing will be downgraded.'
     } else {
       try {
         const preview = await apiFetch<{ wouldAdd: number; wouldDemote: number; wouldProtect: number }>(
@@ -342,7 +408,7 @@ export function Config() {
           parts.push(`Every bill in your tracked sessions will be queued for AI analysis (~${preview.wouldAdd.toLocaleString()} ${preview.wouldAdd === 1 ? 'bill' : 'bills'}).`)
         } else if (preview.wouldAdd > 0) {
           const b = preview.wouldAdd === 1 ? '1 additional bill' : `${preview.wouldAdd} additional bills`
-          parts.push(`${b} will be fully analyzed`)
+          parts.push(`${b} will be analyzed`)
         }
         if (preview.wouldDemote > 0) {
           const b = preview.wouldDemote === 1 ? '1 bill' : `${preview.wouldDemote} bills`
@@ -411,7 +477,7 @@ export function Config() {
     setSavingAi(true)
     setSavedAi(false)
     try {
-      await apiFetch('/admin/config', {
+      const saved = await apiFetch<Partial<AiSettingRecords> | undefined>('/admin/config', {
         method: 'PUT',
         body: JSON.stringify({
           ai_context: aiContext.trim() || null,
@@ -419,6 +485,7 @@ export function Config() {
           tag_taxonomy: taxonomy.length > 0 ? taxonomy : null,
         }),
       })
+      if (saved && typeof saved === 'object' && 'ai_context_changed_at' in saved) setAiRecords(pickAiRecords(saved))
       updateSnapshot({ aiContext, relevanceQuestion, tagTaxonomy })
       savedTaxonomyRows.current = taxonomyRows
       setUndoValues(prev => {
@@ -430,11 +497,38 @@ export function Config() {
       })
       setSavedAi(true)
       setTimeout(() => setSavedAi(false), 5000)
-      if (changed && (matchedBillsCount ?? 0) > 0) setShowScopeModal(true)
+      if (changed && (matchedBillsCount ?? 0) > 0) { setScopeModalReason('instructions'); setShowScopeModal(true) }
     } catch (err) {
       setSaveAiError(err instanceof ApiError ? err.message : 'Failed to save.')
     } finally {
       setSavingAi(false)
+    }
+  }
+
+  async function handleToggleClaimLinks(next: boolean) {
+    // The box stays focusable while saving (aria-disabled, not disabled, which
+    // would drop a keyboard user's focus), so a toggle during a save is ignored here.
+    if (savingClaimLinks) return
+    setSaveClaimLinksError(null)
+    setClaimLinksAnnouncement('')
+    setClaimLinks(next)
+    setSavingClaimLinks(true)
+    try {
+      await apiFetch<{ enabled: boolean }>(
+        '/admin/claim-links',
+        { method: 'PUT', body: JSON.stringify({ enabled: next }) },
+      )
+      setClaimLinksAnnouncement(next ? 'Summary citations turned on.' : 'Summary citations turned off.')
+      // Existing summaries get citations only when re-run, so offer that on
+      // turning on, once the save has succeeded and there are bills to re-run.
+      if (next && (matchedBillsCount ?? 0) > 0) { setScopeModalReason('claimLinks'); setShowScopeModal(true) }
+    } catch (err) {
+      setClaimLinks(!next)
+      const message = err instanceof ApiError ? err.message : 'Failed to save.'
+      setSaveClaimLinksError(message)
+      setClaimLinksAnnouncement(message)
+    } finally {
+      setSavingClaimLinks(false)
     }
   }
 
@@ -602,14 +696,16 @@ export function Config() {
     setCfEditError(null)
     try {
       const body: Record<string, unknown> = {}
+      let edited: ReturnType<typeof optionsFromRows> | null = null
       const newName = cfEditName.trim()
       if (newName && newName !== field.name) body.name = newName
       if (field.type === 'dropdown') {
-        const opts = cfEditOptions.split(',').map(s => s.trim()).filter(Boolean)
-        body.options = opts
+        edited = optionsFromRows(cfEditOptions)
+        body.options = edited.options
+        if (edited.renames.length > 0) body.renames = edited.renames
         if (cfEditMultiple !== (field.multiple ?? false)) body.multiple = cfEditMultiple
       }
-      const newOpts = field.type === 'dropdown' ? cfEditOptions.split(',').map(s => s.trim()).filter(Boolean) : field.options
+      const newOpts = edited ? edited.options : field.options
       await apiFetch(`/admin/custom-fields/${id}`, {
         method: 'PUT',
         body: JSON.stringify(body),
@@ -720,7 +816,7 @@ export function Config() {
 
       {demoLocked && (
         <div style={{ fontSize: fontSize.sm, color: color.textSecondary, marginBottom: 16, padding: '8px 12px', background: color.surfaceSubtle, borderRadius: radius.md, border: `1px solid ${color.borderDefault}` }}>
-          This is a demo instance — settings are read-only.
+          This is a demo — settings are read-only.
         </div>
       )}
 
@@ -730,7 +826,7 @@ export function Config() {
       <div style={sectionCard}>
         <h2 style={sectionTitle}>Bill keywords</h2>
         <div style={sectionIntro}>
-          All bills from particular legislative sessions are <em>monitored</em>: title, status, and the most recent action are refreshed multiple times daily from LegiScan. Bills that match the below keywords are <em>fully analyzed</em>, which adds full bill text, sponsors, complete action history, hearings, amendments, and supplementary documents — processed through AI for a summary, tags, and relevance score. (Admins can also manually select bills to be fully analyzed, even if those bills don't match keywords.)
+          All bills from the sessions you follow are monitored and searchable, with their status and latest action kept current. Bills that match the keywords below are analyzed: they have full bill text available — processed through AI for a summary, tags, and relevance score. (Admins can also manually select bills to be analyzed even if those bills don't match keywords.)
         </div>
 
         {loading ? (
@@ -767,13 +863,13 @@ export function Config() {
                 {savingKeywords ? 'Saving…' : 'Save keywords and sync'}
               </button>
               <span style={{ fontSize: fontSize.sm, color: color.textMuted, flexShrink: 1 }}>
-                Saves keywords, queues new matches for <em>full analysis</em>, and downgrades bills that no longer match to <em>monitoring</em>. (Bills with existing interactions, positions, or that admins have manually selected for analysis are not downgraded.)
+                Saves keywords, queues new matches for <em>analysis</em>, and downgrades bills that no longer match to <em>monitoring</em>. (Bills with existing interactions, positions, or that admins have manually selected for analysis are not downgraded.)
               </span>
               {savedKeywords && (
                 <span style={{ fontSize: fontSize.sm, color: color.textSuccess, flexShrink: 0 }}>
                   {syncKeywordsResult && (syncKeywordsResult.queued > 0 || syncKeywordsResult.demoted > 0)
                     ? `Saved — ${[
-                        syncKeywordsResult.queued > 0 ? `${syncKeywordsResult.queued} bill${syncKeywordsResult.queued !== 1 ? 's' : ''} queued for full analysis` : '',
+                        syncKeywordsResult.queued > 0 ? `${syncKeywordsResult.queued} bill${syncKeywordsResult.queued !== 1 ? 's' : ''} queued for analysis` : '',
                         syncKeywordsResult.demoted > 0 ? `${syncKeywordsResult.demoted} downgraded to status monitoring` : '',
                       ].filter(Boolean).join(', ')}`
                     : 'Saved'}
@@ -794,7 +890,7 @@ export function Config() {
       <div style={sectionCard}>
         <h2 style={sectionTitle}>AI instructions</h2>
         <div style={sectionIntro}>
-          When a bill is fully analyzed, the AI reads its full text and assigns it a summary, a relevance score, and a set of tags. The instructions below control how it does that.
+          When a bill is analyzed, the AI reads its full text and assigns it a summary, a relevance score, and a set of tags. The instructions below control how it does that.
         </div>
 
         {loading ? (
@@ -817,11 +913,33 @@ export function Config() {
                   placeholder={buildDefaultAiContext(associationName)}
                 />
                 <div style={hintStyle}>System instructions sent to the AI for every bill. Controls the summary style and framing.</div>
+                <ChangedLine field="ai_context" records={aiRecords} testId="ai-context-changed" />
                 {isAiConfigDefault(aiContext) && (
                   <div style={hintStyle}>
                     Leaving this blank uses the generic instructions shown above. Personalizing them improves summaries and relevance scores.
                   </div>
                 )}
+                <div style={{ marginTop: 14 }}>
+                  <div data-testid="claim-links-box" style={settingBox(demoLocked)}>
+                    <div data-testid="claim-links-header" style={SETTING_BOX_HEADER}>
+                      <div>
+                        <div data-testid="claim-links-label" style={SETTING_BOX_TITLE}>Summary citations</div>
+                        <div data-testid="claim-links-copy" style={SETTING_BOX_DESC}>
+                          Each statement in a bill summary cites and links to the associated passage in the bill. This will increase AI costs slightly.
+                        </div>
+                      </div>
+                      <IosToggle
+                        checked={claimLinks}
+                        disabled={demoLocked}
+                        busy={savingClaimLinks}
+                        onChange={(n) => void handleToggleClaimLinks(n)}
+                        ariaLabel="Summary citations"
+                      />
+                    </div>
+                    {/* One polite live region for the result and any error. It's seen only when it's an error. */}
+                    <div data-testid="claim-links-status" role="status" aria-live="polite" style={saveClaimLinksError ? { ...hintStyle, color: color.textErrorRed } : SR_ONLY}>{claimLinksAnnouncement}</div>
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -839,6 +957,7 @@ export function Config() {
                   placeholder={buildDefaultRelevanceQuestion(associationName)}
                 />
                 <div style={hintStyle}>Prompt sent to guide the AI in scoring each bill's relevance from 1–10.</div>
+                <ChangedLine field="relevance_question" records={aiRecords} testId="relevance-question-changed" />
                 {isAiConfigDefault(relevanceQuestion) && (
                   <div style={hintStyle}>
                     Leaving this blank uses the generic instructions shown above. Personalizing them improves summaries and relevance scores.
@@ -894,6 +1013,7 @@ export function Config() {
                   List of tags for the AI to assign to bills. It will only assign
                   tags from this list.
                 </div>
+                <ChangedLine field="tag_taxonomy" records={aiRecords} testId="tag-taxonomy-changed" />
                 {isAiConfigDefault(tagTaxonomy) && (
                   <div style={hintStyle}>
                     Leaving this blank uses the generic tag list. Personalizing it keeps tags
@@ -1020,13 +1140,39 @@ export function Config() {
                       </div>
                       {field.type === 'dropdown' && (
                         <>
-                          <input
-                            type="text"
-                            value={cfEditOptions}
-                            onChange={e => setCfEditOptions(e.target.value)}
-                            placeholder="Option 1, Option 2, Option 3"
-                            style={{ fontSize: fontSize.sm, padding: '5px 10px', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, fontFamily: 'inherit' }}
-                          />
+                          {cfEditOptions.map((row, n) => (
+                            <div key={row.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <input
+                                type="text"
+                                aria-label={`Option ${n + 1}`}
+                                ref={el => { if (el) cfOptionInputs.current.set(row.id, el); else cfOptionInputs.current.delete(row.id) }}
+                                value={row.text}
+                                onChange={e => setCfEditOptions(prev => prev.map((r, j) => j === n ? { ...r, text: e.target.value } : r))}
+                                style={{ flex: 1, minWidth: 0, fontSize: fontSize.sm, padding: '5px 10px', border: `1px solid ${color.borderDefault}`, borderRadius: radius.md, fontFamily: 'inherit' }}
+                              />
+                              <button
+                                type="button"
+                                aria-label={`Remove option ${n + 1}`}
+                                onClick={() => {
+                                  // Focus the row that takes this one's place, else the one before it, else Add option.
+                                  const after = cfEditOptions[n + 1] ?? cfEditOptions[n - 1]
+                                  setCfOptionFocus(after ? after.id : 'add')
+                                  setCfEditOptions(prev => prev.filter((_, j) => j !== n))
+                                }}
+                                style={inlineEditCancelStyle()}
+                              >Remove</button>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            ref={cfAddOptionButton}
+                            onClick={() => {
+                              const row = newOptionRow()
+                              setCfOptionFocus(row.id)
+                              setCfEditOptions(prev => [...prev, row])
+                            }}
+                            style={{ ...inlineEditCancelStyle(), alignSelf: 'flex-start' }}
+                          >Add option</button>
                           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: fontSize.sm, color: color.textSlate, cursor: 'pointer' }}>
                             <input
                               type="checkbox"
@@ -1064,7 +1210,7 @@ export function Config() {
                           onClick={demoLocked ? undefined : () => {
                             setCfEditing(field.id)
                             setCfEditName(field.name)
-                            setCfEditOptions(field.type === 'dropdown' && field.options ? field.options.join(', ') : '')
+                            setCfEditOptions(field.type === 'dropdown' ? rowsFromOptions(field.options) : [])
                             setCfEditMultiple(field.multiple ?? false)
                             setCfEditError(null)
                           }}
@@ -1237,7 +1383,7 @@ export function Config() {
           )}
           <button
             {...cfGate.buttonProps(handleAddCustomField)}
-            style={{ background: !cfGate.disabled ? color.accentBlue : color.borderDefault, color: !cfGate.disabled ? color.textOnFill : color.textMuted, border: 'none', borderRadius: radius.md, padding: '8px 20px', cursor: !cfGate.disabled ? 'pointer' : 'not-allowed', fontSize: fontSize.sm, fontWeight: fontWeight.medium }}
+            style={{ ...primaryButtonColors(cfGate.disabled), border: 'none', borderRadius: radius.md, padding: '8px 20px', cursor: !cfGate.disabled ? 'pointer' : 'not-allowed', fontSize: fontSize.sm, fontWeight: fontWeight.medium }}
           >
             {cfAdding ? 'Adding…' : 'Add field'}
           </button>
@@ -1247,6 +1393,9 @@ export function Config() {
         </div>
 
       </div>
+
+      {/* File attachments: storage against the quota (shown only while attachments are on) */}
+      <AttachmentStorage />
 
       {/* Labels */}
       <div style={sectionCard}>
@@ -1312,6 +1461,7 @@ export function Config() {
           prioritizedBillsCount={prioritizedBillsCount}
           onChoose={runReprocess}
           onDismiss={() => setShowScopeModal(false)}
+          {...(scopeModalReason === 'claimLinks' ? CLAIM_LINKS_SCOPE_COPY : {})}
         />
       )}
 
@@ -1334,8 +1484,7 @@ export function Config() {
             }}
             style={{
               width: 224, flexShrink: 0, borderRadius: radius.md, padding: '8px 14px',
-              background: demoLocked ? color.borderDefault : exporting ? color.accentBlueMuted : color.accentBlue,
-              color: demoLocked ? color.textMuted : color.textOnFill,
+              ...primaryButtonColors(exporting || demoLocked),
               cursor: exporting || demoLocked ? 'not-allowed' : 'pointer',
               fontSize: fontSize.sm, fontWeight: fontWeight.medium, lineHeight: 1.4,
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,

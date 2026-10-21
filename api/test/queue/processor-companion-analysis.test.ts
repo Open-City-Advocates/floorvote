@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { env, SELF } from 'cloudflare:test'
 import { eq, inArray } from 'drizzle-orm'
-import { resetDb, applyMigrations, seedBill, seedUser, seedSession } from '../helpers'
+import { clearDb, seedBill, seedUser, seedSession, stubFetch } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { processCentralNotification } from '../../src/queue/processor'
 import { runDigest } from '../../src/lib/digest'
 import { associationConfig, bills, feedEvents, teamEvents } from '../../src/db/schema'
 import { MAX_COMPANION_ANALYSES_PER_DELIVERY } from '../../src/lib/companionAnalysis'
+import { groupByHand } from '../../src/lib/companionGroups'
+import { addToNewMatchesRow } from '../../src/lib/newMatch'
 import { rowidOf } from '../../src/db/rowid'
 import type { TenantQueueMessage } from '../../src/types'
 
@@ -23,7 +25,7 @@ vi.mock('../../src/lib/llm', async (importOriginal) => {
 type Related = { identifier: string; sastBillId: number; kind: string }
 
 // What central serves for each bill, keyed by its handle.
-const central = new Map<string, { number: string; relatedBills: Related[]; text?: boolean; updatedAt?: string; lastAction?: string }>()
+const central = new Map<string, { number: string; relatedBills: Related[]; text?: boolean; updatedAt?: string; lastAction?: string; statusRank?: number }>()
 
 function centralBill(handle: string) {
   const b = central.get(handle)!
@@ -35,6 +37,7 @@ function centralBill(handle: string) {
     title: `${b.number} title`,
     abstract: null,
     status: 'Introduced',
+    ...(b.statusRank !== undefined ? { statusRank: b.statusRank } : {}),
     statusDate: null,
     lastAction: b.lastAction ?? null,
     updatedAt: b.updatedAt ?? '2026-10-01T00:00:00Z',
@@ -80,8 +83,7 @@ async function expectCompanionAnalyzed() {
 
 describe('companions that didn\'t match are analyzed through their group', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     vi.clearAllMocks()
     central.clear()
     queued.length = 0
@@ -264,17 +266,286 @@ describe('companions that didn\'t match are analyzed through their group', () =>
     })
   })
 
-  describe('the group shows its tracked bill\'s analysis', () => {
-    // #554 (replacing #377's most-recent-wins for the analysis): a group's summary and tags come from a bill the
-    // team tracks. The pulled companion is analyzed only so its own page has a summary, so its newer analysis
-    // never replaces the tracked bill's on any member's page, the group's row, the tag filter, or the counts.
-    // It shows on the group only once it matches on its own, or when no tracked bill has an analysis.
+  // #550: the digest stack (#364 provenance, #366 member digest, #367 feed row) keys on match_type = 'keyword'.
+  // A group analysis never sets that, so a pulled companion stays out of all three without a filter of its own.
+  // These pin it, so a change to either stack that loosened the key would show here.
+  describe('a pulled companion stays out of match provenance, the digest, and the feed\'s new matches (#550)', () => {
+    // A190 is a tracked bill that isn't a new match (a manual add), so anything flagged below is S1713's.
+    async function pull(extraBeforeDelivery?: () => Promise<void>) {
+      await getDb(env.DB).update(bills).set({ textR2Key: 'bills/legiscan:1713.html' }).where(eq(bills.id, 'b1713'))
+      await getDb(env.DB).update(bills).set({ matchType: 'manual', newMatchAt: null, triagedAt: null }).where(eq(bills.id, 'a190'))
+      await extraBeforeDelivery?.()
+      await deliver('legiscan:190')
+      await drain()
+    }
+    /** The pulled companion as it is stored when its analysis is queued again: unanalyzed, so the next message analyzes it. */
+    async function unanalyze() {
+      await getDb(env.DB).update(bills).set({ tenantSummary: null, aiProcessedAt: null, lastAiTextHash: null, aiAttemptedAt: null }).where(eq(bills.id, 'b1713'))
+    }
+    const matchedEvents = async () => (await getDb(env.DB).select().from(feedEvents).where(eq(feedEvents.type, 'bill_matched')).all()).filter(e => e.billId === 'b1713')
+    const newMatchRows = async () => await getDb(env.DB).select().from(feedEvents).where(eq(feedEvents.type, 'new_matches')).all()
+    const rowBillIds = (row: { metadata: string | null }) => (JSON.parse(row.metadata!) as { billIds: string[] }).billIds
+    const feedFor = async (token: string) => {
+      const res = await SELF.fetch('http://localhost/api/feed', { headers: { Cookie: `session=${token}` } })
+      expect(res.status).toBe(200)
+      return await res.json() as { events: Array<{ type: string }>; latestEventAt: string | null }
+    }
+
+    describe('#364: match provenance', () => {
+      beforeEach(async () => { await pull() })
+
+      it('ends with no match provenance and no new-match time', async () => {
+        await expectCompanionAnalyzed()
+        const companion = await billRow('b1713')
+        expect(companion.matchType).toBeNull()
+        expect(companion.matchProvenance).toBeNull()
+        expect(companion.newMatchAt).toBeNull()
+      })
+
+      it('ignores a routine declaration on a group analysis', async () => {
+        await unanalyze()
+        await deliver('legiscan:1713', { groupAnalysis: true, matchProvenance: 'routine' })
+        const companion = await billRow('b1713')
+        expect(companion.aiProcessedAt).not.toBeNull()
+        expect(companion.matchType).toBeNull()
+        expect(companion.matchProvenance).toBeNull()
+        expect(companion.newMatchAt).toBeNull()
+        expect(await matchedEvents()).toEqual([])
+      })
+
+      it('ignores a bulk declaration on a group analysis', async () => {
+        await unanalyze()
+        await deliver('legiscan:1713', { groupAnalysis: true, matchProvenance: 'bulk' })
+        expect((await billRow('b1713')).matchProvenance).toBeNull()
+      })
+
+      it('ignores a declaration on a group analysis that is forced, as the heal and the reprocess route send it', async () => {
+        await unanalyze()
+        await deliver('legiscan:1713', { groupAnalysis: true, forceAI: true, matchProvenance: 'routine' })
+        const companion = await billRow('b1713')
+        expect(companion.aiProcessedAt).not.toBeNull()
+        expect(companion.matchProvenance).toBeNull()
+      })
+
+      it('ignores a declaration on a group analysis of a companion that is already analyzed', async () => {
+        await expectCompanionAnalyzed()
+        await deliver('legiscan:1713', { groupAnalysis: true, forceAI: true, matchProvenance: 'routine' })
+        expect((await billRow('b1713')).matchProvenance).toBeNull()
+      })
+
+      it('does not let a declaration on a group analysis become the provenance of its later match', async () => {
+        await unanalyze()
+        await deliver('legiscan:1713', { groupAnalysis: true, matchProvenance: 'routine' })
+        // Central then says it matches on its own, with no declaration: that is a bulk match, and no routine one.
+        await deliver('legiscan:1713', { matchType: 'keyword' })
+        const companion = await billRow('b1713')
+        expect(companion.matchType).toBe('keyword')
+        expect(companion.matchProvenance).toBeNull()
+        expect(JSON.parse((await matchedEvents())[0].metadata!)).toEqual({})
+        expect(await newMatchRows()).toEqual([])
+      })
+
+      it('takes the provenance central declares when it later matches on its own, and keeps it', async () => {
+        await deliver('legiscan:1713', { matchType: 'keyword', matchProvenance: 'routine' })
+        const companion = await billRow('b1713')
+        expect(companion.matchType).toBe('keyword')
+        expect(companion.matchProvenance).toBe('routine')
+        expect(companion.newMatchAt).not.toBeNull()
+        expect(JSON.parse((await matchedEvents())[0].metadata!)).toEqual({ matchProvenance: 'routine' })
+        // A later declaration changes nothing: the match is recorded.
+        await deliver('legiscan:1713', { matchType: 'keyword', forceAI: true, matchProvenance: 'bulk' })
+        expect((await billRow('b1713')).matchProvenance).toBe('routine')
+      })
+
+      it('takes a bulk declaration the same way, as a match that is new to the list but not to the digest or the feed', async () => {
+        await deliver('legiscan:1713', { matchType: 'keyword', matchProvenance: 'bulk' })
+        const companion = await billRow('b1713')
+        expect(companion.matchProvenance).toBe('bulk')
+        expect(companion.newMatchAt).not.toBeNull()
+        expect(await newMatchRows()).toEqual([])
+      })
+
+      it('takes none when central declares none, which is bulk', async () => {
+        await deliver('legiscan:1713', { matchType: 'keyword' })
+        const companion = await billRow('b1713')
+        expect(companion.matchProvenance).toBeNull()
+        expect(companion.newMatchAt).not.toBeNull()
+      })
+
+      it('records one match, and one place in the day\'s row, however often central says it matches', async () => {
+        await deliver('legiscan:1713', { matchType: 'keyword', matchProvenance: 'routine' })
+        const first = await billRow('b1713')
+        await deliver('legiscan:1713', { matchType: 'keyword', matchProvenance: 'routine' })
+        await deliver('legiscan:1713', { matchType: 'keyword', forceMetadata: true, matchProvenance: 'routine' })
+        const companion = await billRow('b1713')
+        expect(companion.newMatchAt).toBe(first.newMatchAt)
+        expect(await matchedEvents()).toHaveLength(1)
+        const rows = await newMatchRows()
+        expect(rows).toHaveLength(1)
+        expect(rowBillIds(rows[0])).toEqual(['b1713'])
+      })
+
+      it('gets no new-match time, and joins no row, when it was added by hand, since the admin who added it knows', async () => {
+        await deliver('legiscan:1713', { matchType: 'manual', matchProvenance: 'routine' })
+        const companion = await billRow('b1713')
+        expect(companion.matchType).toBe('manual')
+        expect(companion.newMatchAt).toBeNull()
+        expect(await newMatchRows()).toEqual([])
+      })
+    })
+
+    describe('a group formed by hand', () => {
+      beforeEach(async () => {
+        // Central names no relationship: the admin grouped the two.
+        central.set('legiscan:190', { number: 'A190', text: true, relatedBills: [] })
+        central.set('legiscan:1713', { number: 'S1713', text: true, relatedBills: [] })
+        const admin = await seedUser({ role: 'admin', email: 'grouper@example.com' })
+        await pull(async () => { await groupByHand(getDb(env.DB), 'a190', 'b1713', admin) })
+      })
+
+      it('pulls the companion and leaves it with no match type, provenance, or new-match time', async () => {
+        expect((await billRow('a190')).groupKey).toBe((await billRow('b1713')).groupKey)
+        await expectCompanionAnalyzed()
+        const companion = await billRow('b1713')
+        expect(companion.matchType).toBeNull()
+        expect(companion.matchProvenance).toBeNull()
+        expect(companion.newMatchAt).toBeNull()
+        expect(await matchedEvents()).toEqual([])
+        expect(await newMatchRows()).toEqual([])
+      })
+
+      it('ignores a declaration on its group analysis', async () => {
+        await unanalyze()
+        await deliver('legiscan:1713', { groupAnalysis: true, matchProvenance: 'routine' })
+        const companion = await billRow('b1713')
+        expect(companion.aiProcessedAt).not.toBeNull()
+        expect(companion.matchProvenance).toBeNull()
+        expect(companion.newMatchAt).toBeNull()
+        expect(await newMatchRows()).toEqual([])
+      })
+
+      it('is not in the digest', async () => {
+        await expectCompanionAnalyzed()
+        const db = getDb(env.DB)
+        await db.insert(associationConfig).values({ key: 'modules', value: JSON.stringify({ 'email-digest': true }) })
+        await seedSession(await seedUser({ role: 'admin', email: 'admin@example.com' }))
+        const sent: unknown[] = []
+        stubFetch((_u, init) => { sent.push(JSON.parse(String(init?.body))); return new Response('{}', { status: 200 }) })
+        await runDigest(env as never, db)
+        expect(sent).toEqual([])
+      })
+    })
+
+    describe('#366: the member digest', () => {
+      it('has no new-match section for a pulled companion, for an admin or a member', async () => {
+        await pull()
+        await expectCompanionAnalyzed()
+        const db = getDb(env.DB)
+        await db.insert(associationConfig).values({ key: 'modules', value: JSON.stringify({ 'email-digest': true }) })
+        await seedSession(await seedUser({ role: 'admin', email: 'admin@example.com' }))
+        await seedSession(await seedUser({ role: 'member', email: 'member@example.com', emailDigestEnabled: true, emailDigestMatchesEnabled: true }))
+        const sent: Array<{ html: string }> = []
+        stubFetch((_u, init) => { sent.push(JSON.parse(String(init?.body))); return new Response('{}', { status: 200 }) })
+        await runDigest(env as never, db)
+        expect(sent).toEqual([])
+      })
+
+      it('lists the companion once it matches on its own with a routine declaration, and not before', async () => {
+        await pull()
+        const db = getDb(env.DB)
+        await db.insert(associationConfig).values({ key: 'modules', value: JSON.stringify({ 'email-digest': true }) })
+        await seedSession(await seedUser({ role: 'member', email: 'member@example.com', emailDigestEnabled: true, emailDigestMatchesEnabled: true }))
+        const sent: Array<{ html: string }> = []
+        // Mail is captured, and central's answers to the delivery below still come from the suite's own stub.
+        const central = globalThis.fetch
+        stubFetch((u, init) => {
+          if (u.includes('central.test')) return central(u, init)
+          sent.push(JSON.parse(String(init?.body))); return new Response('{}', { status: 200 })
+        })
+        await runDigest(env as never, db)
+        expect(sent).toEqual([])
+
+        await deliver('legiscan:1713', { matchType: 'keyword', matchProvenance: 'routine' })
+        // The first run stamped the window, which would start after a match made in the same second.
+        await db.update(associationConfig).set({ value: '2020-01-01 00:00:00' }).where(eq(associationConfig.key, 'last_digest_at'))
+        await runDigest(env as never, db)
+        expect(sent).toHaveLength(1)
+        expect(sent[0].html).toContain('>1 new match</td>')
+        expect(sent[0].html).toContain('S1713')
+      })
+    })
+
+    describe('#367: the feed\'s new-matches row', () => {
+      let memberToken: string
+      // The row is one per day, so a row written earlier today is the one a match is added to.
+      const earlier = `${new Date().toISOString().slice(0, 10)} 00:00:00`
+      beforeEach(async () => {
+        memberToken = await seedSession(await seedUser({ role: 'member', email: 'member@example.com' }))
+      })
+
+      it('writes no row, and lights no dot, when the companion is analyzed through its group', async () => {
+        await pull()
+        await expectCompanionAnalyzed()
+        expect(await newMatchRows()).toEqual([])
+        expect(await feedFor(memberToken)).toMatchObject({ events: [], latestEventAt: null })
+      })
+
+      it('adds nothing to the day\'s row, and leaves it where it was, when the companion is analyzed through its group', async () => {
+        const db = getDb(env.DB)
+        // The day's row already holds another match, written earlier in the day.
+        await db.insert(feedEvents).values({ id: 'row', type: 'new_matches', billId: null, userId: 'system', metadata: JSON.stringify({ billIds: ['a190'] }), createdAt: earlier })
+        await pull()
+        await unanalyze()
+        await deliver('legiscan:1713', { groupAnalysis: true, forceAI: true, matchProvenance: 'routine' })
+        await expectCompanionAnalyzed()
+        const rows = await newMatchRows()
+        expect(rows).toHaveLength(1)
+        expect(rowBillIds(rows[0])).toEqual(['a190'])
+        expect(rows[0].createdAt).toBe(earlier)
+        expect((await feedFor(memberToken)).latestEventAt).toBe(earlier)
+      })
+
+      it('adds the companion to the row only once it matches on its own with a routine declaration, and brings the row forward then', async () => {
+        const db = getDb(env.DB)
+        await db.insert(feedEvents).values({ id: 'row', type: 'new_matches', billId: null, userId: 'system', metadata: JSON.stringify({ billIds: ['a190'] }), createdAt: earlier })
+        await pull()
+        expect(rowBillIds((await newMatchRows())[0])).toEqual(['a190'])
+
+        await deliver('legiscan:1713', { matchType: 'keyword', matchProvenance: 'routine' })
+        const rows = await newMatchRows()
+        expect(rows).toHaveLength(1)
+        expect(rowBillIds(rows[0])).toEqual(['a190', 'b1713'])
+        expect(rows[0].createdAt > earlier).toBe(true)
+        expect((await feedFor(memberToken)).latestEventAt).toBe(rows[0].createdAt)
+      })
+
+      it('doesn\'t add a companion to the row when asked to, since it isn\'t a keyword match', async () => {
+        await pull()
+        await expectCompanionAnalyzed()
+        await addToNewMatchesRow(getDb(env.DB), 'b1713')
+        expect(await newMatchRows()).toEqual([])
+      })
+
+      it('doesn\'t add it even if a declaration had leaked onto its row, since the match type is what the row asks for', async () => {
+        await pull()
+        await getDb(env.DB).update(bills).set({ matchProvenance: 'routine', newMatchAt: '2026-10-01 09:00:00' }).where(eq(bills.id, 'b1713'))
+        await addToNewMatchesRow(getDb(env.DB), 'b1713')
+        expect(await newMatchRows()).toEqual([])
+      })
+    })
+  })
+
+  describe('the group shows its lead\'s analysis', () => {
+    // A group's summary and tags are its lead bill's (groupSummaryLead.test.ts). A190 is further along, so it
+    // leads, and the pulled companion's newer analysis never replaces A190's on any member's page, the group's
+    // row, the tag filter, or the counts, whether or not the companion matches on its own. It shows on the
+    // group only when A190 has no analysis, or the companion leads.
     let cookie: string
     type Page = { tenantSummary: string | null; tags: string[] }
     type ListBody = { bills: Page[]; pagination: { total: number } }
     const page = async (id: string) => (await (await SELF.fetch(`http://localhost/api/bills/${id}`, { headers: { Cookie: cookie } })).json()) as Page
     const list = async (qs = '') => (await (await SELF.fetch(`http://localhost/api/bills?${qs}`, { headers: { Cookie: cookie } })).json()) as ListBody
-    const tagCounts = async () => ((await (await SELF.fetch('http://localhost/api/bills/facets', { headers: { Cookie: cookie } })).json()) as { tags: Record<string, number> }).tags
+    const tagCounts = async () => ((await (await SELF.fetch('http://localhost/api/bills/facets', { headers: { Cookie: cookie } })).json()) as { tag: Record<string, number> }).tag
 
     beforeEach(async () => {
       const db = getDb(env.DB)
@@ -284,9 +555,10 @@ describe('companions that didn\'t match are analyzed through their group', () =>
       const llm = await import('../../src/lib/llm')
       vi.mocked(llm.processBill).mockResolvedValue({ summary: 'S1713 summary', tags: ['Energy'], relevanceScore: 5, affectedCitations: [] })
       cookie = `session=${await seedSession(await seedUser({ role: 'admin', email: 'admin@example.com' }))}`
+      central.set('legiscan:190', { ...central.get('legiscan:190')!, statusRank: 300 })
       await deliver('legiscan:190')
       await drain()
-      // The companion was analyzed after the tracked bill. Without it, nothing below would be tested.
+      // The companion was analyzed after the lead. Without it, nothing below would be tested.
       const companion = await billRow('b1713')
       expect(companion).toMatchObject({ tenantSummary: 'S1713 summary', matchType: null })
       expect(companion.aiProcessedAt! > (await billRow('a190')).aiProcessedAt!).toBe(true)
@@ -334,7 +606,7 @@ describe('companions that didn\'t match are analyzed through their group', () =>
       expect((await list('tag=Labor')).pagination.total).toBe(1)
     })
 
-    it('shows the companion\'s analysis once it matches on its own, with no new analysis', async () => {
+    it('keeps the lead\'s analysis when the companion matches on its own, with no new analysis', async () => {
       const llm = await import('../../src/lib/llm')
       const analyses = vi.mocked(llm.processBill).mock.calls.length
       expect(await page('a190')).toMatchObject({ tenantSummary: 'A190 summary', tags: ['Labor'] })
@@ -344,13 +616,24 @@ describe('companions that didn\'t match are analyzed through their group', () =>
       await deliver('legiscan:1713', { matchType: 'keyword' })
       expect(vi.mocked(llm.processBill).mock.calls.length).toBe(analyses)
       expect((await billRow('b1713')).matchType).toBe('keyword')
+      expect(await page('a190')).toMatchObject({ tenantSummary: 'A190 summary', tags: ['Labor'] })
+      expect((await list('tag=Labor')).pagination.total).toBe(1)
+      expect((await list('tag=Energy')).pagination.total).toBe(0)
+    })
+
+    it('shows the companion\'s analysis once it moves further along and leads, with no new analysis', async () => {
+      const llm = await import('../../src/lib/llm')
+      const analyses = vi.mocked(llm.processBill).mock.calls.length
+      central.set('legiscan:1713', { number: 'S1713', text: true, relatedBills: [identical('A190', 190)], updatedAt: '2026-10-02T00:00:00Z', statusRank: 400 })
+      await deliver('legiscan:1713', { metadataOnly: true })
+      expect(vi.mocked(llm.processBill).mock.calls.length).toBe(analyses)
       expect(await page('a190')).toMatchObject({ tenantSummary: 'S1713 summary', tags: ['Energy'] })
       expect((await list('tag=Energy')).pagination.total).toBe(1)
       expect((await list('tag=Labor')).pagination.total).toBe(0)
       expect((await tagCounts()).Energy).toBe(1)
     })
 
-    it('shows the companion\'s analysis when the tracked bill has none', async () => {
+    it('shows the companion\'s analysis when the lead has none', async () => {
       expect((await list('tag=Energy')).pagination.total).toBe(0)
       await getDb(env.DB).update(bills).set({ tenantSummary: null, tags: '[]', aiProcessedAt: null }).where(eq(bills.id, 'a190'))
       expect(await page('a190')).toMatchObject({ tenantSummary: 'S1713 summary', tags: ['Energy'] })
@@ -459,10 +742,10 @@ describe('companions that didn\'t match are analyzed through their group', () =>
     })
   })
 
-  describe('a companion that starts matching records the change it makes to its group\'s tags (#562)', () => {
+  describe('a companion that starts matching records no event for the change it makes to its group\'s tags (#562)', () => {
     // Since #554 a group's tags come from a bill the team tracks, so a match type written alone can move them:
     // the companion becomes tracked, and its analysis (which the model made earlier) now speaks for the group.
-    // No analysis runs, so nothing else records it. The event is the same null-actor tags event an analysis writes.
+    // The bill's comment thread shows only changes people made, so no event records the move.
     type TagsEvent = { billId: string; actorUserId: string | null; field: string; label: string; old: string[]; new: string[] }
     const tagsEvents = async (): Promise<TagsEvent[]> => {
       const rows = await getDb(env.DB).select().from(teamEvents).where(eq(teamEvents.type, 'field_changed')).orderBy(teamEvents.createdAt, rowidOf(teamEvents)).all()
@@ -472,12 +755,16 @@ describe('companions that didn\'t match are analyzed through their group', () =>
     }
     const analyzedCalls = async () => vi.mocked((await import('../../src/lib/llm')).processBill).mock.calls.length
     const becomesMatching = (flags: Partial<TenantQueueMessage> = { matchType: 'keyword' }) => {
-      central.set('legiscan:1713', { number: 'S1713', text: true, relatedBills: [identical('A190', 190)], updatedAt: '2026-10-02T00:00:00Z' })
+      central.set('legiscan:1713', { number: 'S1713', text: true, relatedBills: [identical('A190', 190), identical('S9', 9)], updatedAt: '2026-10-02T00:00:00Z' })
       return deliver('legiscan:1713', flags)
     }
 
     beforeEach(async () => {
       const db = getDb(env.DB)
+      await seedBill({ id: 'l9', billNumber: 'S9', state: 'NJ', externalId: 'legiscan:9', matchType: 'keyword', statusRank: 900 })
+      central.set('legiscan:9', { number: 'S9', relatedBills: [identical('A190', 190), identical('S1713', 1713)], statusRank: 900 })
+      central.set('legiscan:190', { ...central.get('legiscan:190')!, relatedBills: [identical('S1713', 1713), identical('S9', 9)] })
+      central.set('legiscan:1713', { ...central.get('legiscan:1713')!, relatedBills: [identical('A190', 190), identical('S9', 9)] })
       await db.insert(associationConfig).values({ key: 'tag_taxonomy', value: JSON.stringify([{ name: 'Energy' }, { name: 'Labor' }]) })
       await db.update(bills).set({ tags: JSON.stringify(['Labor']) }).where(eq(bills.id, 'a190'))
       await db.update(bills).set({ textR2Key: 'bills/legiscan:1713.html' }).where(eq(bills.id, 'b1713'))
@@ -490,48 +777,38 @@ describe('companions that didn\'t match are analyzed through their group', () =>
       expect(await tagsEvents()).toEqual([])
     })
 
-    it('records the group\'s tags before and after, with no actor, when no new analysis runs', async () => {
+    it('records no event when no new analysis runs, though the companion starts matching', async () => {
       const analyses = await analyzedCalls()
       await becomesMatching()
       expect(await analyzedCalls()).toBe(analyses)
       expect((await billRow('b1713')).matchType).toBe('keyword')
-      expect(await tagsEvents()).toEqual([{ billId: 'b1713', actorUserId: null, field: 'tags', label: 'tags', old: ['Labor'], new: ['Energy'] }])
+      expect(await tagsEvents()).toEqual([])
     })
 
-    it('records it when central says the companion was added by hand', async () => {
+    it('records none when central says the companion was added by hand', async () => {
       await becomesMatching({ matchType: 'manual' })
-      expect(await tagsEvents()).toEqual([{ billId: 'b1713', actorUserId: null, field: 'tags', label: 'tags', old: ['Labor'], new: ['Energy'] }])
+      expect(await tagsEvents()).toEqual([])
     })
 
-    it('records it on a metadata-only refresh that carries the match type', async () => {
+    it('records none on a metadata-only refresh that carries the match type', async () => {
       await becomesMatching({ matchType: 'keyword', metadataOnly: true })
       expect((await billRow('b1713')).matchType).toBe('keyword')
-      expect(await tagsEvents()).toEqual([{ billId: 'b1713', actorUserId: null, field: 'tags', label: 'tags', old: ['Labor'], new: ['Energy'] }])
+      expect(await tagsEvents()).toEqual([])
     })
 
-    it('records it on a stub refresh that carries the match type', async () => {
+    it('records none on a stub refresh that carries the match type', async () => {
       await becomesMatching({ matchType: 'keyword', stubOnly: true })
       expect((await billRow('b1713')).matchType).toBe('keyword')
-      expect(await tagsEvents()).toEqual([{ billId: 'b1713', actorUserId: null, field: 'tags', label: 'tags', old: ['Labor'], new: ['Energy'] }])
+      expect(await tagsEvents()).toEqual([])
     })
 
-    it('still completes the delivery when the event can\'t be written', async () => {
-      // The advisory event is the one write that fails: its table is gone.
-      await env.DB.exec('DROP TABLE team_events')
-      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
-      await becomesMatching()
-      expect((await billRow('b1713')).matchType).toBe('keyword')
-      expect(errors).toHaveBeenCalled()
-      errors.mockRestore()
-    })
-
-    it('records one event, not two, when the delivery also runs a new analysis', async () => {
+    it('records none when the delivery also runs a new analysis', async () => {
       const llm = await import('../../src/lib/llm')
       vi.mocked(llm.processBill).mockResolvedValue({ summary: 'S1713 summary again', tags: ['Energy'], relevanceScore: 5, affectedCitations: [] })
       const analyses = await analyzedCalls()
       await becomesMatching({ matchType: 'keyword', forceAI: true })
       expect(await analyzedCalls()).toBe(analyses + 1)
-      expect(await tagsEvents()).toEqual([{ billId: 'b1713', actorUserId: null, field: 'tags', label: 'tags', old: ['Labor'], new: ['Energy'] }])
+      expect(await tagsEvents()).toEqual([])
     })
 
     it('records nothing when the group\'s tags are the same after the companion matches', async () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env, SELF } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedComment } from '../helpers'
+import { clearDb, seedUser, seedSession, seedBill, seedComment } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { users, commentReactions } from '../../src/db/schema'
 import { eq } from 'drizzle-orm'
@@ -9,7 +9,7 @@ describe('deactivated members\' comment reactions are hidden', () => {
   let adminTok: string, billId: string, commentId: string, active: string, gone: string
 
   beforeEach(async () => {
-    await resetDb(); await applyMigrations()
+    await clearDb()
     adminTok = await seedSession(await seedUser({ role: 'admin', email: 'a@x.com' }))
     billId = await seedBill({ matchType: 'keyword', title: 'Reaction bill' })
     active = await seedUser({ role: 'member', email: 'active@x.com' })
@@ -26,14 +26,14 @@ describe('deactivated members\' comment reactions are hidden', () => {
     const res = await SELF.fetch(`https://x/api/bills/${billId}`, { headers: { Cookie: `session=${adminTok}` } })
     const body = await res.json<{ comments: Array<{ id: string; reactions: Array<{ emoji: string; count: number; reactors: { name: string; title: string | null }[] }> }> }>()
     const comment = body.comments.find(c => c.id === commentId)
-    expect(comment?.reactions).toEqual([{ emoji: '👍', count: 1, userReacted: false, reactors: [{ name: 'Test User', title: null, subtitle: null }] }])
+    expect(comment?.reactions).toEqual([{ emoji: '👍', count: 1, userReacted: false, reactors: [{ name: 'Test User', title: null }] }])
   })
 
   it('GET /bills/:id/comments reaction count reflects only the active reactor', async () => {
     const res = await SELF.fetch(`https://x/api/bills/${billId}/comments`, { headers: { Cookie: `session=${adminTok}` } })
     const body = await res.json<Array<{ id: string; reactions: Array<{ emoji: string; count: number; reactors: { name: string; title: string | null }[] }> }>>()
     const comment = body.find(c => c.id === commentId)
-    expect(comment?.reactions).toEqual([{ emoji: '👍', count: 1, userReacted: false, reactors: [{ name: 'Test User', title: null, subtitle: null }] }])
+    expect(comment?.reactions).toEqual([{ emoji: '👍', count: 1, userReacted: false, reactors: [{ name: 'Test User', title: null }] }])
   })
 
   it('reactivating restores the reaction everywhere', async () => {

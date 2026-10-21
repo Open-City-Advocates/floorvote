@@ -5,9 +5,10 @@
 // Keyed on the R2 object key (`bills/legiscan-<billId>/texts/<docId>.<ext>`),
 // which is immutable per document version: a bill that gains a NEW text document
 // gets a NEW docId → NEW r2Key → NEW cache key, so newly-published text is never
-// hidden by the cache. The only residual staleness is a same-docId in-place
-// content revision, bounded by the moderate default TTL below — which is the
-// exact tradeoff the 2026-06-14 resilience wave deferred this for.
+// hidden by the cache. A document whose provider hash changed is fetched again
+// into a key naming the hash (`<docId>-<hash>.<ext>`, #603), so it too gets a new
+// cache key. The residual staleness is a same-key rewrite (a forced refetch of an
+// unchanged hash), bounded by the moderate default TTL below.
 //
 // Backed by the Workers Cache API (`caches.default`). OFF when TTL is 0.
 
@@ -25,9 +26,15 @@ export function billTextCacheTtl(env: { BILL_TEXT_CACHE_TTL?: string }): number 
 // The two endpoints return different shapes for the same R2 object (the docId
 // endpoint streams the blob inline; the /text endpoint returns JSON, base64 for
 // PDFs), so the variant must be part of the key or one would serve the other.
+//
+// A change to a variant's body shape changes its path segment too, so a deploy
+// never serves a body cached in the old shape. `json-v2` is the JSON body that
+// names its document (`docId`, `textHash`, #568).
+const VARIANT_SEGMENT = { inline: 'inline', json: 'json-v2' } as const
+
 export function textCacheKey(variant: 'inline' | 'json', r2Key: string): Request {
   // Host is synthetic and never dialed; the Cache API only uses it as a key.
-  return new Request(`https://bill-text-cache.internal/${variant}/${encodeURIComponent(r2Key)}`)
+  return new Request(`https://bill-text-cache.internal/${VARIANT_SEGMENT[variant]}/${encodeURIComponent(r2Key)}`)
 }
 
 export async function getCachedText(

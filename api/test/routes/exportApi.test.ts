@@ -1,13 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { app } from '../../src/index'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedBillText } from '../helpers'
+import { clearDb, seedUser, seedSession, seedBill, seedBillText } from '../helpers'
 import { EXPORT_TABLES } from '../../../shared/exportTables'
 import { SUPPRESSED_SUBJECT_STATES_KEY } from '../../src/lib/billSubjects'
 
-vi.mock('../../src/lib/email', () => ({
-  sendMagicLink: vi.fn().mockResolvedValue(undefined),
-}))
+vi.mock('../../src/lib/email', async (importOriginal) =>
+  (await import('../mail')).withFakeSender(await importOriginal<typeof import('../../src/lib/email')>()))
 
 vi.mock('../../src/cron/sync', () => ({
   registerWithCentral: vi.fn().mockResolvedValue(undefined),
@@ -23,7 +22,7 @@ vi.mock('../../src/lib/centralFetch', () => ({
       const ids: unknown[] = JSON.parse((init?.body as string) ?? '{}').ids ?? []
       const byId: Record<string, unknown> = {}
       for (const id of ids) {
-        const numeric = String(id).replace('legiscan:', '')
+        const numeric = String(id).replace(/^(legiscan|bill):/, '')
         const entry = centralRichByBill[`legiscan:${numeric}`]
         byId[numeric] = entry
           ? { amendments: entry.amendments ?? [], supplements: entry.supplements ?? [], votes: entry.votes ?? [] }
@@ -42,8 +41,7 @@ describe('Export API', () => {
   let memberCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
     const adminToken = await seedSession(adminId)
     adminCookie = `session=${adminToken}`
@@ -128,11 +126,11 @@ describe('Export API', () => {
     for (const r of rows) expect(r).not.toHaveProperty('subtitle')
   })
 
-  it('exports the title of a member only the previous build wrote, from subtitle', async () => {
-    await env.DB.prepare('INSERT INTO users (id, email, name, subtitle) VALUES (?, ?, ?, ?)').bind('legacy', 'legacy@example.com', 'Legacy', 'Written by the old build').run()
+  it('exports a null title for a member who has none', async () => {
+    await seedUser({ email: 'untitled@example.com' })
     const res = await app.request('/api/admin/export/users', { headers: { Cookie: adminCookie } }, env)
-    const row = (((await res.json()) as any).rows as Array<Record<string, unknown>>).find(r => r.email === 'legacy@example.com')!
-    expect(row.title).toBe('Written by the old build')
+    const row = (((await res.json()) as any).rows as Array<Record<string, unknown>>).find(r => r.email === 'untitled@example.com')!
+    expect(row.title).toBeNull()
     expect(row).not.toHaveProperty('subtitle')
   })
 
@@ -196,6 +194,17 @@ describe('Export API', () => {
       const body = await res.json() as any
       expect(body.table).toBe(table)
     }
+  })
+
+  it('exports comment attachments', async () => {
+    expect(EXPORT_TABLES).toContain('commentAttachments')
+    await env.DB.prepare(
+      "INSERT INTO comment_attachments (id, uploader_id, r2_key, name, content_type, size) VALUES ('att-1', ?, 'bpc-test/k', 'Testimony.pdf', 'application/pdf', 42)",
+    ).bind(memberId).run()
+    const res = await app.request('/api/admin/export/commentAttachments', { headers: { Cookie: adminCookie } }, env)
+    expect(res.status).toBe(200)
+    const body = await res.json() as { rows: { name: string; size: number }[] }
+    expect(body.rows).toMatchObject([{ name: 'Testimony.pdf', size: 42 }])
   })
 
   it('exports calendar_event_bills rows (composite-key table)', async () => {
@@ -418,6 +427,20 @@ describe('Export API', () => {
       expect(body.votes.length).toBe(1)
       expect(body.votes[0]).toMatchObject({ billId, billNumber: 'HB 200', voteId: 'rc-1', result: 'pass', yes: 40, no: 10, notVoting: 2, absent: 1 })
       expect(body.nextCursor).toBeNull()
+    })
+
+    it('includes a bill held under a neutral handle (#305)', async () => {
+      const billId = await seedBill({ billNumber: 'HB 201', title: 'Neutral Bill', state: 'RI', externalId: 'bill:998', matchType: 'keyword' })
+      centralRichByBill['legiscan:998'] = {
+        amendments: [{ amendmentId: 12, adopted: true, chamber: 'H', date: '2026-01-02', title: 'Amd 1', description: 'd', mime: 'application/pdf', url: 'u', stateLink: 's' }],
+        supplements: [],
+        votes: [],
+      }
+      const res = await app.request('/api/admin/export/rich', { headers: { Cookie: adminCookie } }, env)
+      expect(res.status).toBe(200)
+      const body = await res.json() as any
+      expect(body.amendments).toHaveLength(1)
+      expect(body.amendments[0]).toMatchObject({ billId, billNumber: 'HB 201', amendmentId: 12 })
     })
 
     it('skips non-LegiScan bills', async () => {

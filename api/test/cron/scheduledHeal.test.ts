@@ -8,16 +8,20 @@ vi.mock('../../src/lib/healStalledAi', () => ({
 vi.mock('../../src/cron/sync', () => ({ registerWithCentral: vi.fn(async () => true) }))
 vi.mock('../../src/lib/digest', () => ({ runDigest: vi.fn(async () => undefined) }))
 vi.mock('../../src/lib/weekAhead', () => ({ runWeekAhead: vi.fn(async () => undefined) }))
-const sendEmail = vi.fn(async () => ({ ok: true, provider: 'resend' as const }))
-vi.mock('../../src/lib/email', () => ({ sendEmail: (env: any, msg: any) => sendEmail(env, msg) }))
+vi.mock('../../src/lib/email', async (importOriginal) =>
+  (await import('../mail')).withFakeSender(await importOriginal<typeof import('../../src/lib/email')>()))
 vi.mock('../../src/lib/emailHealthJob', () => ({ runEmailHealth: vi.fn(async () => 'none') }))
 vi.mock('../../src/lib/inviteBounces', () => ({ runInviteBounceCheck: vi.fn(async () => []) }))
+// The hourly body-events sync would otherwise reach central (test/setup.ts
+// builds the schema, so it finds its tables and runs).
+vi.mock('../../src/lib/bodyEvents', () => ({ syncBodyEvents: vi.fn(async () => ({ upserted: 0, cancelled: 0, removed: 0, covered: 0 })) }))
 
 import worker from '../../src/index'
 import { healStalledAiBills } from '../../src/lib/healStalledAi'
 import { registerWithCentral } from '../../src/cron/sync'
 import { runEmailHealth } from '../../src/lib/emailHealthJob'
 import { runInviteBounceCheck } from '../../src/lib/inviteBounces'
+import { mail, resetMail } from '../mail'
 
 async function runScheduled(cron: string, scheduledTime?: number) {
   const ctx = createExecutionContext()
@@ -29,6 +33,7 @@ async function runScheduled(cron: string, scheduledTime?: number) {
 describe('scheduled() heal branch', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetMail()
   })
 
   it('runs the email-health check on the hourly cron only', async () => {
@@ -63,7 +68,7 @@ describe('scheduled() heal branch', () => {
 
     await runScheduled('0 * * * *')
 
-    expect(sendEmail).not.toHaveBeenCalled()
+    expect(mail.send).not.toHaveBeenCalled()
     expect(runEmailHealth).toHaveBeenCalledOnce()
     expect(healStalledAiBills).toHaveBeenCalledOnce()
     const logged = error.mock.calls.map((c) => c.join(' ')).join('\n')
@@ -79,7 +84,7 @@ describe('scheduled() heal branch', () => {
 
     await runScheduled('0 * * * *')
 
-    expect(sendEmail).not.toHaveBeenCalled()
+    expect(mail.send).not.toHaveBeenCalled()
     expect(healStalledAiBills).toHaveBeenCalledOnce()
     const logged = error.mock.calls.map((c) => c.join(' ')).join('\n')
     expect(logged).toContain('[email-health] check failed, skipping this run')
@@ -134,7 +139,7 @@ describe('scheduled() heal branch', () => {
 
     // Neither runJob's own failure log nor the alert email may fire.
     expect(error).not.toHaveBeenCalledWith(expect.stringContaining('[job:heal-ai] failed'), expect.anything())
-    expect(sendEmail).not.toHaveBeenCalled()
+    expect(mail.send).not.toHaveBeenCalled()
 
     const logged = error.mock.calls.map((c) => c.join(' ')).join('\n')
     expect(logged).toContain('[heal-ai]')

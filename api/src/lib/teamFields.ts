@@ -2,9 +2,10 @@ import { and, inArray, isNotNull, sql, type SQL } from 'drizzle-orm'
 import { billCustomFieldValues, bills, customFieldDefinitions, officialPositions, teamEvents } from '../db/schema'
 import { chunk } from './chunk'
 import { nowDb } from './dbTime'
-import { FIELD_CHANGED, teamValueText, type FieldChangedMetadata, type TeamField } from '../../../shared/teamFields'
+import { FIELD_CHANGED, teamValueText, type FieldChangedMetadata } from '../../../shared/teamFields'
 import type { ReplacedTeamValue } from '../../../shared/companionGroups'
 import type { AppDb } from '../types'
+import { groupedNewestTextDate, pickLead } from './groupLead'
 
 /**
  * Team fields (see **Team field** in CONTEXT.md): the official position,
@@ -24,18 +25,25 @@ import type { AppDb } from '../types'
  * oldest, and a tie goes to the larger bill id, so every member's page reads
  * the same one.
  *
- * The analysis (team summary and tags) comes from a bill the team tracks
- * (#554): among the members with an analysis, those with a match type come
- * first, and the most recent of those is the group's. A pulled companion is
- * analyzed only so its own page has a summary, so its newer analysis doesn't
- * replace the tracked bill's. Only a group with no tracked analysis reads the
- * most recent of any member's. Migration 0106's `group_tags` triggers apply
- * the same rule.
+ * The analysis (team summary and tags) is the group's lead bill's (see
+ * **Lead bill** in CONTEXT.md and lib/groupLead.ts): the bill furthest along,
+ * then the one with the newest text, then the lowest bill number, tracked or
+ * not. So the group's summary is of the bill that has moved furthest, and it
+ * changes only when the lead does or the lead is analyzed again, never because
+ * another member was. While the lead has no analysis yet, the group reads the
+ * one it would have read before leads: among the members with an analysis,
+ * those with a match type first, and the most recent of those (#554).
+ * Migration 0113's `group_tags` triggers apply the same rule.
  */
 
 type BillValues = {
   id: string
-  /** Whether the bill is tracked (a match type), which decides whose analysis a group shows. */
+  /** The lead's fields (lib/groupLead.ts), which decide whose analysis a group shows. */
+  billNumber: string
+  statusRank: number
+  /** The bill's newest text date, read only for a bill in a group. */
+  newestTextDate: string | null
+  /** Whether the bill is tracked (a match type), which decides whose analysis a group shows while its lead has none. */
   matchType: 'keyword' | 'manual' | null
   priority: 'high' | 'medium' | 'low' | null
   prioritySetAt: string | null
@@ -51,17 +59,22 @@ type CustomFieldValue = { billId: string; fieldId: string; value: string; setBy:
 /** Every team field value stored on some bills, as read from the database. */
 export type TeamValueRows = { bills: BillValues[]; positions: PositionValue[]; customFields: CustomFieldValue[] }
 
-/** A group's team field values, each the one set most recently on any member (the analysis preferring tracked members), or null. */
+/** A group's team field values, each the one set most recently on any member (the analysis the lead's), or null. */
 export type GroupTeamValues = {
   position: PositionValue | null
   priority: { billId: string; priority: 'high' | 'medium' | 'low'; setAt: string | null } | null
   customFields: Map<string, CustomFieldValue>
   analysis: { billId: string; tenantSummary: string | null; tags: string[]; aiProcessedAt: string | null } | null
   triaged: { billId: string; triagedAt: string; triagedBy: string | null } | null
+  /** The group's lead bill (lib/groupLead.ts), or null for no members. Its analysis is `analysis` once it has one. */
+  leadBillId: string | null
 }
 
 const billValueColumns = {
   id: bills.id,
+  billNumber: bills.billNumber,
+  statusRank: bills.statusRank,
+  newestTextDate: groupedNewestTextDate(bills),
   matchType: bills.matchType,
   priority: bills.priority,
   prioritySetAt: bills.prioritySetAt,
@@ -104,9 +117,11 @@ export async function readTeamValueRows(db: AppDb, billIds: readonly string[]): 
 export function resolveTeamValues(rows: TeamValueRows, members: ReadonlySet<string>): GroupTeamValues {
   const memberBills = rows.bills.filter(b => members.has(b.id)).map(b => ({ ...b, billId: b.id }))
   const priority = mostRecent(memberBills.filter(b => b.priority !== null), b => b.prioritySetAt)
-  const analyzed = memberBills.filter(b => b.aiProcessedAt !== null || b.tenantSummary !== null || b.tags !== '[]')
+  const hasAnalysis = (b: BillValues) => b.aiProcessedAt !== null || b.tenantSummary !== null || b.tags !== '[]'
+  const lead = pickLead(memberBills)
+  const analyzed = memberBills.filter(hasAnalysis)
   const trackedAnalyzed = analyzed.filter(b => b.matchType !== null)
-  const analysis = mostRecent(trackedAnalyzed.length > 0 ? trackedAnalyzed : analyzed, b => b.aiProcessedAt)
+  const analysis = lead && hasAnalysis(lead) ? lead : mostRecent(trackedAnalyzed.length > 0 ? trackedAnalyzed : analyzed, b => b.aiProcessedAt)
   const triaged = mostRecent(memberBills.filter(b => b.triagedAt !== null), b => b.triagedAt)
   const customFields = new Map<string, CustomFieldValue>()
   const byField = new Map<string, CustomFieldValue[]>()
@@ -122,6 +137,7 @@ export function resolveTeamValues(rows: TeamValueRows, members: ReadonlySet<stri
       ? { billId: analysis.id, tenantSummary: analysis.tenantSummary, tags: parseTags(analysis.tags), aiProcessedAt: analysis.aiProcessedAt }
       : null,
     triaged: triaged ? { billId: triaged.id, triagedAt: triaged.triagedAt!, triagedBy: triaged.triagedBy } : null,
+    leadBillId: lead?.id ?? null,
   }
 }
 
@@ -157,7 +173,7 @@ export async function loadTeamValuesOf(db: AppDb, billIds: readonly string[]): P
 /** The team field values one bill reads: its group's, or its own. */
 export async function loadGroupTeamValues(db: AppDb, billId: string): Promise<GroupTeamValues> {
   return (await loadTeamValuesOf(db, [billId])).get(billId)
-    ?? { position: null, priority: null, customFields: new Map(), analysis: null, triaged: null }
+    ?? { position: null, priority: null, customFields: new Map(), analysis: null, triaged: null, leadBillId: null }
 }
 
 /**
@@ -241,6 +257,42 @@ export function holdsGroupPriority(of: BillsTable): SQL {
       OR (COALESCE(g.priority_set_at, '') = COALESCE(${of.prioritySetAt}, '') AND g.id > ${of.id})))))`
 }
 
+/** Some bill in `of`'s group has a priority, `of`'s own included: the group is prioritized. The opposite of `groupHasNoPriority`. */
+export function groupHasPriority(of: BillsTable): SQL {
+  return sql`(${of.priority} IS NOT NULL OR (${of.groupKey} IS NOT NULL AND EXISTS (SELECT 1 FROM bills g WHERE g.group_key = ${of.groupKey} AND g.priority IS NOT NULL)))`
+}
+
+/**
+ * The priority each of these companion groups currently has: the one set most
+ * recently on any member (`holdsGroupPriority`'s rule, so the later
+ * `priority_set_at` wins, none being oldest, and a tie goes to the larger bill
+ * id). A group none of whose members has one is left out. For rows of a feed,
+ * digest, or calendar, which read it once per page of rows, so every row of a
+ * group wears the group's priority whichever member it was set on. Read apart
+ * from the rows' own query, so a correlated subquery never sits in a query
+ * that sorts (the feed's plan must not need a temp B-tree).
+ */
+export async function loadGroupPriorities(db: AppDb, groupKeys: ReadonlyArray<string | null | undefined>): Promise<Map<string, 'high' | 'medium' | 'low'>> {
+  const rows: Array<{ billId: string; groupKey: string; priority: 'high' | 'medium' | 'low'; setAt: string | null }> = []
+  for (const part of chunk([...new Set(groupKeys.filter((k): k is string => !!k))], 90)) {
+    for (const r of await db.select({ billId: bills.id, groupKey: bills.groupKey, priority: bills.priority, setAt: bills.prioritySetAt })
+      .from(bills).where(and(inArray(bills.groupKey, part), isNotNull(bills.priority))).all()) {
+      rows.push({ billId: r.billId, groupKey: r.groupKey!, priority: r.priority!, setAt: r.setAt })
+    }
+  }
+  const out = new Map<string, 'high' | 'medium' | 'low'>()
+  for (const key of new Set(rows.map(r => r.groupKey))) {
+    const holder = mostRecent(rows.filter(r => r.groupKey === key), r => r.setAt)
+    if (holder) out.set(key, holder.priority)
+  }
+  return out
+}
+
+/** The priority a row of a bill wears: its group's when the bill is in one (`loadGroupPriorities`), else its own. */
+export function priorityWorn(bill: { priority: 'high' | 'medium' | 'low' | null; groupKey: string | null }, groupPriorities: ReadonlyMap<string, 'high' | 'medium' | 'low'>): 'high' | 'medium' | 'low' | null {
+  return bill.groupKey === null ? bill.priority : (groupPriorities.get(bill.groupKey) ?? null)
+}
+
 /** No bill in `of`'s group has a priority. */
 export function groupHasNoPriority(of: BillsTable): SQL {
   return sql`(${of.priority} IS NULL AND (${of.groupKey} IS NULL OR NOT EXISTS (SELECT 1 FROM bills g WHERE g.group_key = ${of.groupKey} AND g.priority IS NOT NULL)))`
@@ -249,18 +301,14 @@ export function groupHasNoPriority(of: BillsTable): SQL {
 // ── Recording changes ───────────────────────────────────────────────────────
 
 /** A team field set on one bill: the group's value before and after. */
-export type FieldChange = Omit<FieldChangedMetadata, 'old' | 'new'> & {
-  billId: string
-  old: string | string[] | null
-  new: string | string[] | null
-}
+export type FieldChange = FieldChangedMetadata & { billId: string }
 
 /**
  * Record each change that changed something as a structured team event on
- * the bill where it was set. A null actor means FloorVote set it (an
- * analysis's tags). Tags compare as sets.
+ * the bill where it was set, by the person who made it. The analysis's tags are
+ * not recorded: the bill's comment thread shows only changes people made.
  */
-export async function recordFieldChanges(db: AppDb, changes: readonly FieldChange[], actorUserId: string | null): Promise<void> {
+export async function recordFieldChanges(db: AppDb, changes: readonly FieldChange[], actorUserId: string): Promise<void> {
   const now = nowDb()
   const events = changes.filter(c => !sameValue(c.old, c.new)).map(({ billId, ...change }) => {
     const metadata: FieldChangedMetadata = {
@@ -281,45 +329,8 @@ export async function recordFieldChanges(db: AppDb, changes: readonly FieldChang
   }
 }
 
-/**
- * The tags each group reads before a write to its members' `match_type`, for
- * `recordGroupTagChanges`. A group's tags come from a tracked member first, so
- * a bill starting or stopping to match can move them with no analysis to
- * record it. Only bills in a group are read: a bill in no group reads its own
- * tags, whatever its match type. One bill stands for each group, the one with the
- * smallest id among those given, and is the one the event is recorded on, so a
- * cleanup always records on the same bill.
- */
-export type GroupTagsSnapshot = ReadonlyMap<string, string[]>
-
-export async function snapshotGroupTags(db: AppDb, members: readonly { id: string; groupKey: string | null }[]): Promise<GroupTagsSnapshot> {
-  const standIn = new Map<string, string>()
-  for (const m of members) {
-    if (m.groupKey === null) continue
-    const held = standIn.get(m.groupKey)
-    if (held === undefined || m.id < held) standIn.set(m.groupKey, m.id)
-  }
-  const values = await loadTeamValuesOf(db, [...standIn.values()])
-  return new Map([...standIn.values()].map(id => [id, values.get(id)?.analysis?.tags ?? []]))
-}
-
-/**
- * Record, as a null-actor `field_changed` event (the one an analysis writes
- * for tags), each group in `before` whose tags differ now, once per group, on
- * the bill that stood for it. Each costs a few small queries per 90 members, doubled
- * by the snapshot, which a rare admin cleanup can afford. A group whose tags are unchanged records none.
- */
-export async function recordGroupTagChanges(db: AppDb, before: GroupTagsSnapshot): Promise<void> {
-  if (before.size === 0) return
-  const after = await loadTeamValuesOf(db, [...before.keys()])
-  await recordFieldChanges(db, [...before].map(([billId, old]) => ({
-    billId, field: 'tags' as const, label: 'tags', old, new: after.get(billId)?.analysis?.tags ?? [],
-  })), null)
-}
-
-function sameValue(a: string | string[] | null, b: string | string[] | null): boolean {
-  if (Array.isArray(a) && Array.isArray(b)) return JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
-  return JSON.stringify(a) === JSON.stringify(b)
+function sameValue(a: string | null, b: string | null): boolean {
+  return a === b
 }
 
 // ── Grouping ────────────────────────────────────────────────────────────────

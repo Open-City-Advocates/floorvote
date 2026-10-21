@@ -112,8 +112,9 @@ export function visibleModuleSettings(m: ModuleDef, modules: ModulesConfig | und
 }
 
 /** Human description of the recent-bill-activity digest cadence for the Account page. */
-export function digestCadenceDescription(modules: ModulesConfig | undefined): string {
-  const subject = 'recent activity on priority bills'
+export function digestCadenceDescription(modules: ModulesConfig | undefined, includesSavedViews = false): string {
+  // The saved views are the member's own (#449), so the sentence names them only once one is included.
+  const subject = `recent activity on priority bills${includesSavedViews ? ' and bills in saved views' : ''}`
   // When the admin has the digest turned off, do not assert a cadence — the
   // Account row shows a "Turned off by your {org noun}." note instead.
   if (!isModuleEnabled(modules, 'email-digest')) return `A summary of ${subject}.`
@@ -121,6 +122,18 @@ export function digestCadenceDescription(modules: ModulesConfig | undefined): st
   if (frequency !== 'weekly') return `A daily summary of ${subject}.`
   const day = WEEKDAYS[Number(getModuleSetting(modules, 'email-digest', 'weeklyDay', '1'))] ?? 'Monday'
   return `A weekly summary of ${subject}, sent every ${day} morning.`
+}
+
+/**
+ * Visible label (and accessible name) of the member's "include newly matched
+ * bills" switch. It names the digest's period, which is an instance setting, so
+ * it reads the same frequency as digestCadenceDescription: anything but "weekly"
+ * (missing, unknown, or the module off) is daily.
+ */
+export function digestMatchesLabel(modules: ModulesConfig | undefined): string {
+  const frequency = getModuleSetting<string>(modules, 'email-digest', 'frequency', 'daily')
+  const period = frequency === 'weekly' ? 'weeks' : 'days'
+  return `Also include newly matched bills in the digest, and send the digest on ${period} with only those.`
 }
 
 /** Human description of the week-ahead (upcoming hearings & events) digest cadence for the Account page. */
@@ -136,4 +149,9 @@ export function weekAheadCadenceDescription(modules: ModulesConfig | undefined):
 /** Maps a module type to a human-readable kind label. */
 export function moduleKindLabel(type: ModuleType): string {
   return type === 'widget' ? 'Widget' : 'Page'
+}
+
+/** The digest's cadence as the Views menu words it: weekly only for a weekly digest, daily otherwise (as digestCadenceDescription reads it). */
+export function digestFrequency(modules: ModulesConfig | undefined): 'daily' | 'weekly' {
+  return getModuleSetting<string>(modules, 'email-digest', 'frequency', 'daily') === 'weekly' ? 'weekly' : 'daily'
 }

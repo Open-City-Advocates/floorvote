@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { groupEventsByBillAndDay, filterPriorityEvents, filterFullyAnalyzed, formatBillUpdateDetail, stripHtml } from './feedUtils'
+import { groupEventsByBillAndDay, filterPriorityEvents, formatBillUpdateDetail, stripHtml } from './feedUtils'
 import type { FeedEvent, GroupedBillEvents } from './feedUtils'
 
 // Day bucketing/labeling is timezone-sensitive by design — it must read in the
@@ -22,6 +22,8 @@ function makeEvent(overrides: Partial<FeedEvent> & { billId: string | null; crea
     billSummary: overrides.billSummary ?? null,
     billPriority: overrides.billPriority ?? null,
     billMatchType: overrides.billMatchType ?? null,
+    billIsDraft: overrides.billIsDraft,
+    billGroupKey: overrides.billGroupKey,
     userId: overrides.userId ?? 'user-1',
     userName: overrides.userName ?? 'Alice',
     userTitle: overrides.userTitle ?? null,
@@ -227,80 +229,37 @@ describe('filterPriorityEvents', () => {
   it('handles empty input', () => {
     expect(filterPriorityEvents([])).toHaveLength(0)
   })
-})
 
-// ── filterFullyAnalyzed ──────────────────────────────────────────────────────
-
-describe('filterFullyAnalyzed', () => {
-  function makeGroup(overrides: { billMatchType: 'keyword' | 'manual' | null; events: FeedEvent[] }): GroupedBillEvents {
-    return {
-      key: `bill-${overrides.billMatchType}::2026-04-20`,
-      billId: 'bill-1',
-      billNumber: 'S1234',
-      billSessionSlug: '2026',
-      billState: 'RI',
-      billTitle: 'Test Bill',
-      billSummary: null,
+  // #921: the day's no-priority updates row resolved to this one bill, so the
+  // server sent its updates, marked, to be drawn as its card.
+  it('keeps a non-priority group of updates the server marked as the day\'s lone card', () => {
+    const group = makeGroup({
       billPriority: null,
-      billMatchType: overrides.billMatchType,
-      events: overrides.events,
-      date: '2026-04-20',
-    }
-  }
-
-  it('keeps groups with billMatchType keyword', () => {
-    const group = makeGroup({
-      billMatchType: 'keyword',
-      events: [makeEvent({ billId: 'b1', type: 'bill_updated', createdAt: '2026-04-20T10:00:00Z' })],
-    })
-    expect(filterFullyAnalyzed([group])).toHaveLength(1)
-  })
-
-  it('keeps groups with billMatchType manual', () => {
-    const group = makeGroup({
-      billMatchType: 'manual',
-      events: [makeEvent({ billId: 'b1', type: 'comment_added', createdAt: '2026-04-20T10:00:00Z' })],
-    })
-    expect(filterFullyAnalyzed([group])).toHaveLength(1)
-  })
-
-  it('removes groups with billMatchType null', () => {
-    const group = makeGroup({
-      billMatchType: null,
-      events: [makeEvent({ billId: 'b1', type: 'bill_updated', createdAt: '2026-04-20T10:00:00Z' })],
-    })
-    expect(filterFullyAnalyzed([group])).toHaveLength(0)
-  })
-
-  it('keeps all event types for included groups (does not strip bill_updated)', () => {
-    const group = makeGroup({
-      billMatchType: 'keyword',
       events: [
-        makeEvent({ billId: 'b1', type: 'bill_updated', createdAt: '2026-04-20T10:00:00Z' }),
-        makeEvent({ billId: 'b1', type: 'comment_added', createdAt: '2026-04-20T09:00:00Z' }),
-      ],
+        { ...makeEvent({ billId: 'b1', type: 'bill_updated', createdAt: '2026-04-20T10:00:00Z' }), noPriorityCard: true },
+        { ...makeEvent({ billId: 'b1', type: 'hearing_added', createdAt: '2026-04-20T09:00:00Z' }), noPriorityCard: true },
+      ] as FeedEvent[],
     })
-    const result = filterFullyAnalyzed([group])
-    expect(result[0].events).toHaveLength(2)
+    expect(filterPriorityEvents([group])).toEqual([group])
   })
 
-  it('handles empty input', () => {
-    expect(filterFullyAnalyzed([])).toHaveLength(0)
+  it('still removes a non-priority group of updates marked as no card', () => {
+    const group = makeGroup({
+      billPriority: null,
+      events: [{ ...makeEvent({ billId: 'b1', type: 'bill_updated', createdAt: '2026-04-20T10:00:00Z' }), noPriorityCard: false }] as FeedEvent[],
+    })
+    expect(filterPriorityEvents([group])).toHaveLength(0)
   })
 })
 
-describe('filters with bill-less events', () => {
+describe('the filter with bill-less events', () => {
   const group = (type: FeedEvent['type']) => groupEventsByBillAndDay([
     makeEvent({ billId: null, type, createdAt: '2026-04-20T10:00:00Z' }),
   ])
 
-  it('filterPriorityEvents keeps a bill-less engagement event and drops a bill-less passive one', () => {
+  it('keeps a bill-less engagement event and drops a bill-less passive one', () => {
     expect(filterPriorityEvents(group('priority_set'))).toHaveLength(1)
     expect(filterPriorityEvents(group('bill_matched'))).toHaveLength(0)
-  })
-
-  it('filterFullyAnalyzed keeps a bill-less event, which has no bill to be unanalyzed', () => {
-    expect(filterFullyAnalyzed(group('priority_set'))).toHaveLength(1)
   })
 })
 
@@ -417,5 +376,99 @@ describe('stripHtml', () => {
 
   it('strips tags with attributes', () => {
     expect(stripHtml('<a href="https://example.com">link text</a>')).toBe('link text')
+  })
+})
+
+// ── companion groups (#381) ─────────────────────────────────────────────────
+//
+// A companion group is one policy: the feed shows one card per group per day,
+// whichever member an event is on. The API tags each event with the group key
+// of its bill (null for a bill in no group).
+
+describe('groupEventsByBillAndDay: companion groups', () => {
+  const house = (createdAt: string, over: Partial<FeedEvent> = {}) =>
+    makeEvent({ billId: 'h1', billNumber: 'H 101', billGroupKey: 'h1', createdAt, ...over })
+  const senate = (createdAt: string, over: Partial<FeedEvent> = {}) =>
+    makeEvent({ billId: 's1', billNumber: 'S 202', billGroupKey: 'h1', createdAt, ...over })
+
+  it('rolls both members\' same-day events into one card keyed by the group', () => {
+    const groups = groupEventsByBillAndDay([
+      senate('2026-04-20T14:00:00Z', { id: 'e3' }),
+      house('2026-04-20T12:00:00Z', { id: 'e2' }),
+      senate('2026-04-20T10:00:00Z', { id: 'e1' }),
+    ])
+    expect(groups).toHaveLength(1)
+    expect(groups[0].key).toBe('group:h1::2026-04-20')
+    expect(groups[0].groupKey).toBe('h1')
+    expect(groups[0].events.map(e => e.id)).toEqual(['e3', 'e2', 'e1'])
+  })
+
+  it('lists the bills in the card, the newest event\'s bill first, each once', () => {
+    const [g] = groupEventsByBillAndDay([
+      senate('2026-04-20T14:00:00Z'), house('2026-04-20T12:00:00Z'), senate('2026-04-20T10:00:00Z'),
+    ])
+    expect(g.bills!.map(b => b.billNumber)).toEqual(['S 202', 'H 101'])
+    expect(g.billNumber).toBe('S 202')
+    expect(g.bills![0]).toMatchObject({ billId: 's1', billState: 'RI', billSessionSlug: '2026', billIsDraft: false })
+  })
+
+  it('makes one card per group per day', () => {
+    const groups = groupEventsByBillAndDay([
+      house('2026-04-21T10:00:00Z'), senate('2026-04-21T11:00:00Z'),
+      house('2026-04-20T10:00:00Z'), senate('2026-04-20T11:00:00Z'),
+    ])
+    expect(groups.map(g => g.date)).toEqual(['2026-04-21', '2026-04-20'])
+    expect(groups.every(g => g.events.length === 2)).toBe(true)
+  })
+
+  it('keeps two groups apart on the same day', () => {
+    const groups = groupEventsByBillAndDay([
+      house('2026-04-20T10:00:00Z'), senate('2026-04-20T11:00:00Z'),
+      makeEvent({ billId: 'k1', billNumber: 'H 601', billGroupKey: 'k1', createdAt: '2026-04-20T12:00:00Z' }),
+      makeEvent({ billId: 'k2', billNumber: 'S 602', billGroupKey: 'k1', createdAt: '2026-04-20T13:00:00Z' }),
+    ])
+    expect(groups.map(g => g.groupKey).sort()).toEqual(['h1', 'k1'])
+  })
+
+  it('still makes a group card when only one member had events', () => {
+    const [g] = groupEventsByBillAndDay([senate('2026-04-20T10:00:00Z')])
+    expect(g.groupKey).toBe('h1')
+    expect(g.bills!.map(b => b.billNumber)).toEqual(['S 202'])
+  })
+
+  it('flags a draft member in the card\'s bills', () => {
+    const [g] = groupEventsByBillAndDay([
+      senate('2026-04-20T11:00:00Z', { billIsDraft: true }), house('2026-04-20T10:00:00Z'),
+    ])
+    expect(g.bills!.find(b => b.billNumber === 'S 202')!.billIsDraft).toBe(true)
+    expect(g.bills!.find(b => b.billNumber === 'H 101')!.billIsDraft).toBe(false)
+  })
+
+  it('leaves a bill in no group exactly as it was: keyed by the bill, no group, no bills list', () => {
+    const [g] = groupEventsByBillAndDay([
+      makeEvent({ billId: 'b9', billNumber: 'HB 9', createdAt: '2026-04-20T10:00:00Z' }),
+      makeEvent({ billId: 'b9', billNumber: 'HB 9', billGroupKey: null, createdAt: '2026-04-20T11:00:00Z' }),
+    ])
+    expect(g.key).toBe('b9::2026-04-20')
+    expect(g.groupKey).toBeNull()
+    expect(g.bills).toBeUndefined()
+  })
+
+  it('keeps a group apart from an ungrouped bill whose id happens to equal the group key', () => {
+    const groups = groupEventsByBillAndDay([
+      house('2026-04-20T10:00:00Z'),
+      makeEvent({ billId: 'h1', billNumber: 'H 101', billGroupKey: null, createdAt: '2026-04-20T11:00:00Z' }),
+    ])
+    // Same member id, one tagged and one not (the group changed between two reads): one card each, never a crash.
+    expect(groups).toHaveLength(2)
+  })
+
+  it('sorts cards across groups and bills by their newest event', () => {
+    // The feed serves events newest first.
+    const groups = groupEventsByBillAndDay([
+      senate('2026-04-20T13:00:00Z'), house('2026-04-20T10:00:00Z'),
+      makeEvent({ billId: 'b9', billNumber: 'HB 9', createdAt: '2026-04-20T09:00:00Z' }),
+    ])
+    expect(groups.map(g => g.billNumber)).toEqual(['S 202', 'HB 9'])
   })
 })

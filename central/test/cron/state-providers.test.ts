@@ -7,7 +7,7 @@ import { env } from 'cloudflare:test'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { drizzle } from 'drizzle-orm/d1'
 import * as schema from '../../src/db/schema'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { clearDb } from '../helpers/migrations'
 import bulkRaw from '../fixtures/lims/bulk-records.json?raw'
 import details0400Raw from '../fixtures/lims/details-B26-0400.json?raw'
 import membersRaw from '../fixtures/lims/members-26.json?raw'
@@ -32,7 +32,7 @@ vi.mock('../../src/lib/sync-schedule', async () => {
 })
 vi.stubGlobal('fetch', vi.fn())
 
-import { app } from '../../src/index-legiscan'
+import { app } from '../../src/index'
 import { runSnapshotSync } from '../../src/cron/sync-snapshots'
 import { runSync } from '../../src/cron/sync'
 import { lims as limsProvider } from '../../src/providers/lims'
@@ -114,7 +114,7 @@ const logged = (spy: { mock: { calls: unknown[][] } }, pattern: RegExp) =>
   spy.mock.calls.map(c => c.map(String).join(' ')).filter(line => pattern.test(line))
 
 beforeEach(async () => {
-  await setupLsDb()
+  await clearDb()
   vi.clearAllMocks()
   vi.mocked(lims.getCouncilPeriods).mockResolvedValue([PERIOD])
   vi.mocked(lims.getMembers).mockResolvedValue(JSON.parse(membersRaw))
@@ -138,6 +138,9 @@ beforeEach(async () => {
 
 afterEach(() => vi.restoreAllMocks())
 
+/** Every bill of the LIMS fixture's DC listing, sorted: LIMS declares ingestAll (#835), so a pass queues each one. */
+const DC_BILLS = () => ['B26-0400', 'B26-0769', 'B26-0001', 'HN26-0171'].map(n => limsBillId(n)!).sort()
+
 describe('claiming a state for a provider', () => {
   it('gives a state with no tracked bills to the provider, which syncs it from then on, and LegiScan lets it go', async () => {
     const { env: e, limsQueue } = makeEnv()
@@ -157,7 +160,7 @@ describe('claiming a state for a provider', () => {
 
     const passes = await runSnapshotSync(limsProvider, e, db)
     expect(passes).toEqual([expect.objectContaining({ sessionId: limsSessionId(26), records: 4 })])
-    expect(queuedIds(limsQueue)).toEqual([limsBillId('B26-0400')!, limsBillId('HN26-0171')!].sort())
+    expect(queuedIds(limsQueue)).toEqual(DC_BILLS())
 
     await runSync(e, db)
     expect(legiscan.getMasterListBySession).not.toHaveBeenCalled()
@@ -190,7 +193,7 @@ describe('claiming a state for a provider', () => {
     const { env: e, limsQueue } = makeEnv()
     expect((await claim(e, 'DC', { provider: 'lims' })).status).toBe(200)
     await runSnapshotSync(limsProvider, e, db)
-    expect(queuedIds(limsQueue).length).toBe(2)
+    expect(queuedIds(limsQueue)).toEqual(DC_BILLS())
     const before = await ownership(e)
 
     const res = await claim(e, 'DC', { provider: 'legiscan' })
@@ -250,109 +253,116 @@ describe('claiming a state for a provider', () => {
   })
 })
 
-describe('seeding ownership from the old env vars (one release)', () => {
-  it('writes the row on the first sync, whichever sync runs first, and logs it', async () => {
+describe('the old ownership env vars (#319)', () => {
+  // LIMS_STATES, MGA_STATES, and LIS_STATES once named a provider's states, and
+  // for one release seeded a row for each. Only the state_providers table owns
+  // a state now, and a state with no row is LegiScan's.
+  const OLD_VARS = { LIMS_STATES: 'DC', MGA_STATES: 'MD', LIS_STATES: 'VA' }
+  const rowCount = async () => Number((await env.DB.prepare('SELECT COUNT(*) AS n FROM state_providers').first<{ n: number }>())!.n)
+
+  it('leaves a state with no row to LegiScan and writes no row, with every old env var set', async () => {
     const log = vi.spyOn(console, 'log')
-    const { env: e, limsQueue } = makeEnv({ LIMS_STATES: 'DC' })
+    const { env: e, limsQueue } = makeEnv(OLD_VARS)
 
-    // The LegiScan sync runs first this hour, and leaves DC alone.
     await runSync(e, db)
-    expect(legiscanStates()).toEqual(['MD'])
-    expect(legiscan.getMasterListBySession).not.toHaveBeenCalled()
-    expect((await ownership(e)).states).toEqual([
-      expect.objectContaining({ state: 'DC', provider: 'lims', status: 'active', previousProvider: 'legiscan' }),
-    ])
-    expect(log.mock.calls.flat().join('\n')).toMatch(/DC now syncs from lims, seeded from LIMS_STATES/)
-
-    await runSnapshotSync(limsProvider, e, db)
-    expect(queuedIds(limsQueue)).toEqual([limsBillId('B26-0400')!, limsBillId('HN26-0171')!].sort())
-  })
-
-  it('leaves a state that already has a row alone', async () => {
-    await db.insert(schema.stateProviders).values({ state: 'DC', provider: 'legiscan', previousProvider: 'lims' })
-    const { env: e } = makeEnv({ LIMS_STATES: 'DC' })
     expect(await runSnapshotSync(limsProvider, e, db)).toEqual([])
-    expect(lims.getCouncilPeriods).not.toHaveBeenCalled()
-    expect((await ownership(e)).states).toEqual([expect.objectContaining({ state: 'DC', provider: 'legiscan' })])
-  })
+    expect(await runSnapshotSync(mgaProvider, e, db)).toEqual([])
 
-  it('seeds nothing for a provider missing its key, as the env var alone never turned it on', async () => {
-    const { env: e } = makeEnv({ LIMS_STATES: 'DC', LIMS_API_KEY: undefined })
-    await runSync(e, db)
-    expect((await ownership(e)).states).toEqual([])
-    expect(legiscanStates()).toEqual(['DC', 'MD'])
-  })
-
-  it('is refused while LegiScan has tracked bills in the state, logs it once an hour, and the state keeps syncing from LegiScan', async () => {
-    const warn = vi.spyOn(console, 'warn')
-    const { env: e, limsQueue } = makeEnv({ LIMS_STATES: 'DC' })
-    await trackLegiscanDcBill(9001, 'oca', 'keyword')
-
-    expect(await runSnapshotSync(limsProvider, e, db)).toEqual([])
-    expect(lims.getBulkData).not.toHaveBeenCalled()
-    expect(limsQueue.sendBatch).not.toHaveBeenCalled()
-    expect((await ownership(e)).states).toEqual([])
-
-    await runSync(e, db)
     expect(legiscanStates()).toEqual(['DC', 'MD'])
     expect(vi.mocked(legiscan.getMasterListBySession).mock.calls.map(c => c[0])).toEqual([LS_DC_SESSION])
-    // Logged by the LegiScan sync only, so once an hour rather than once per job.
-    expect(logged(warn, /not seeding DC for lims from LIMS_STATES: legiscan has 1 tracked bills there \(instances: oca\)/))
-      .toHaveLength(1)
+    expect(lims.getCouncilPeriods).not.toHaveBeenCalled()
+    expect(mga.getMgaSession).not.toHaveBeenCalled()
+    expect(limsQueue.sendBatch).not.toHaveBeenCalled()
+    expect(await rowCount()).toBe(0)
+    expect((await ownership(e)).states).toEqual([])
+    expect(logged(log, /seed/i)).toEqual([])
   })
 
-  it('logs an error for a split state, where both providers have tracked bills, and leaves it with its owner', async () => {
+  it('writes no row however many jobs run at once in the first hour', async () => {
+    const { env: e } = makeEnv(OLD_VARS)
+    await Promise.all([runSync(e, db), runSnapshotSync(limsProvider, e, db), runSnapshotSync(limsProvider, e, db)])
+    expect(await rowCount()).toBe(0)
+    expect(legiscanStates()).toEqual(['DC', 'MD'])
+  })
+
+  it('logs no refusal for LegiScan bills tracked in a state an old env var names, and the state keeps syncing from LegiScan', async () => {
+    const warn = vi.spyOn(console, 'warn')
     const error = vi.spyOn(console, 'error')
-    const { env: e } = makeEnv({ LIMS_STATES: 'DC' })
+    const { env: e } = makeEnv(OLD_VARS)
     await trackLegiscanDcBill(9001, 'oca', 'keyword')
     await trackLimsDcBill('B26-0400', 'team')
 
     await runSync(e, db)
     await runSnapshotSync(limsProvider, e, db)
 
-    expect(logged(error, /DC is split: legiscan has 1 tracked bills there \(instances: oca\) and lims has 1 \(instances: team\)/))
-      .toHaveLength(1)
-    expect((await ownership(e)).states).toEqual([])
     expect(legiscanStates()).toEqual(['DC', 'MD'])
     expect(lims.getBulkData).not.toHaveBeenCalled()
+    expect(logged(warn, /state-providers/)).toEqual([])
+    expect(logged(error, /state-providers/)).toEqual([])
+    expect(await rowCount()).toBe(0)
   })
 
-  it("counts only the current owner's links, so a central already reading DC from LIMS seeds it to LIMS", async () => {
-    const warn = vi.spyOn(console, 'warn')
-    const { env: e } = makeEnv({ LIMS_STATES: 'DC' })
-    await trackLimsDcBill('B26-0400', 'oca')
-    await trackLimsDcBill('B26-0769', 'team')
+  it('lets a row for another provider win over an env var that names the state', async () => {
+    await db.insert(schema.stateProviders).values({ state: 'DC', provider: 'legiscan', previousProvider: 'lims' })
+    const { env: e, limsQueue } = makeEnv(OLD_VARS)
 
-    await runSync(e, db)
-    expect((await ownership(e)).states).toEqual([expect.objectContaining({ state: 'DC', provider: 'lims', previousProvider: 'legiscan' })])
-    expect(logged(warn, /not seeding/)).toEqual([])
-    expect(legiscanStates()).toEqual(['MD'])
-  })
-
-  it('writes each row once when every job runs at the same time in the first hour', async () => {
-    const log = vi.spyOn(console, 'log')
-    const { env: e } = makeEnv({ LIMS_STATES: 'DC' })
-
-    await Promise.all([runSync(e, db), runSnapshotSync(limsProvider, e, db), runSnapshotSync(limsProvider, e, db)])
-
-    expect((await ownership(e)).states).toEqual([expect.objectContaining({ state: 'DC', provider: 'lims' })])
-    expect(logged(log, /DC now syncs from lims, seeded from LIMS_STATES/)).toHaveLength(1)
-    expect(legiscanStates()).toEqual(['MD'])
-  })
-
-  it('decides each state on its own: a refused DC never holds up Maryland', async () => {
-    const { env: e, limsQueue } = makeEnv({ LIMS_STATES: 'DC' })
-    await db.insert(schema.stateProviders).values({ state: 'MD', provider: 'mga', previousProvider: 'legiscan' })
-    await trackLegiscanDcBill(9001, 'oca', 'keyword')
-
-    const mdPasses = await runSnapshotSync(mgaProvider, e, db)
-    expect(mdPasses).toEqual([expect.objectContaining({ records: JSON.parse(mgaSampleRaw).length })])
     expect(await runSnapshotSync(limsProvider, e, db)).toEqual([])
+    expect(lims.getCouncilPeriods).not.toHaveBeenCalled()
     expect(limsQueue.sendBatch).not.toHaveBeenCalled()
+    await runSync(e, db)
+    expect(legiscanStates()).toEqual(['DC', 'MD'])
+    expect((await ownership(e)).states).toEqual([expect.objectContaining({ state: 'DC', provider: 'legiscan', previousProvider: 'lims' })])
+  })
+
+  it('lets a Maryland row for MGA win over an env var that names Maryland for LIMS', async () => {
+    await db.insert(schema.stateProviders).values({ state: 'MD', provider: 'mga', previousProvider: 'legiscan' })
+    const { env: e } = makeEnv({ LIMS_STATES: 'MD' })
+
+    expect(await runSnapshotSync(mgaProvider, e, db)).toEqual([expect.objectContaining({ records: JSON.parse(mgaSampleRaw).length })])
+    expect(await runSnapshotSync(limsProvider, e, db)).toEqual([])
     expect((await ownership(e)).states).toEqual([expect.objectContaining({ state: 'MD', provider: 'mga' })])
+  })
+
+  it('lets a row decide with no env var set', async () => {
+    await db.insert(schema.stateProviders).values({ state: 'DC', provider: 'lims', previousProvider: 'legiscan' })
+    const { env: e, limsQueue } = makeEnv()
 
     await runSync(e, db)
-    expect(legiscanStates()).toEqual(['DC'])
+    expect(legiscanStates()).toEqual(['MD'])
+    await runSnapshotSync(limsProvider, e, db)
+    expect(queuedIds(limsQueue)).toEqual(DC_BILLS())
+  })
+
+  it('lets a row decide when its old env var names a different state, and when it holds a different value', async () => {
+    await db.insert(schema.stateProviders).values({ state: 'DC', provider: 'lims', previousProvider: 'legiscan' })
+    const { env: e } = makeEnv({ LIMS_STATES: 'MD', MGA_STATES: '', LIS_STATES: 'not a state' })
+
+    await runSync(e, db)
+    expect(legiscanStates()).toEqual(['MD'])
+    expect((await ownership(e)).states).toEqual([expect.objectContaining({ state: 'DC', provider: 'lims' })])
+  })
+
+  it('reports ownership from the table alone through the admin read, with the old env vars set', async () => {
+    const { env: e } = makeEnv(OLD_VARS)
+    expect(await ownership(e)).toEqual({ defaultProvider: 'legiscan', states: [] })
+
+    await db.insert(schema.stateProviders).values({ state: 'MD', provider: 'mga', previousProvider: 'legiscan' })
+    expect((await claim(e, 'DC', { provider: 'lims' })).status).toBe(200)
+    expect(await ownership(e)).toEqual({
+      defaultProvider: 'legiscan',
+      states: [
+        expect.objectContaining({ state: 'DC', provider: 'lims', status: 'active', previousProvider: 'legiscan' }),
+        expect.objectContaining({ state: 'MD', provider: 'mga', status: 'active', previousProvider: 'legiscan' }),
+      ],
+    })
+  })
+
+  it('still lets a claim move a state an old env var names, refusing it while LegiScan has tracked bills there', async () => {
+    const { env: e } = makeEnv(OLD_VARS)
+    await trackLegiscanDcBill(9001, 'oca', 'keyword')
+    const refused = await claim(e, 'DC', { provider: 'lims' })
+    expect(refused.status).toBe(409)
+    expect(await rowCount()).toBe(0)
   })
 })
 

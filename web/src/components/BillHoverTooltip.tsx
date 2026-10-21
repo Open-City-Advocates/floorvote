@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { color, radius, fontSize, fontWeight } from '../styles/tokens'
 import { billDisplayTitle } from '../../../shared/billTitle'
-import { stripMarkdown } from './MarkdownSummary'
+import { MarkdownSummary } from './MarkdownSummary'
 import { CHIP_MINI, BILL_BADGE_MINI, PRIORITY_COLORS, TOOLTIP_CHROME } from '../lib/chipStyles'
 import { apiFetch } from '../lib/api'
 
@@ -19,8 +19,16 @@ export interface TooltipBill {
 
 const summaryCache = new Map<string, string | null>()
 
+// The tallest the card gets. It takes no pointer, so it can't scroll: a longer
+// summary is cut off and fades out.
+const MAX_HEIGHT = 450
+const FADE = 'linear-gradient(to bottom, black calc(100% - 36px), transparent)'
+
 export function BillHoverTooltip({ bill, cursor }: { bill: TooltipBill; cursor: { x: number; y: number } }) {
   const ref = useRef<HTMLDivElement>(null)
+  const summaryRef = useRef<HTMLDivElement>(null)
+  const [clipped, setClipped] = useState(false)
+  const maxHeight = Math.min(MAX_HEIGHT, window.innerHeight - 16)
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
   const [lazySummary, setLazySummary] = useState<string | null>(bill.summary ?? null)
   const c = bill.priority ? PRIORITY_COLORS[bill.priority] : undefined
@@ -37,36 +45,51 @@ export function BillHoverTooltip({ bill, cursor }: { bill: TooltipBill; cursor: 
     return () => { alive = false }
   }, [bill.billId, bill.summary])
 
+  // Fade only a summary that is cut off, so a short one's last line stays crisp.
+  // Checked again as the pointer moves too, since a late web font can change whether it fits.
+  useLayoutEffect(() => {
+    const el = summaryRef.current
+    setClipped(el !== null && el.scrollHeight > el.clientHeight)
+  }, [lazySummary, maxHeight, cursor.x, cursor.y])
+
   useLayoutEffect(() => {
     if (ref.current) {
       const w = ref.current.offsetWidth
       const h = ref.current.offsetHeight
       const left = Math.min(cursor.x + 16, window.innerWidth - w - 8)
-      const top = Math.min(cursor.y + 18, window.innerHeight - h - 8)
+      // Above the pointer, its bottom edge just over the cursor; below it only when there is no room above.
+      const above = cursor.y - 18 - h
+      const top = above >= 8 ? above : Math.min(cursor.y + 18, window.innerHeight - h - 8)
       setPos({ left: Math.max(8, left), top: Math.max(8, top) })
     }
-  }, [cursor.x, cursor.y])
+  }, [cursor.x, cursor.y, lazySummary, bill.title])
 
   return createPortal((
     <div ref={ref} style={{
       ...TOOLTIP_CHROME,
       borderRadius: radius.lg,
-      position: 'fixed', left: pos?.left ?? cursor.x + 16, top: pos?.top ?? cursor.y + 18,
+      position: 'fixed', left: pos?.left ?? cursor.x + 16, top: pos?.top ?? cursor.y - 18,
       visibility: pos === null ? 'hidden' : 'visible',
       zIndex: 1000,
-      padding: '10px 12px', maxWidth: 280, pointerEvents: 'none',
+      padding: '10px 12px', maxWidth: 360, maxHeight, boxSizing: 'border-box', pointerEvents: 'none',
+      display: 'flex', flexDirection: 'column',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 5, marginBottom: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 5, marginBottom: 6, flexShrink: 0 }}>
         <span style={BILL_BADGE_MINI}>{bill.state ? `${bill.state} ${bill.billNumber}` : bill.billNumber}</span>
         {c && (
           <span style={{ ...CHIP_MINI, background: c.fill, color: c.text }}>{priorityLabel}</span>
         )}
       </div>
-      <div style={{ fontSize: fontSize.sm, fontWeight: fontWeight.bold, color: color.textPrimary, lineHeight: 1.35, marginBottom: lazySummary ? 6 : 0, fontFamily: "'Source Serif 4', serif" }}>
+      <div style={{ fontSize: fontSize.sm, fontWeight: fontWeight.bold, color: color.textPrimary, lineHeight: 1.35, marginBottom: lazySummary ? 6 : 0, fontFamily: "'Source Serif 4', serif", flexShrink: 0 }}>
         {billDisplayTitle(bill)}
       </div>
       {lazySummary && (
-        <div style={{ fontSize: fontSize.sm, color: color.textSecondary, lineHeight: 1.5, fontFamily: "'Source Serif 4', serif" }}>{stripMarkdown(lazySummary)}</div>
+        <div
+          ref={summaryRef} data-hover-summary="" data-clipped={clipped ? '' : undefined}
+          style={{ minHeight: 0, overflow: 'hidden', ...(clipped ? { WebkitMaskImage: FADE, maskImage: FADE } : {}) }}
+        >
+          <MarkdownSummary fontSize={fontSize.sm} color={color.textSecondary}>{lazySummary}</MarkdownSummary>
+        </div>
       )}
     </div>
   ), document.body)

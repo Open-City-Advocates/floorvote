@@ -7,9 +7,13 @@ import { isModuleEnabled, getModuleSetting } from '../../lib/modules'
 import type { ModulesConfig } from '../../lib/modules'
 import { CARD } from '../../lib/cardStyle'
 import { CARD_TITLE } from '../../lib/textStyles'
+import { settingBox, SETTING_BOX_HEADER, SETTING_BOX_TITLE, SETTING_BOX_DESC } from '../../lib/settingBoxStyle'
 import { useSidebarRefresh } from '../../context/SidebarRefreshContext'
 import { useDemo } from '../../context/DemoContext'
-import { color, radius, fontSize, fontWeight } from '../../styles/tokens'
+import { useConfig } from '../../context/ConfigContext'
+import { usePageTitle } from '../../hooks/usePageTitle'
+import { normalizeOrgNoun, orgNotificationsLabel } from '../../lib/orgNoun'
+import { color, radius, fontSize } from '../../styles/tokens'
 
 interface AdminConfigResponse {
   modules?: ModulesConfig
@@ -31,6 +35,10 @@ const PAGE: React.CSSProperties = { padding: '24px 32px', maxWidth: 900, margin:
 export function Notifications() {
   const refreshSidebar = useSidebarRefresh()
   const { demoLocked } = useDemo()
+  const { config } = useConfig()
+  const orgNoun = normalizeOrgNoun(config?.orgNoun)
+  const pageName = orgNotificationsLabel(orgNoun)
+  usePageTitle(pageName)
   const [modules, setModules] = useState<ModulesConfig>({})
   const [mentionEmails, setMentionEmails] = useState(true)
   const [loading, setLoading] = useState(true)
@@ -39,7 +47,7 @@ export function Notifications() {
   // Turning a setting OFF stops email for everyone, so confirm first (browser confirm,
   // matching the rest of the app). Turning ON is benign, so it
   // applies immediately. Members can opt out individually of the digest, week-ahead,
-  // and reply emails, but not of mention emails, so the conversation switch's
+  // and reply notifications, but not of mention emails, so the conversation switch's
   // confirm leaves the opt-out sentence off.
   const confirmOff = (label: string, memberCanOptOut = true) =>
     window.confirm(`Turn off ${label} for everyone? This stops it for all members, not just you.${memberCanOptOut ? ' Members can also opt out individually on their Account page.' : ''}`)
@@ -118,21 +126,7 @@ export function Notifications() {
     border: `1px solid ${color.borderDefault}`,
     fontFamily: 'inherit',
   }
-  const settingBox: React.CSSProperties = {
-    padding: '12px 14px',
-    border: `1px solid ${color.borderDefault}`,
-    borderRadius: radius.lg,
-    background: color.white,
-    opacity: demoLocked ? 0.55 : 1,
-  }
-  const boxHeader: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 16,
-  }
-  const boxTitle: React.CSSProperties = { fontSize: fontSize.sm, fontWeight: fontWeight.bold, color: color.textPrimary }
-  const boxDesc: React.CSSProperties = { fontSize: fontSize.sm, color: color.textSlate, lineHeight: 1.5, marginTop: 2 }
+  const settingBoxStyle = settingBox(demoLocked)
 
   return (
     <div style={PAGE}>
@@ -140,24 +134,25 @@ export function Notifications() {
 
       {demoLocked && (
         <div style={{ fontSize: fontSize.sm, color: color.textSecondary, marginBottom: 16, padding: '8px 12px', background: color.surfaceSubtle, borderRadius: radius.md, border: `1px solid ${color.borderDefault}` }}>
-          This is a demo instance — settings are read-only.
+          This is a demo — settings are read-only.
         </div>
       )}
 
       <div style={{ ...CARD, padding: 24 }}>
-        <h1 style={CARD_TITLE}>Email notifications</h1>
+        <h1 style={CARD_TITLE}>{pageName}</h1>
         <div style={{ fontSize: fontSize.sm, color: color.textSecondary, lineHeight: 1.6, marginTop: 4 }}>
-          These are settings for <strong>everyone in the instance</strong>, not just you—turning one off stops that email for all members. To change your own delivery, use the email preferences on your <Link to="/profile" style={{ color: color.linkBlue }}>Account page</Link>.
+          These are settings for <strong>every member of your {orgNoun}</strong>, not just you—turning one off stops that email for all members. To change your own delivery, use the email preferences on your <Link to="/account" style={{ color: color.linkBlue }}>Account page</Link>.
         </div>
         {loading ? (
           <div style={{ marginTop: 16, color: color.textMuted, fontSize: fontSize.sm }}>Loading…</div>
         ) : (
+          // Same order as the Account page's Notifications card: the digests, then conversation emails last.
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 16 }}>
-            <div style={settingBox}>
-              <div style={boxHeader}>
+            <div style={settingBoxStyle}>
+              <div style={SETTING_BOX_HEADER}>
                 <div>
-                  <div style={boxTitle}>Send a digest of recent bill activity to members</div>
-                  <div style={boxDesc}>
+                  <div style={SETTING_BOX_TITLE}>Send a digest of recent bill activity to members</div>
+                  <div style={SETTING_BOX_DESC}>
                     Email members a daily or weekly summary of recent activity on priority bills. Admins and owners also get a list of new bills matching your keywords awaiting a priority decision. Members can opt out individually on their Account page.
                   </div>
                 </div>
@@ -211,11 +206,11 @@ export function Notifications() {
               </div>
             </div>
 
-            <div style={settingBox}>
-              <div style={boxHeader}>
+            <div style={settingBoxStyle}>
+              <div style={SETTING_BOX_HEADER}>
                 <div>
-                  <div style={boxTitle}>Send a digest of upcoming hearings and events to members</div>
-                  <div style={boxDesc}>
+                  <div style={SETTING_BOX_TITLE}>Send a digest of upcoming hearings and events to members</div>
+                  <div style={SETTING_BOX_DESC}>
                     Email members a weekly preview of upcoming hearings and events. Members can opt out individually on their Account page.
                   </div>
                 </div>
@@ -245,12 +240,12 @@ export function Notifications() {
               </div>
             </div>
 
-            <div style={settingBox}>
-              <div style={boxHeader}>
+            <div style={settingBoxStyle}>
+              <div style={SETTING_BOX_HEADER}>
                 <div>
-                  <div style={boxTitle}>Send conversation emails to members</div>
-                  <div style={boxDesc}>
-                    Covers mentions of a member, a role, @admins, or @everyone in comments, and replies on bills members have commented on, for the whole instance. Members can turn off their own reply emails but not mention emails. In-app notifications are not affected.
+                  <div style={SETTING_BOX_TITLE}>Send conversation emails to members</div>
+                  <div style={SETTING_BOX_DESC}>
+                    Covers mentions of a member, a role, @admins, or @everyone in comments, and replies on bills members have commented on, for your whole {orgNoun}. Members can turn off their own reply notifications, in the app and by email, but not mention emails. This switch does not affect in-app notifications.
                   </div>
                 </div>
                 <IosToggle

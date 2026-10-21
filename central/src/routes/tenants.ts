@@ -1,10 +1,11 @@
 import { Hono, type Context } from 'hono'
 import { drizzle } from 'drizzle-orm/d1'
+import { groupByIngestQueue, ingestQueueForBill } from '../lib/providerRouting'
 import { eq, and, isNull, isNotNull, inArray, asc, desc, count, exists, sql } from 'drizzle-orm'
 import { matchesUnion, billMatchText } from '../lib/keywords'
 import * as schema from '../db/schema'
 import { secretsMatch } from '../lib/auth'
-import { nowDb } from '../lib/dbTime'
+import { dbTimeAgo, nowDb } from '../lib/dbTime'
 import type { BillMessage, Db, Env } from '../types'
 import { calendarBlockEvents, calendarKind, type CalendarRow } from '../lib/billCalendar'
 import { bodyEventDetails, bodyEventOptions, calendarCoverage, type BodyEventDetail, type BodyEventOptions } from '../lib/bodyEvents'
@@ -20,10 +21,14 @@ import { ensureQueue, resolveQueueId, queuesRestEnabled } from '../lib/queuesRes
 import { resolveTenantRpc } from '../lib/tenantRpc'
 import { mergeCoverage } from '../lib/coverage'
 import { isSafeTenantApiUrl } from '../lib/safeUrl'
-import { guardCallerTenantParam, guardCallerTenantBody } from '../lib/callerTenant'
-import { toHandle } from '../lib/billHandle'
+import { guardCallerTenantParam, guardCallerTenantBody, CALLER_TENANT_HEADER } from '../lib/callerTenant'
+import { HANDLE_FORM_HEADER, readsNeutralHandles, toHandle, toTenantHandle } from '../lib/billHandle'
+import { sendsNeutralHandles } from '../lib/tenantHandles'
+import { refreshRequestedBills } from '../lib/fetchRequests'
 
 const REPROCESS_LIMIT = 1000
+// Rows per bill_tenants upsert in promote-bills: 3 bound parameters each, under D1's limit of 100.
+const PROMOTE_UPSERT_CHUNK = 30
 
 export const tenantsRoutes = new Hono<{ Bindings: Env }>()
 
@@ -359,13 +364,16 @@ tenantsRoutes.post('/seed-session/:tenantId', async (c) => {
   // Keyword-matching bills → ingestor with skipFetch (downloads text to R2, then notifies tenant)
   // Sequential sends to avoid queue rate limits. A seed's matches are bulk, so
   // they stay out of the instance's feed and digest (MatchProvenance).
+  const seedGroups = await groupByIngestQueue(keywordMatchIds, c.env, db)
   try {
-    for (let i = 0; i < keywordMatchIds.length; i += 100) {
-      await c.env.INGESTOR_QUEUE.sendBatch(
-        keywordMatchIds.slice(i, i + 100).map(billId => ({
-          body: { billId, skipFetch: true, forceMetadata: true, matchProvenance: { [tenantId]: 'bulk' } } satisfies BillMessage,
-        }))
-      )
+    for (const { queue, billIds } of seedGroups) {
+      for (let i = 0; i < billIds.length; i += 100) {
+        await queue.sendBatch(
+          billIds.slice(i, i + 100).map(billId => ({
+            body: { billId, skipFetch: true, forceMetadata: true, matchProvenance: { [tenantId]: 'bulk' } } satisfies BillMessage,
+          }))
+        )
+      }
     }
   } catch (err: any) {
     console.error('Error queuing to ingestor:', err)
@@ -432,18 +440,20 @@ tenantsRoutes.post('/redownload-texts/:tenantId', async (c) => {
     .all()
 
   let queued = 0
-  for (let i = 0; i < matching.length; i += 100) {
-    if (i > 0) await new Promise(r => setTimeout(r, 500))
-    try {
-      await c.env.INGESTOR_QUEUE.sendBatch(
-        matching.slice(i, i + 100).map(r => ({
-          body: { billId: r.billId, skipFetch: true, forceMetadata: false },
-        }))
-      )
-      queued += Math.min(100, matching.length - i)
-    } catch (err) {
-      console.error(`[redownload-texts] sendBatch failed at offset ${i}:`, err)
-      return c.json({ ok: false, queued, total: matching.length, error: String(err) }, 500)
+  for (const { queue, billIds } of await groupByIngestQueue(matching.map(r => r.billId), c.env, db)) {
+    for (let i = 0; i < billIds.length; i += 100) {
+      if (i > 0) await new Promise(r => setTimeout(r, 500))
+      try {
+        await queue.sendBatch(
+          billIds.slice(i, i + 100).map(billId => ({
+            body: { billId, skipFetch: true, forceMetadata: false },
+          }))
+        )
+        queued += Math.min(100, billIds.length - i)
+      } catch (err) {
+        console.error(`[redownload-texts] sendBatch failed after ${queued} bills:`, err)
+        return c.json({ ok: false, queued, total: matching.length, error: String(err) }, 500)
+      }
     }
   }
 
@@ -472,7 +482,8 @@ tenantsRoutes.post('/promote-bill/:tenantId/:billId', guardCallerTenantParam(), 
       set: { matchType: 'manual' },
     })
 
-  await c.env.INGESTOR_QUEUE.send({ billId, forceAI: true, ...(interactive ? { interactive } : {}) })
+  const queue = await ingestQueueForBill(billId, c.env, db)
+  await queue.send({ billId, forceAI: true, ...(interactive ? { interactive } : {}) })
 
   return c.json({ ok: true, tenantId, billId, matchType: 'manual' })
 })
@@ -489,23 +500,34 @@ tenantsRoutes.post('/promote-bills/:tenantId', guardCallerTenantParam(), async (
   const tenantId = c.req.param('tenantId')
   const body = await c.req.json<{ billIds?: unknown }>().catch(() => ({} as { billIds?: unknown }))
   if (body.billIds !== undefined && !Array.isArray(body.billIds)) return c.json({ error: 'billIds must be a list' }, 400)
-  const billIds = (body.billIds ?? []).filter((n: unknown): n is number => Number.isInteger(n) && (n as number) > 0)
-  if (billIds.length > REPROCESS_LIMIT) {
+  const requested = (body.billIds ?? []).filter((n: unknown): n is number => Number.isInteger(n) && (n as number) > 0)
+  if (requested.length > REPROCESS_LIMIT) {
     return c.json({ error: `too many billIds (max ${REPROCESS_LIMIT})` }, 400)
   }
+  const billIds = [...new Set(requested)]
   if (billIds.length === 0) return c.json({ ok: true, tenantId, promoted: 0 })
 
-  await db.insert(schema.billTenants)
-    .values(billIds.map(billId => ({ billId, tenantId, matchType: 'manual' as const })))
-    .onConflictDoUpdate({
-      target: [schema.billTenants.billId, schema.billTenants.tenantId],
-      set: { matchType: 'manual' },
-    })
-
-  for (let i = 0; i < billIds.length; i += 100) {
-    await c.env.INGESTOR_QUEUE.sendBatch(
-      billIds.slice(i, i + 100).map(billId => ({ body: { billId, forceAI: true } }))
+  // D1 binds at most 100 parameters per statement and each row binds 3, so one statement
+  // fails above 33 rows. Chunk the upsert and run the chunks in one atomic batch.
+  const upserts = []
+  for (let i = 0; i < billIds.length; i += PROMOTE_UPSERT_CHUNK) {
+    upserts.push(
+      db.insert(schema.billTenants)
+        .values(billIds.slice(i, i + PROMOTE_UPSERT_CHUNK).map(billId => ({ billId, tenantId, matchType: 'manual' as const })))
+        .onConflictDoUpdate({
+          target: [schema.billTenants.billId, schema.billTenants.tenantId],
+          set: { matchType: 'manual' },
+        }),
     )
+  }
+  await db.batch(upserts as [typeof upserts[number], ...typeof upserts])
+
+  for (const group of await groupByIngestQueue(billIds, c.env, db)) {
+    for (let i = 0; i < group.billIds.length; i += 100) {
+      await group.queue.sendBatch(
+        group.billIds.slice(i, i + 100).map(billId => ({ body: { billId, forceAI: true } }))
+      )
+    }
   }
 
   return c.json({ ok: true, tenantId, promoted: billIds.length })
@@ -529,8 +551,15 @@ tenantsRoutes.post('/promote-bills/:tenantId', guardCallerTenantParam(), async (
 //   two tenants asking for each other's bills end after one round, because the first fetch's ingest
 //   stamps texts_fetched_at.
 // - A bill whose texts central already holds is queued with skipFetch, which needs no
-//   provider call. Only a bill with no texts costs a getBill against the shared monthly quota.
+//   provider call, unless the bill's change hash has moved past its last fetch, when the
+//   provider may have a newer text. Then it is fetched, a LegiScan bill within the budget
+//   untracked bills' fetches share and once per change (lib/stubRefresh.ts), and sent on with
+//   the texts central holds when it can't be. A bill with no texts costs a getBill against the
+//   shared monthly quota.
 // The count is capped at REPROCESS_LIMIT, as promote-bills is.
+//
+// Each ask is stamped on the asking instance's link, so the sync keeps fetching the bill's new
+// texts while the ask is recent (lib/fetchRequests.ts).
 const FETCH_COOLDOWN_HOURS = 24
 const REQUEST_COOLDOWN_HOURS = 1
 
@@ -544,18 +573,34 @@ tenantsRoutes.post('/fetch-bills/:tenantId', guardCallerTenantParam(), async (c)
     return c.json({ error: `too many billIds (max ${REPROCESS_LIMIT})` }, 400)
   }
 
-  const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString().slice(0, 19).replace('T', ' ')
+  const hoursAgo = (h: number) => dbTimeAgo(h * 3600_000)
   const fetchedCutoff = hoursAgo(FETCH_COOLDOWN_HOURS)
   const requestedCutoff = hoursAgo(REQUEST_COOLDOWN_HOURS)
+  const now = nowDb()
   const due: number[] = []
   const held = new Set<number>()
+  /** Bills whose change hash has moved past their last fetch: LegiScan's, whose fetches are metered, and the rest. */
+  const behindMetered = new Set<number>()
+  const behindUnmetered = new Set<number>()
   for (let i = 0; i < requested.length; i += 90) {
     const part = requested.slice(i, i + 90)
-    const rows = await db.select({ billId: schema.billTenants.billId, fetchedAt: schema.bills.textsFetchedAt, requestedAt: schema.bills.textsRequestedAt })
+    const rows = await db.select({
+      billId: schema.billTenants.billId, fetchedAt: schema.bills.textsFetchedAt, requestedAt: schema.bills.textsRequestedAt,
+      provider: schema.bills.provider, changeHash: schema.bills.changeHash, detailHash: schema.bills.detailHash,
+    })
       .from(schema.billTenants)
       .leftJoin(schema.bills, eq(schema.bills.billId, schema.billTenants.billId))
       .where(and(eq(schema.billTenants.tenantId, tenantId), inArray(schema.billTenants.billId, part)))
       .all()
+    if (rows.length > 0) {
+      await db.update(schema.billTenants).set({ fetchRequestedAt: now })
+        .where(and(eq(schema.billTenants.tenantId, tenantId), inArray(schema.billTenants.billId, rows.map(r => r.billId))))
+    }
+    for (const r of rows) {
+      if (r.changeHash !== null && r.detailHash !== r.changeHash) {
+        (r.provider === DEFAULT_PROVIDER_ID ? behindMetered : behindUnmetered).add(r.billId)
+      }
+    }
     due.push(...rows.filter(r => (!r.fetchedAt || r.fetchedAt <= fetchedCutoff) && (!r.requestedAt || r.requestedAt <= requestedCutoff)).map(r => r.billId))
     const withTexts = await db.selectDistinct({ billId: schema.billTexts.billId }).from(schema.billTexts)
       .where(inArray(schema.billTexts.billId, part)).all()
@@ -563,15 +608,52 @@ tenantsRoutes.post('/fetch-bills/:tenantId', guardCallerTenantParam(), async (c)
   }
   due.sort((a, b) => a - b)
 
+  // A held LegiScan bill that is behind is fetched within the untracked-bill budget. Each claim is stamped as it's queued.
+  const refreshed = await refreshRequestedBills(db, c.env.INGESTOR_QUEUE, due.filter(billId => held.has(billId) && behindMetered.has(billId)))
+  if (refreshed.size > 0) await db.update(schema.bills).set({ textsRequestedAt: now }).where(inArray(schema.bills.billId, [...refreshed]))
+  const skipFetch = (billId: number) => held.has(billId) && !behindUnmetered.has(billId)
+
   // Each batch is stamped only once its send succeeds, so a queue outage blocks no bill from the next ask.
-  const now = nowDb()
-  for (let i = 0; i < due.length; i += 90) {
-    const batch = due.slice(i, i + 90)
-    await c.env.INGESTOR_QUEUE.sendBatch(batch.map(billId => ({ body: held.has(billId) ? { billId, skipFetch: true } : { billId } })))
-    await db.update(schema.bills).set({ textsRequestedAt: now }).where(inArray(schema.bills.billId, batch))
+  for (const { queue, billIds } of await groupByIngestQueue(due.filter(billId => !refreshed.has(billId)), c.env, db)) {
+    for (let i = 0; i < billIds.length; i += 90) {
+      const batch = billIds.slice(i, i + 90)
+      await queue.sendBatch(batch.map(billId => ({ body: skipFetch(billId) ? { billId, skipFetch: true } : { billId } })))
+      await db.update(schema.bills).set({ textsRequestedAt: now }).where(inArray(schema.bills.billId, batch))
+    }
   }
 
   return c.json({ ok: true, tenantId, queued: due.length })
+})
+
+// POST /tenants/renew-fetch-requests/:tenantId — keep the tenant's fetch-bills requests alive.
+// Body: { billIds: number[] }. An instance calls it, at most weekly per bill, for a pulled
+// companion that leads a group it tracks a bill in (api/src/lib/companionAnalysis.ts), so the
+// sync keeps ingesting the bill's new texts while it leads (lib/fetchRequests.ts). It stamps
+// fetch_requested_at on the tenant's existing links to the listed bills, and queues nothing for
+// a bill whose detail is current, so a renewal costs no provider call and no delivery. A LegiScan
+// bill whose change hash moved while no request was live (one pulled before #801, or whose
+// request lapsed) is fetched once, within the budget untracked bills' fetches share.
+tenantsRoutes.post('/renew-fetch-requests/:tenantId', guardCallerTenantParam(), async (c) => {
+  const db = drizzle(c.env.DB, { schema })
+  const tenantId = c.req.param('tenantId')
+  const body = await c.req.json<{ billIds?: unknown }>().catch(() => ({} as { billIds?: unknown }))
+  if (body.billIds !== undefined && !Array.isArray(body.billIds)) return c.json({ error: 'billIds must be a list' }, 400)
+  const requested = [...new Set((body.billIds ?? []).filter((n: unknown): n is number => Number.isInteger(n) && (n as number) > 0))]
+  if (requested.length > REPROCESS_LIMIT) {
+    return c.json({ error: `too many billIds (max ${REPROCESS_LIMIT})` }, 400)
+  }
+
+  const now = nowDb()
+  const linked: number[] = []
+  for (let i = 0; i < requested.length; i += 90) {
+    const part = requested.slice(i, i + 90)
+    const rows = await db.update(schema.billTenants).set({ fetchRequestedAt: now })
+      .where(and(eq(schema.billTenants.tenantId, tenantId), inArray(schema.billTenants.billId, part)))
+      .returning({ billId: schema.billTenants.billId })
+    linked.push(...rows.map(r => r.billId))
+  }
+  const refreshed = await refreshRequestedBills(db, c.env.INGESTOR_QUEUE, linked)
+  return c.json({ ok: true, tenantId, renewed: linked.length, fetched: refreshed.size })
 })
 
 tenantsRoutes.get('/:tenantId/upcoming-hearings', guardCallerTenantParam(), async (c) => {
@@ -656,12 +738,14 @@ tenantsRoutes.get('/:tenantId/body-events', guardCallerTenantParam(), async (c) 
 
   const db = drizzle(c.env.DB, { schema })
   const { owners, capabilities, coverage } = await tenantCapabilities(db, tenantId)
+  // Agenda bills and covered entries in the form the instance reads (#305).
+  const neutral = readsNeutralHandles(c.req.header(HANDLE_FORM_HEADER))
 
   const events: BodyEventDetail[] = []
   for (const [state, caps] of Object.entries(capabilities)) {
     if (!caps.bodyEvents) continue
     const provider = findProvider(owners.get(state))
-    if (provider) events.push(...await bodyEventDetails(db, provider, state, from, to))
+    if (provider) events.push(...await bodyEventDetails(db, provider, state, from, to, id => toTenantHandle(id, neutral)))
   }
   // null, not a missing key, when central has no usable dashboard address: the instance forgets the
   // address on null, and keeps what it has on a missing key (an older central).
@@ -713,8 +797,13 @@ tenantsRoutes.post('/reprocess/:tenantId', guardCallerTenantParam(), async (c) =
 
   // Optional targeted filter: only these LegiScan bill_ids, each delivered WITH a
   // calendar block built from stored bill_calendar (the priority-bill backfill path).
-  const body = await c.req.json().catch(() => ({})) as { billIds?: number[]; offset?: number; limit?: number }
+  const body = await c.req.json().catch(() => ({})) as { billIds?: number[]; offset?: number; limit?: number; operatorAi?: boolean }
+  // operatorAi lifts a demo tenant's no-AI gate for one analysis. A demo's visitors share an
+  // admin session that reaches central only through its binding, which always carries
+  // x-caller-tenant, so only a direct operator call (the admin secret, no header) may set it.
+  // Only a targeted reprocess takes it, so one call can't run AI on a whole tenant.
   const targeted = Array.isArray(body.billIds)
+  const operatorAi = body.operatorAi === true && targeted && !c.req.header(CALLER_TENANT_HEADER)
   const offset = typeof body.offset === 'number' && body.offset >= 0 ? Math.floor(body.offset) : 0
   const pageLimit = typeof body.limit === 'number' && body.limit > 0
     ? Math.min(Math.floor(body.limit), REPROCESS_LIMIT)
@@ -764,7 +853,7 @@ tenantsRoutes.post('/reprocess/:tenantId', guardCallerTenantParam(), async (c) =
     }
 
     const bodies = await Promise.all(chunk.map(async r => {
-      const msg: Record<string, unknown> = { tenantId, billId: toHandle(r.billId), forceMetadata: true }
+      const msg: Record<string, unknown> = { tenantId, billId: toHandle(r.billId), forceMetadata: true, ...(operatorAi ? { operatorAi: true, forceAI: true } : {}) }
       const cal = calByBillId.get(r.billId)
       if (targeted && cal) {
         const provider = findProvider(cal.provider) ?? getProvider(DEFAULT_PROVIDER_ID)
@@ -939,7 +1028,8 @@ tenantsRoutes.post('/:tenantId/verify-delivery', async (c) => {
   const billId = await pickVerificationBill(db, parseCoverage(row))
   if (billId === null) return c.json({ error: 'central has no stored bill to send' }, 404)
 
-  const handle = toHandle(billId)
+  // The form the instance reads (#305), which deliverToTenant sends it in too.
+  const handle = toTenantHandle(billId, await sendsNeutralHandles(c.env, tenantId))
   const via = await deliverToTenant(c.env, tenantId, row.queueId ?? null, { tenantId, billId: handle, probe: nonce })
   if (via === 'dropped') {
     return c.json({ error: `no delivery path for tenant ${tenantId} (no queue binding or queue_id)` }, 409)
@@ -963,7 +1053,7 @@ tenantsRoutes.post('/:tenantId/verify-ai', async (c) => {
   const billId = await pickVerificationBill(db, parseCoverage(row))
   if (billId === null) return c.json({ error: 'central has no stored bill to analyze' }, 404)
   try {
-    return c.json(await rpc.verifyAi(toHandle(billId)))
+    return c.json(await rpc.verifyAi(toTenantHandle(billId, await sendsNeutralHandles(c.env, tenantId))))
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : 'tenant call failed' }, 502)
   }

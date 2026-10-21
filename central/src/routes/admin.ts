@@ -13,7 +13,7 @@ import { SUPERADMIN_TOKEN_TTL_SEC } from '../lib/superadminJwt'
 import { runSync } from '../cron/sync'
 import { importProviderMeasures, isSnapshotProvider, runSnapshotSync } from '../cron/sync-snapshots'
 import { runBodyEventSync } from '../cron/body-events'
-import { ingestQueueFor, providerConfigured } from '../lib/providerRouting'
+import { groupByIngestQueue, ingestQueueForBill, ingestQueueForId, providerConfigured } from '../lib/providerRouting'
 import { claimState, listStateOwnership, loadStateOwners, ownerOf } from '../lib/stateProviders'
 import { applyCutover, applyUndo, CutoverError, cutoverReport, planCutover, planUndo, undoReport } from '../lib/cutover'
 import { runAnomalyWatch } from '../lib/anomalyWatch'
@@ -140,7 +140,7 @@ adminRoutes.post('/state-providers/:state/cutover', async (c) => {
       ok: true, cutover: id, state, from: plan.from.id, to: plan.to.id,
       bills: { matched: report.bills.matched, tracked: report.bills.tracked,
         unmatched: { old: report.bills.unmatched.old.length, new: report.bills.unmatched.new.length } },
-      people: { matched: report.people.matched, weak: report.people.weak },
+      people: { matched: report.people.matched, weak: report.people.weak, bioguide: report.people.bioguide },
       sync,
     })
   } catch (err) {
@@ -192,7 +192,7 @@ adminRoutes.post('/lims-import', async (c) => {
   const db = drizzle(c.env.DB, { schema })
   // The sync links bills only in states their provider owns, so an import
   // into a state LIMS doesn't own would leave its bills half linked.
-  const owners = await loadStateOwners(c.env, db)
+  const owners = await loadStateOwners(db)
   const unowned = (getProvider('lims').states ?? []).filter(state => ownerOf(owners, state) !== 'lims')
   if (unowned.length > 0) {
     return c.json({ error: `lims doesn't own ${unowned.join(', ')}. Claim it first (POST /api/admin/state-providers/:state).` }, 409)
@@ -460,11 +460,13 @@ adminRoutes.post('/sync-keywords/:tenantId', guardCallerTenantParam(), async (c)
   // download text, then notify the tenant with forceAI so the tenant runs AI on full text.
   // A keyword re-run's matches are bulk: bills the tenant already had, newly
   // matched by a configuration change, stay out of its feed and digest.
-  for (let i = 0; i < newlyMatched.length; i += 100) {
-    const batch = newlyMatched.slice(i, i + 100).map(billId => ({
-      body: { billId, forceAI: true, matchProvenance: { [tenantId]: 'bulk' } } satisfies BillMessage,
-    }))
-    await c.env.INGESTOR_QUEUE.sendBatch(batch)
+  for (const group of await groupByIngestQueue(newlyMatched, c.env, db)) {
+    for (let i = 0; i < group.billIds.length; i += 100) {
+      const batch = group.billIds.slice(i, i + 100).map(billId => ({
+        body: { billId, forceAI: true, matchProvenance: { [tenantId]: 'bulk' } } satisfies BillMessage,
+      }))
+      await group.queue.sendBatch(batch)
+    }
   }
 
   return c.json({
@@ -478,9 +480,11 @@ adminRoutes.post('/sync-keywords/:tenantId', guardCallerTenantParam(), async (c)
 
 // POST /admin/fetch-missing-texts/:tenantId
 // Finds all keyword-matched bills for a tenant that have no R2 text yet and
-// queues each to the ingestor (skipFetch omitted → calls getBill()).
-// Uses forceMetadata:true so the post-download tenant notification passes
-// through DEMO_MODE queue gates.  ~1 LegiScan API call per bill.
+// queues each to the ingestor. A bill whose stored detail is current goes with
+// skipFetch: its texts download from their state_links with no getBill() call,
+// so this works on a central with no provider key. The rest fetch the bill
+// first, ~1 provider call each. Uses forceMetadata:true so the post-download
+// tenant notification passes through DEMO_MODE queue gates.
 adminRoutes.post('/fetch-missing-texts/:tenantId', async (c) => {
   const tenantId = c.req.param('tenantId')
   const db = drizzle(c.env.DB, { schema })
@@ -493,8 +497,11 @@ adminRoutes.post('/fetch-missing-texts/:tenantId', async (c) => {
   const allBills = c.req.query('allBills') === 'true'
 
   // Bills for this tenant that have no bill_texts row with a non-null r2_key
-  const rows = await db.select({ billId: schema.billTenants.billId })
+  const rows = await db.select({
+    billId: schema.billTenants.billId, changeHash: bills.changeHash, detailHash: bills.detailHash,
+  })
     .from(schema.billTenants)
+    .leftJoin(bills, eq(bills.billId, schema.billTenants.billId))
     .leftJoin(
       schema.billTexts,
       and(eq(schema.billTexts.billId, schema.billTenants.billId), isNotNull(schema.billTexts.r2Key)),
@@ -506,18 +513,23 @@ adminRoutes.post('/fetch-missing-texts/:tenantId', async (c) => {
     ))
     .all()
 
+  // Detail fetched at the bill's current change: its texts rows are current too.
+  const textOnlyIds = new Set(rows.filter(r => r.detailHash !== null && r.detailHash === r.changeHash).map(r => r.billId))
+
   let queued = 0
-  for (let i = 0; i < rows.length; i += 100) {
-    await c.env.INGESTOR_QUEUE.sendBatch(
-      rows.slice(i, i + 100).map(r => ({
-        body: { billId: r.billId, forceMetadata: true } as IngestorMessage,
-      }))
-    )
-    if (i + 100 < rows.length) await new Promise(res => setTimeout(res, 200))
-    queued += Math.min(100, rows.length - i)
+  for (const { queue, billIds } of await groupByIngestQueue(rows.map(r => r.billId), c.env, db)) {
+    for (let i = 0; i < billIds.length; i += 100) {
+      await queue.sendBatch(
+        billIds.slice(i, i + 100).map(billId => ({
+          body: (textOnlyIds.has(billId) ? { billId, forceMetadata: true, skipFetch: true } : { billId, forceMetadata: true }) as IngestorMessage,
+        }))
+      )
+      queued += Math.min(100, billIds.length - i)
+      if (i + 100 < billIds.length) await new Promise(res => setTimeout(res, 200))
+    }
   }
 
-  return c.json({ ok: true, tenantId, queued, total: rows.length })
+  return c.json({ ok: true, tenantId, queued, total: rows.length, textOnly: textOnlyIds.size })
 })
 
 // POST /admin/refetch-fragment-texts — re-download every stored document whose
@@ -546,14 +558,16 @@ adminRoutes.post('/refetch-fragment-texts', async (c) => {
   if (dryRun) return c.json({ ok: true, rows: rows.length, bills: billIds.length, queued: 0, dryRun: true })
 
   let queued = 0
-  for (let i = 0; i < billIds.length; i += 100) {
-    await c.env.INGESTOR_QUEUE.sendBatch(
-      billIds.slice(i, i + 100).map(billId => ({
-        body: { billId, forceTextRefetch: true, skipFetch: true } as IngestorMessage,
-      }))
-    )
-    if (i + 100 < billIds.length) await new Promise(res => setTimeout(res, 200))
-    queued += Math.min(100, billIds.length - i)
+  for (const group of await groupByIngestQueue(billIds, c.env, db)) {
+    for (let i = 0; i < group.billIds.length; i += 100) {
+      await group.queue.sendBatch(
+        group.billIds.slice(i, i + 100).map(billId => ({
+          body: { billId, forceTextRefetch: true, skipFetch: true } as IngestorMessage,
+        }))
+      )
+      queued += Math.min(100, group.billIds.length - i)
+      if (i + 100 < group.billIds.length) await new Promise(res => setTimeout(res, 200))
+    }
   }
 
   return c.json({ ok: true, rows: rows.length, bills: billIds.length, queued, dryRun: false })
@@ -855,7 +869,22 @@ adminRoutes.post('/reingest-bill/:billId', async (c) => {
   const billId = parseInt(c.req.param('billId'), 10)
   if (isNaN(billId)) return c.json({ error: 'invalid billId' }, 400)
 
-  await c.env.INGESTOR_QUEUE.send({ billId } as IngestorMessage)
+  const queue = await ingestQueueForBill(billId, c.env, drizzle(c.env.DB, { schema }))
+  await queue.send({ billId } as IngestorMessage)
+  return c.json({ ok: true, billId, queued: true })
+})
+
+// Refetch one bill's stored texts, past the retry cap on a changed text hash.
+// Unlike /refetch-fragment-texts this does not set skipFetch: the ingest reads
+// the bill's current hashes from its provider, so a document that gave up on a
+// new hash takes that hash and its bytes together, or keeps the old pair if the
+// fetch fails again. One provider call plus one download per stored document.
+adminRoutes.post('/refetch-bill-text/:billId', async (c) => {
+  const billId = parseInt(c.req.param('billId'), 10)
+  if (isNaN(billId)) return c.json({ error: 'invalid billId' }, 400)
+
+  const queue = await ingestQueueForBill(billId, c.env, drizzle(c.env.DB, { schema }))
+  await queue.send({ billId, forceTextRefetch: true } as IngestorMessage)
   return c.json({ ok: true, billId, queued: true })
 })
 
@@ -906,7 +935,7 @@ adminRoutes.post('/reingest-tenant/:tenantId', async (c) => {
     })
   }
 
-  const queue = provider ? ingestQueueFor(provider, c.env) : c.env.INGESTOR_QUEUE
+  const queue = ingestQueueForId(providerId, c.env)
   let queued = 0
   const BATCH = 100
   for (let i = 0; i < rows.length; i += BATCH) {

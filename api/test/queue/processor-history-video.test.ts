@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { eq } from 'drizzle-orm'
-import { resetDb, applyMigrations, seedBill } from '../helpers'
+import { clearDb, seedBill } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { processCentralNotification } from '../../src/queue/processor'
 import { bills } from '../../src/db/schema'
@@ -10,7 +10,7 @@ import type { TenantQueueMessage } from '../../src/types'
 // A history entry's meeting video (#294: DC's Council publishes hearing,
 // mark-up, and reading videos), from central's bill to the history the bill
 // page reads.
-const BILL_ID = 'legiscan:1012600400'
+const BILL_ID = 'bill:1012600400'
 const HEARING_VIDEO = 'http://video.oct.dc.gov/VOD/DCC/2025_11/11_13_25_Youth_Judici.html'
 
 function centralBill(actions: object[]) {
@@ -37,8 +37,7 @@ async function history(actions: object[], flags: Partial<TenantQueueMessage>) {
 
 describe('a meeting video on a history entry', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
   })
 
   afterEach(() => {

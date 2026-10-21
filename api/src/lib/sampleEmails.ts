@@ -1,14 +1,14 @@
 // Sample email payloads + a targeted sender, for QA of the email templates.
 // Renders each email type from representative fixed data and sends to ONE
-// address via the real send path (sendEmail / sendMagicLink) — used by the
+// address via the real send path (the shared sender) — used by the
 // admin-gated POST /api/internal/send-sample-email endpoint and by the
 // scripts/render-*-sample.ts preview generators (so the committed samples and
 // the emails QA receives stay identical).
 
 import type { AppDb, Env } from '../types'
-import { sendEmail, renderMagicLinkEmail } from './email'
+import { senderFor, renderMagicLinkEmail } from './email'
 import { renderWeekAheadEmail, type WeekAheadDay } from './weekAheadEmail'
-import { renderDigestEmail, type DigestEvent, type NewMatchDigestItem } from './digestEmail'
+import { renderDigestEmail, digestSubject, countUpdatedBills, type DigestEvent, type NewMatchDigestItem } from './digestEmail'
 import { renderMentionEmail } from './mentions'
 import { renderReplyEmail, muteBillPageUrl } from './replies'
 import { renderInviteBounceEmail, type BouncedAddress } from './inviteBounceEmail'
@@ -53,18 +53,21 @@ export const SAMPLE_DIGEST_EVENTS: DigestEvent[] = [
   // digest QA email and the snapshot both cover a truncated comment row.
   { type: 'comment_added', metadata: j({ preview: 'Free IDs sound simple, but our office would need a second workstation and staff coverage to issue them during peak weeks' }), createdAt: '2026-06-10 17:20:00', billId: 'b1', billNumber: 'HB 1234', billTitle: 'Voter ID Act', billState: 'RI', billSession: '2026', priority: 'high', summary: null, userName: 'Marguerite Okonkwo' },
   { type: 'position_set', metadata: j({ position: 'Oppose' }), createdAt: '2026-06-10 11:15:00', billId: 'b2', billNumber: 'S 0456', billTitle: 'Mail Ballot Drop Boxes', billState: 'RI', billSession: '2026', priority: 'medium', summary: 'Authorizes secure 24-hour drop boxes in every municipality and sets chain-of-custody rules.', userName: 'Dana Reed' },
+  // A companion group: identical bills in both chambers are one card, each event labeled by its bill.
+  { type: 'bill_updated', metadata: j({ changes: [{ changeType: 'action_added', newValue: 'Passed House committee' }] }), createdAt: '2026-06-10 10:05:00', billId: 'b8', billNumber: 'HB 1240', billTitle: 'Early Voting Site Requirements', billState: 'RI', billSession: '2026', priority: 'high', summary: 'Sets minimum hours and staffing for early voting sites in every county.', userName: null, billGroupKey: 'b8' },
+  { type: 'bill_updated', metadata: j({ changes: [{ changeType: 'action_added', newValue: 'Reported from committee' }] }), createdAt: '2026-06-10 13:40:00', billId: 'b9', billNumber: 'S 0733', billTitle: 'Early Voting Site Requirements', billState: 'RI', billSession: '2026', priority: 'high', summary: null, userName: null, billGroupKey: 'b8' },
 ]
 
-// New keyword matches awaiting triage — the admin-only digest section. Relevance
-// scores are on the real 1-10 scale.
+// New matches awaiting triage, the digest's second section. Relevance scores are
+// on the real 1-10 scale. The last one has no summary yet, so its card has no preview.
 export const SAMPLE_NEW_MATCHES: NewMatchDigestItem[] = [
-  { billId: 'b5', billNumber: 'HB 1602', billTitle: 'Automatic voter registration at the DMV', billState: 'RI', billSession: '2026', relevanceScore: 9 },
-  { billId: 'b6', billNumber: 'S 0712', billTitle: 'Ranked-choice voting for municipal elections', billState: 'RI', billSession: '2026', relevanceScore: 7 },
+  { billId: 'b5', billNumber: 'HB 1602', billTitle: 'Automatic voter registration at the DMV', billState: 'RI', billSession: '2026', relevanceScore: 9, summary: 'Registers eligible residents to vote automatically when they get or renew a license, unless they opt out.' },
+  { billId: 'b6', billNumber: 'S 0712', billTitle: 'Ranked-choice voting for municipal elections', billState: 'RI', billSession: '2026', relevanceScore: 7, summary: 'Lets cities and towns adopt ranked-choice voting for local races, with state-funded voter education.' },
   { billId: 'b7', billNumber: 'HB 1455', billTitle: 'Poll worker compensation increase', billState: 'RI', billSession: '2026', relevanceScore: 5 },
 ]
 
 // A heavy filing day: more matches than the digest lists, so the sample shows the
-// cap (top 10 by relevance) and the "…and N more" link.
+// cap (top 10 by relevance) and the "See all N new matches" link.
 const heavyDayMatch = (n: number, billNumber: string, billTitle: string, relevanceScore: number): NewMatchDigestItem =>
   ({ billId: `b${n}`, billNumber, billTitle, billState: 'RI', billSession: '2026', relevanceScore })
 export const SAMPLE_NEW_MATCHES_HEAVY_DAY: NewMatchDigestItem[] = [
@@ -99,7 +102,7 @@ export function isSampleEmailType(t: string): t is SampleEmailType {
   return (ALL_SAMPLE_EMAIL_TYPES as string[]).includes(t)
 }
 
-export interface SampleSendResult { ok: boolean; provider?: string; error?: string }
+export interface SampleSendResult { ok: boolean; provider?: string | null; error?: string }
 
 /**
  * Pure render of one sample email type → { subject, html }. THE single source for
@@ -126,21 +129,21 @@ export function renderSampleEmail(type: SampleEmailType, appUrl: string): { subj
     case 'digest':
       // Daily cadence (the default). Fixed period so the date range is deterministic (committed sample + snapshot).
       return {
-        subject: '[Sample] Priority bill updates',
+        subject: `[Sample] ${digestSubject({ updatedBills: countUpdatedBills(SAMPLE_DIGEST_EVENTS), newMatches: SAMPLE_NEW_MATCHES.length, cadence: 'daily' })}`,
         html: renderDigestEmail({ events: SAMPLE_DIGEST_EVENTS, assocName: SAMPLE_ASSOC_NAME, appUrl, newMatches: SAMPLE_NEW_MATCHES, periodStart: '2026-06-10', periodEnd: '2026-06-11' }),
       }
     case 'digest-weekly':
       // Weekly cadence: the same digest over a seven-day window.
       return {
-        subject: '[Sample] Priority bill updates (weekly)',
+        subject: `[Sample] ${digestSubject({ updatedBills: countUpdatedBills(SAMPLE_DIGEST_EVENTS), newMatches: SAMPLE_NEW_MATCHES.length, cadence: 'weekly' })}`,
         html: renderDigestEmail({ events: SAMPLE_DIGEST_EVENTS, assocName: SAMPLE_ASSOC_NAME, appUrl, newMatches: SAMPLE_NEW_MATCHES, periodStart: '2026-06-04', periodEnd: '2026-06-11' }),
       }
     case 'digest-new-only':
-      // Admin digest when there are NO priority-bill updates — only new keyword matches,
-      // on a heavy day so it shows the cap and the "…and N more" link.
+      // Digest when there are NO priority-bill updates — only new matches, on a heavy
+      // day so it shows the cap and the "See all N new matches" link.
       return {
-        subject: '[Sample] New bills matching your keywords',
-        html: renderDigestEmail({ events: [], assocName: SAMPLE_ASSOC_NAME, appUrl, newMatches: SAMPLE_NEW_MATCHES_HEAVY_DAY, periodStart: '2026-06-09', periodEnd: '2026-06-11' }),
+        subject: `[Sample] ${digestSubject({ updatedBills: 0, newMatches: SAMPLE_NEW_MATCHES_HEAVY_DAY.length, cadence: 'daily' })}`,
+        html: renderDigestEmail({ events: [], assocName: SAMPLE_ASSOC_NAME, appUrl, newMatches: SAMPLE_NEW_MATCHES_HEAVY_DAY, periodStart: '2026-06-10', periodEnd: '2026-06-11' }),
       }
     case 'mention':
       return {
@@ -197,12 +200,14 @@ export function renderSampleEmail(type: SampleEmailType, appUrl: string): { subj
 }
 
 /** Render a sample email and send it to a single address via the real send path.
- *  Never throws — returns a normalized result. */
+ *  Never throws. Returns the sender's result as it is, for the operator who asked:
+ *  whether it went out, which provider sent it, the error when it did not, and
+ *  every attempt made. */
 export async function sendSampleEmail(env: Env, _db: AppDb, to: string, type: SampleEmailType): Promise<SampleSendResult> {
   const { subject, html } = renderSampleEmail(type, env.APP_URL)
-  // No db: operator mail stays out of email_send_stats, like the health alert,
-  // so a sample's success cannot make a failing provider look recovered.
-  return sendEmail(env, { to: [to], subject, html })
+  // The operator purpose never counts toward email health, so a sample's
+  // success cannot make a failing provider look recovered.
+  return senderFor(env).send({ purpose: 'operator', to: [to], subject, html })
 }
 
 /** Every sample email type — drives the conformance test's iteration. */

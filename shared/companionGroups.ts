@@ -7,6 +7,30 @@
 /** A bill in a group, as an event or a comment names it. */
 export type GroupBill = { billId: string; billNumber: string }
 
+/**
+ * A bill in the group a bill page shows: what a badge's link needs, with the
+ * state and session slug that make the bill's canonical URL, and the bill's own
+ * status as stored (the page decodes it), so the header can label each member.
+ */
+export type GroupBillLink = GroupBill & { state: string; sessionSlug: string; status: string }
+
+/** One version of a bill's text, as the bill page's text list has it. */
+export type GroupTextVersion = {
+  docId: string
+  type: string
+  date: string
+  mime: string
+  stateLink: string | null
+  altStateLink: string | null
+}
+
+/**
+ * A bill in the group a bill page shows, with its text versions newest first:
+ * what the page's Bill texts needs to list every member's versions under the
+ * member's badge (#712).
+ */
+export type GroupBillTexts = GroupBillLink & { texts: GroupTextVersion[] }
+
 /** The `team_events.type` of a group forming around a bill, or splitting from it. */
 export type GroupingEventType = 'grouped' | 'split'
 
@@ -54,6 +78,13 @@ export type GroupingEvent = {
   createdAt: string
   actorName: string | null
   with: GroupBill[]
+  /**
+   * The subset of `with` that had a comment posted on it before the event, which is what makes the line worth
+   * showing when FloorVote grouped or split the bills itself: those comments now appear in this thread (grouped)
+   * or no longer do (split). Computed when the bill is read, from the comments table, so a split still names the
+   * bills whose comments it took away.
+   */
+  commentBills: GroupBill[]
   /** The team field values the grouping replaced. Always empty for a split. */
   replaced: ReplacedTeamValue[]
   /** The splits the grouping undid (see `GroupingEventMetadata`). Absent when it undid none. */

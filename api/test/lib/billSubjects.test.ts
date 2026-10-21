@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  parseSubjects, encodeSubjectFilter, decodeSubjectFilter, decodeSubjectFilters,
+  parseSubjects, encodeSubjectFilter, decodeSubjectFilter,
   decodeSubjectFiltersChecked, dedupeSubjectNames, MAX_SUBJECT_FILTERS, isSubjectsSuppressedForState,
 } from '../../src/lib/billSubjects'
 
@@ -43,21 +43,20 @@ describe('dedupeSubjectNames', () => {
   })
 })
 
-describe('decodeSubjectFilters', () => {
+describe('decodeSubjectFiltersChecked', () => {
   it('decodes valid values and drops malformed ones', () => {
-    expect(decodeSubjectFilters(['UT:Elections', 'NoColon', 'NJ:Education']))
+    expect(decodeSubjectFiltersChecked(['UT:Elections', 'NoColon', 'NJ:Education']).filters)
       .toEqual([{ state: 'UT', name: 'Elections' }, { state: 'NJ', name: 'Education' }])
   })
 
-  it('caps the result at MAX_SUBJECT_FILTERS so a huge list cannot blow the D1 param budget', () => {
+  it('stops at MAX_SUBJECT_FILTERS decoded filters so a huge list cannot blow the D1 param budget', () => {
     const values = Array.from({ length: MAX_SUBJECT_FILTERS + 20 }, (_, i) => `UT:Subject ${i}`)
-    const decoded = decodeSubjectFilters(values)
-    expect(decoded).toHaveLength(MAX_SUBJECT_FILTERS)
-    expect(decoded[0]).toEqual({ state: 'UT', name: 'Subject 0' })
+    const out = decodeSubjectFiltersChecked(values)
+    expect(out.filters).toHaveLength(MAX_SUBJECT_FILTERS)
+    expect(out.filters[0]).toEqual({ state: 'UT', name: 'Subject 0' })
+    expect(out.overflow).toBe(true)
   })
-})
 
-describe('decodeSubjectFiltersChecked', () => {
   it('reports no overflow at the cap', () => {
     const values = Array.from({ length: MAX_SUBJECT_FILTERS }, (_, i) => `UT:S${i}`)
     const out = decodeSubjectFiltersChecked(values)
@@ -93,7 +92,7 @@ describe('isSubjectsSuppressedForState', () => {
 })
 
 import { env } from 'cloudflare:test'
-import { resetDb, applyMigrations } from '../helpers'
+import { clearDb } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { bills, billSubjects, associationConfig } from '../../src/db/schema'
 import { syncBillSubjects, loadSuppressedSubjectStates, SUPPRESSED_SUBJECT_STATES_KEY } from '../../src/lib/billSubjects'
@@ -101,8 +100,7 @@ import { eq } from 'drizzle-orm'
 
 describe('loadSuppressedSubjectStates', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
   })
 
   it('is empty when the tenant has no config row — on by default', async () => {
@@ -182,8 +180,7 @@ describe('loadSuppressedSubjectStates', () => {
 
 describe('syncBillSubjects', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
   })
 
   async function seedBill(db: ReturnType<typeof getDb>, id: string) {
@@ -249,5 +246,45 @@ describe('syncBillSubjects', () => {
     await expect(syncBillSubjects(db, 'b5', 'UT', many)).resolves.not.toThrow()
     const rows = await db.select().from(billSubjects).where(eq(billSubjects.billId, 'b5')).all()
     expect(rows).toHaveLength(40)
+  })
+
+  // #848: the delete and the inserts are one D1 batch (one transaction), so a write that fails leaves the rows it
+  // would have replaced. Otherwise the retry takes the processor's early skip and the bill keeps no subject rows.
+  it('leaves the bill\'s previous rows in place when the new ones fail to write', async () => {
+    const db = getDb(env.DB)
+    await seedBill(db, 'b6')
+    await syncBillSubjects(db, 'b6', 'UT', ['Elections', 'Counties'])
+    // A null state breaks the insert's NOT NULL.
+    await expect(syncBillSubjects(db, 'b6', null as unknown as string, ['Referenda'])).rejects.toThrow()
+    const rows = await db.select().from(billSubjects).where(eq(billSubjects.billId, 'b6')).all()
+    expect(rows.map(r => r.subjectName).sort()).toEqual(['Counties', 'Elections'])
+  })
+
+  it('leaves the previous rows in place when a later chunk of a long list fails', async () => {
+    const db = getDb(env.DB)
+    await seedBill(db, 'b7')
+    await syncBillSubjects(db, 'b7', 'UT', ['Elections', 'Counties'])
+    // 70 subjects is three insert chunks; the last holds the name the trigger rejects, so the first two chunks have
+    // already run when the write fails.
+    const many = [...Array.from({ length: 69 }, (_, i) => `Subject ${i}`), 'Rejected']
+    await env.DB.exec(`CREATE TRIGGER reject_subject BEFORE INSERT ON bill_subjects WHEN NEW.subject_name = 'Rejected' BEGIN SELECT RAISE(ABORT, 'rejected'); END`)
+    try {
+      await expect(syncBillSubjects(db, 'b7', 'UT', many)).rejects.toThrow()
+    } finally {
+      await env.DB.exec('DROP TRIGGER reject_subject')
+    }
+    const rows = await db.select().from(billSubjects).where(eq(billSubjects.billId, 'b7')).all()
+    expect(rows.map(r => r.subjectName).sort()).toEqual(['Counties', 'Elections'])
+  })
+
+  it('replaces only the given bill\'s rows', async () => {
+    const db = getDb(env.DB)
+    await seedBill(db, 'b8')
+    await seedBill(db, 'b9')
+    await syncBillSubjects(db, 'b8', 'UT', ['Elections'])
+    await syncBillSubjects(db, 'b9', 'UT', ['Counties'])
+    await syncBillSubjects(db, 'b8', 'UT', ['Referenda'])
+    const rows = await db.select().from(billSubjects).all()
+    expect(rows.map(r => `${r.billId}:${r.subjectName}`).sort()).toEqual(['b8:Referenda', 'b9:Counties'])
   })
 })

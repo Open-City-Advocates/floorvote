@@ -1,27 +1,38 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link, useLocation, useMatch } from 'react-router-dom'
 import { apiFetch } from '../../lib/api'
 import { decodeStatus } from '../../lib/legislativeStatus'
 import { billUrl } from '../../lib/sessionSlug'
 import { normalizeViewQuery, matchesUrlIdentifier } from '../../lib/savedViews'
+import { useMultiState } from '../../context/ConfigContext'
 import { BillBadge } from '../../components/BillBadge'
 import { DraftChip } from '../../components/DraftChip'
 import { StatusChip } from '../../components/StatusChip'
-import { SECTION_LABEL, CHROME_TEXT, SR_ONLY } from '../../lib/textStyles'
+import { SessionChip } from '../../components/SessionChip'
+import { RelevanceChip } from '../../components/RelevanceChip'
+import { LastActionChip } from '../../components/LastActionChip'
+import { SECTION_LABEL, CHROME_TEXT, SR_ONLY, BILL_TITLE_TEXT } from '../../lib/textStyles'
 import { color, fontSize, fontWeight } from '../../styles/tokens'
 import { billDisplayTitle } from '../../../../shared/billTitle'
-import { billsApiParamsFromSearch, searchFromListUrl } from './billsQuery'
+import { billsApiParamsFromSearch, billsFacetParams, billsQueryFromSearch, searchFromListUrl } from './billsQuery'
+import { committeeGroups, committeeLabelsOf } from '../../lib/committeeGroups'
+import { buildListSummary } from './listSummary'
+import { BillListPaneSummary } from './BillListPaneSummary'
 import { peekBillsListCache, peekCustomFieldDefs } from './index'
-import { groupDisplay, memberPath } from './BillRow'
-import type { Bill } from './types'
+import { groupDisplay, memberPath, formatYearChip } from './BillRow'
+import { groupPlacement, groupGridStyle, groupItemStyle, subgridCellStyle, GROUP_ROW_GAP } from './groupRows'
+import { PANE_MIN_WIDTH, paneGridTemplate, visiblePaneColumns, type PaneColumn } from './paneWidth'
+import { PaneResizeHandle, useBillListPaneWidth } from './BillListPaneResize'
+import type { Bill, FacetCounts } from './types'
 import type { SavedView } from './ViewSwitcher'
 
 // Viewport width at which a bill page shows this pane beside it. At 1440 with
 // the default 230px sidebar and this 300px pane, BillDetail still gets about
 // 900px — what it gets today in a ~1150px window, wide enough that its
 // 272px right column and its main column sit side by side as they do now.
+// The reader can drag it wider (paneWidth.ts holds the bounds); 300px is the
+// width it starts at and the narrowest it goes.
 export const BILL_SPLIT_MIN_WIDTH = 1440
-const PANE_WIDTH = 300
 
 type BillsPage = { bills: Bill[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }
 
@@ -29,19 +40,22 @@ type BillsPage = { bills: Bill[]; pagination: { page: number; pageSize: number; 
 // sidebar's Bills link and BillDetail's "Back to bills" both read it), so the
 // pane shows that same list. A saved view leaves the URL in its short
 // `?view=<slug>` form, which spells out no filters, so it is expanded from
-// /views here the way BillList hydrates it.
-async function resolveListSearch(listUrl: string): Promise<URLSearchParams> {
+// /views here the way BillList hydrates it. The view comes back too, for the
+// summary line to name; a slug that matches nothing returns the bare search.
+type ResolvedList = { search: URLSearchParams; view: SavedView | null }
+
+async function resolveListSearch(listUrl: string): Promise<ResolvedList> {
   const search = searchFromListUrl(listUrl)
   const viewId = search.get('view')
-  if (!viewId || normalizeViewQuery(search.toString()) !== '') return search
+  if (!viewId || normalizeViewQuery(search.toString()) !== '') return { search, view: null }
   try {
     const { views } = await apiFetch<{ views: SavedView[] }>('/views')
     const view = (views ?? []).find(v => matchesUrlIdentifier(v, viewId))
-    if (view) return new URLSearchParams(view.query)
+    if (view) return { search: new URLSearchParams(view.query), view }
   } catch {
     // Fall through to the unfiltered list rather than showing nothing.
   }
-  return search
+  return { search, view: null }
 }
 
 // location.pathname arrives percent-encoded ("HB%205042") while billUrl builds
@@ -59,16 +73,79 @@ function isOpenBill(bill: Bill, path: string, here: string, legacyId: string | u
   return !!bill.group?.some(m => memberPath(m) === here || (legacyId !== undefined && m.id === legacyId))
 }
 
-const STACK: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4, minWidth: 0 }
+// A narrow pane has no status column: a group's numbers and statuses are the
+// two columns of one grid, a status on its bill's row, the statuses at the
+// row's right edge (see groupRows.ts).
+const PAIRS: CSSProperties = { display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', columnGap: 8, rowGap: GROUP_ROW_GAP, alignItems: 'center', width: '100%' }
 
-const PaneRow = memo(function PaneRow({ bill, path, isCurrent, billPaths, index }: {
+// The header the columns sit under: sticky at the top of the scrolling list, on
+// the same grid as every row so each header is over its cells.
+const COLUMN_HEADER_HEIGHT = 30
+
+function PaneColumnHeaders({ columns, multiState }: { columns: PaneColumn[]; multiState: boolean }) {
+  return (
+    <li
+      data-pane-columns
+      style={{
+        position: 'sticky', top: 0, zIndex: 1, height: COLUMN_HEADER_HEIGHT, boxSizing: 'border-box',
+        display: 'flex', alignItems: 'center', padding: '0 12px 0 15px',
+        background: color.surfaceSubtle, borderBottom: `1px solid ${color.borderDefault}`,
+      }}
+    >
+      <div data-pane-grid style={{ display: 'grid', gridTemplateColumns: paneGridTemplate(columns, multiState), columnGap: 8, alignItems: 'center', width: '100%' }}>
+        <span />
+        {columns.map(c => (
+          <span key={c.key} data-pane-col-header={c.key} style={{ ...SECTION_LABEL, whiteSpace: 'nowrap' }}>{c.label}</span>
+        ))}
+      </div>
+    </li>
+  )
+}
+
+const PaneRow = memo(function PaneRow({ bill, path, isCurrent, billPaths, index, columns, multiState }: {
   bill: Bill; path: string; isCurrent: boolean; billPaths: string[]; index: number
+  columns: PaneColumn[]; multiState: boolean
 }) {
   const [hovered, setHovered] = useState(false)
   // A companion group is one row (the lead's), drawn as the Bills list draws it:
   // the lead and one other number, "+N" for the rest, each shown status once.
   const group = bill.group ? groupDisplay(bill.group) : null
   const companions = bill.group ? bill.group.slice(1) : []
+  const wide = columns.length > 0
+
+  const placement = group ? groupPlacement(group) : null
+  // The priority is the group's, so every one of its numbers carries the square.
+  // Where the pieces go: groupRows.ts. `column` is given only for the narrow pane's
+  // two-column grid, where a number or status has no cell of its own.
+  const groupNumbers = (column?: number) => group && placement && [
+    ...group.shown.map((m, i) => (
+      <div key={m.id} data-group-item="number" style={groupItemStyle(placement.numberRows[i], column)}>
+        <BillBadge mini billNumber={m.billNumber} state={m.state} priority={bill.priority} />
+      </div>
+    )),
+    ...(placement.moreRow !== null ? [(
+      <div key="more" data-group-item="more" style={groupItemStyle(placement.moreRow, column)}>
+        <span aria-hidden style={{ ...CHROME_TEXT, fontWeight: fontWeight.semibold }}>+{group.hidden.length}</span>
+      </div>
+    )] : []),
+  ]
+  const groupStatuses = (column?: number, atEnd = false) => group && placement && group.statuses.map((status, i) => (
+    <div key={status} data-group-item="status" style={{ ...groupItemStyle(placement.statusRows[i], column), ...(atEnd ? { justifySelf: 'end' } : {}) }}>
+      <StatusChip capWidth status={decodeStatus(status)} />
+    </div>
+  ))
+  const numbers = <BillBadge mini billNumber={bill.billNumber} state={bill.state} isDraft={bill.isDraft} priority={bill.priority} />
+  const priorityForReaders = bill.priority && <span style={SR_ONLY}>, {bill.priority} priority</span>
+
+  // What each column holds: the Bills page's own chips, drawn read-only (the
+  // row is a link, and the pane filters nothing).
+  const cells: Record<PaneColumn['key'], ReactNode> = {
+    status: group ? groupStatuses() : bill.isDraft ? <DraftChip /> : <StatusChip capWidth status={decodeStatus(bill.status)} />,
+    year: <SessionChip session={formatYearChip(bill.yearStart, bill.yearEnd)} />,
+    lastAction: <LastActionChip date={bill.lastActionDate} />,
+    relevance: <RelevanceChip score={bill.relevanceScore} />,
+  }
+
   return (
     <Link
       to={path}
@@ -80,38 +157,63 @@ const PaneRow = memo(function PaneRow({ bill, path, isCurrent, billPaths, index 
       onMouseLeave={() => setHovered(false)}
       style={{
         display: 'block',
-        padding: '8px 12px 9px',
+        // 15px, not 12: the open row used to mark itself with a 3px left border
+        // (transparent on the others), and that room is now padding so the text
+        // stays where it was. The blue background alone marks the open row.
+        padding: '8px 12px 9px 15px',
         borderBottom: `1px solid ${color.borderDefault}`,
-        borderLeft: `3px solid ${isCurrent ? color.accentBlue : 'transparent'}`,
         background: isCurrent ? color.bgBlueChip : hovered ? color.surfaceSubtle : color.white,
         color: 'inherit',
         textDecoration: 'none',
       }}
     >
-      <div style={{ display: 'flex', alignItems: group ? 'flex-start' : 'center', gap: 8, marginBottom: 4 }}>
-        {group ? (
-          <div style={STACK}>
-            {group.shown.map((m, n) => (
-              // The priority is the group's, drawn once, on the lead's number.
-              <BillBadge key={m.id} mini billNumber={m.billNumber} state={m.state} priority={n === 0 ? bill.priority : null} />
-            ))}
-            {group.hidden.length > 0 && (
-              <span aria-hidden style={{ ...CHROME_TEXT, fontWeight: fontWeight.semibold }}>+{group.hidden.length}</span>
-            )}
+      {wide ? (
+        // Wide: the status moves into its column, so it is not also drawn at
+        // the row's top right. A group's number and status cells are subgrids
+        // of a grid with a row per bill, so each status is level with its bill.
+        <div
+          data-pane-grid
+          data-group-rows={placement?.rows}
+          style={{
+            display: 'grid', gridTemplateColumns: paneGridTemplate(columns, multiState), columnGap: 8,
+            alignItems: group ? 'start' : 'center', marginBottom: 4,
+            ...(placement ? groupGridStyle(placement.rows) : {}),
+          }}
+        >
+          {group
+            ? <div style={subgridCellStyle}>{groupNumbers()}{priorityForReaders}</div>
+            : <div>{numbers}{priorityForReaders}</div>}
+          {columns.map(c => (
+            <div
+              key={c.key}
+              data-pane-col={c.key}
+              style={{
+                display: 'flex', alignItems: 'center', minWidth: 0,
+                // The status column of a group is a subgrid; the other columns span every row.
+                ...(group ? (c.key === 'status' ? subgridCellStyle : { gridRow: '1 / -1' }) : {}),
+              }}
+            >{cells[c.key]}</div>
+          ))}
+        </div>
+      ) : group && placement ? (
+        <div style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 4 }}>
+          <div data-group-pairs style={PAIRS}>
+            {groupNumbers(1)}
+            {groupStatuses(2, true)}
+            {priorityForReaders}
           </div>
-        ) : (
-          <BillBadge mini billNumber={bill.billNumber} state={bill.state} isDraft={bill.isDraft} priority={bill.priority} />
-        )}
-        {bill.priority && <span style={SR_ONLY}>, {bill.priority} priority</span>}
-        <span style={{ marginLeft: 'auto', display: 'flex', minWidth: 0 }}>
-          {group ? (
-            <span style={{ ...STACK, alignItems: 'flex-end' }}>
-              {group.statuses.map(status => <StatusChip key={status} status={decodeStatus(status)} />)}
-            </span>
-          ) : bill.isDraft ? <DraftChip mini /> : <StatusChip status={decodeStatus(bill.status)} />}
-        </span>
-      </div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          {numbers}
+          {priorityForReaders}
+          <span style={{ marginLeft: 'auto', display: 'flex', minWidth: 0 }}>
+            {bill.isDraft ? <DraftChip mini /> : <StatusChip capWidth status={decodeStatus(bill.status)} />}
+          </span>
+        </div>
+      )}
       <div style={{
+        ...BILL_TITLE_TEXT,
         fontSize: fontSize.sm,
         color: color.textPrimary,
         lineHeight: 1.35,
@@ -139,7 +241,9 @@ const PaneRow = memo(function PaneRow({ bill, path, isCurrent, billPaths, index 
 export function BillListPane() {
   const location = useLocation()
   const [listUrl] = useState(() => sessionStorage.getItem('lastBillsUrl') ?? '/bills')
-  const [search, setSearch] = useState<URLSearchParams | null>(null)
+  const multiState = useMultiState()
+  const [resolved, setResolved] = useState<ResolvedList | null>(null)
+  const search = resolved?.search ?? null
   const [bills, setBills] = useState<Bill[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -147,10 +251,12 @@ export function BillListPane() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const scrollRef = useRef<HTMLUListElement>(null)
+  const pane = useBillListPaneWidth()
+  const columns = visiblePaneColumns(pane.width)
 
   useEffect(() => {
     let cancelled = false
-    void resolveListSearch(listUrl).then(s => { if (!cancelled) setSearch(s) })
+    void resolveListSearch(listUrl).then(r => { if (!cancelled) setResolved(r) })
     return () => { cancelled = true }
   }, [listUrl])
 
@@ -182,26 +288,82 @@ export function BillListPane() {
   }, [search])
 
   const [loadingMore, setLoadingMore] = useState(false)
+  // A failed page stops the chain: the sentinel would otherwise still be in
+  // range and fire again at once. The reader's Retry clears it; so does a new list.
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false)
+  const loadMoreBusy = useRef(false)
+  const searchRef = useRef(search)
+  searchRef.current = search
+  useEffect(() => { setLoadMoreFailed(false); loadMoreBusy.current = false; setLoadingMore(false) }, [search])
+  const sentinelRef = useRef<HTMLLIElement>(null)
+  // Infinite scroll, as on the Bills page, but watched inside the pane's own
+  // scroller: the pane scrolls independently of the viewport. The list (and so
+  // the sentinel) renders only once `loading` is false, hence the dependency.
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    const root = scrollRef.current
+    if (!sentinel || !root || !search || !hasMore || loading || loadingMore || loadMoreFailed) return
+    const observer = new IntersectionObserver(
+      entries => { if (entries[0].isIntersecting) loadMore() },
+      { root, rootMargin: '1200px' }, // prefetch well before the end is visible
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMore is rebuilt each render from the values listed
+  }, [search, hasMore, loading, loadingMore, loadMoreFailed, page])
+
   function loadMore() {
-    if (!search || loadingMore) return
+    // The ref also stops two observer callbacks in one tick, before state lands.
+    if (!search || loadMoreBusy.current) return
+    loadMoreBusy.current = true
     setLoadingMore(true)
+    setLoadMoreFailed(false)
     const next = page + 1
+    // A response for a list the pane has since left must not touch this one.
+    const stale = () => searchRef.current !== search
     apiFetch<BillsPage>(`/bills?${billsApiParamsFromSearch(search, next, peekCustomFieldDefs())}`)
       .then(data => {
+        if (stale()) return
         setBills(prev => [...prev, ...data.bills])
         setHasMore(next < data.pagination.totalPages)
         setPage(next)
       })
-      .catch(() => {})
-      .finally(() => setLoadingMore(false))
+      .catch(() => { if (!stale()) setLoadMoreFailed(true) })
+      .finally(() => { if (!stale()) { loadMoreBusy.current = false; setLoadingMore(false) } })
   }
 
   const here = decodePath(location.pathname)
   const legacyId = useMatch('/bills/:billId')?.params.billId
   const paths = useMemo(() => bills.map(b => billUrl({ id: b.id, state: b.state, sessionSlug: b.sessionSlug, billNumber: b.billNumber })), [bills])
 
+  // The summary is of the list the pane shows: the same resolved query its
+  // request is built from, so the line and the rows cannot disagree.
+  const values = useMemo(() => resolved && billsQueryFromSearch(resolved.search), [resolved])
+  // The facets name a picked committee, which the list's own reply does not, so they are asked for once per resolved
+  // query and only when one is picked. Until they land the summary reads a committee by its id.
+  const [committeeLabels, setCommitteeLabels] = useState<Record<string, string>>({})
+  useEffect(() => {
+    setCommitteeLabels({})
+    const filter = values?.filter
+    if (!filter || filter.committee.length === 0) return
+    let cancelled = false
+    apiFetch<FacetCounts>(`/bills/facets?${billsFacetParams(filter)}`)
+      .then(facets => {
+        if (!cancelled) setCommitteeLabels(committeeLabelsOf(committeeGroups({}, facets.committeeInfo ?? {}, filter.committee)))
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [values])
+  const summary = useMemo(() => resolved && values && buildListSummary({
+    values,
+    view: resolved.view,
+    customFieldDefs: peekCustomFieldDefs(),
+    isMultiState: multiState,
+    committeeLabels,
+  }), [resolved, values, multiState, committeeLabels])
+
   // Bring the current bill into view only when it is off-screen, and only when
-  // the bill changes (or the list first arrives) — never when "Show more"
+  // the bill changes (or the list first arrives) — never when a page
   // appends, which would yank the reader back from where they scrolled.
   // `loading` is a dependency because the list renders only once it is false:
   // were the bills and the end of loading ever committed separately, an effect
@@ -219,7 +381,8 @@ export function BillListPane() {
       aria-label="Bill list"
       className="bill-list-pane"
       style={{
-        width: PANE_WIDTH,
+        position: 'relative',
+        width: pane.width,
         flexShrink: 0,
         height: '100%',
         display: 'flex',
@@ -228,9 +391,12 @@ export function BillListPane() {
         borderRight: `1px solid ${color.borderDefault}`,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '14px 12px 10px 15px', borderBottom: `1px solid ${color.borderDefault}` }}>
-        <Link to={listUrl} style={{ ...SECTION_LABEL, color: color.linkBlue, textDecoration: 'none' }}>Bills</Link>
-        {!loading && !error && <span style={CHROME_TEXT}>{total.toLocaleString()} {total === 1 ? 'bill' : 'bills'}</span>}
+      <div style={{ borderBottom: `1px solid ${color.borderDefault}` }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '14px 12px 10px 15px' }}>
+          <Link to={listUrl} style={{ ...SECTION_LABEL, color: color.linkBlue, textDecoration: 'none' }}>Bills</Link>
+          {!loading && !error && <span style={CHROME_TEXT}>{total.toLocaleString()} {total === 1 ? 'bill' : 'bills'}</span>}
+        </div>
+        {!loading && !error && summary && <BillListPaneSummary summary={summary} listUrl={listUrl} />}
       </div>
       {loading ? (
         <p style={{ ...CHROME_TEXT, padding: '12px 15px', margin: 0 }}>Loading bills…</p>
@@ -239,26 +405,37 @@ export function BillListPane() {
       ) : bills.length === 0 ? (
         <p style={{ ...CHROME_TEXT, padding: '12px 15px', margin: 0 }}>No bills match this list’s filters.</p>
       ) : (
-        <ul ref={scrollRef} style={{ listStyle: 'none', margin: 0, padding: 0, flex: 1, minHeight: 0, overflowY: 'auto', position: 'relative' }}>
+        <ul
+          ref={scrollRef}
+          style={{
+            listStyle: 'none', margin: 0, padding: 0, flex: 1, minHeight: 0, overflowY: 'auto', position: 'relative',
+            // Keeps scrollIntoView from parking the open row under the sticky headers.
+            scrollPaddingTop: columns.length > 0 ? COLUMN_HEADER_HEIGHT : undefined,
+          }}
+        >
+          {columns.length > 0 && <PaneColumnHeaders columns={columns} multiState={multiState} />}
           {bills.map((b, i) => (
             <li key={b.id}>
-              <PaneRow bill={b} path={paths[i]} isCurrent={isOpenBill(b, paths[i], here, legacyId)} billPaths={paths} index={i} />
+              <PaneRow bill={b} path={paths[i]} isCurrent={isOpenBill(b, paths[i], here, legacyId)} billPaths={paths} index={i} columns={columns} multiState={multiState} />
             </li>
           ))}
           {hasMore && (
-            <li style={{ padding: 12 }}>
-              <button
-                type="button"
-                onClick={loadMore}
-                disabled={loadingMore}
-                style={{ width: '100%', padding: '6px 10px', fontSize: fontSize.sm, color: color.linkBlue, background: color.white, border: `1px solid ${color.borderDefault}`, cursor: 'pointer' }}
-              >
-                {loadingMore ? 'Loading…' : `Show more (${bills.length.toLocaleString()} of ${total.toLocaleString()})`}
-              </button>
+            <li
+              ref={sentinelRef}
+              aria-hidden={loadingMore || loadMoreFailed ? undefined : true}
+              style={{ ...CHROME_TEXT, padding: 12, textAlign: 'center' }}
+            >
+              {loadingMore ? <span role="status">Loading…</span> : loadMoreFailed ? (
+                <>
+                  Couldn’t load more{' '}
+                  <button type="button" onClick={loadMore} style={{ color: color.linkBlue, background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit' }}>Retry</button>
+                </>
+              ) : ''}
             </li>
           )}
         </ul>
       )}
+      {pane.max > PANE_MIN_WIDTH && <PaneResizeHandle width={pane.width} max={pane.max} pane={pane} />}
     </nav>
   )
 }

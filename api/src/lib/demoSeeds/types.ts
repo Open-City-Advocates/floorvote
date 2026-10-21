@@ -1,4 +1,5 @@
 import type { TaxonomyItem } from '../taxonomy'
+import type { Attribution } from '../../../../shared/dataAttribution'
 
 /**
  * The data half of a demo reset. Everything here is inert description — all
@@ -40,6 +41,9 @@ export type DemoSeedComment = {
   /** Sanitized HTML, including span[data-type=mention] markup for @mentions. */
   content: string
   daysAgo: number
+  /** Minutes after the `daysAgo` time of day (negative is earlier). Whole days cannot order a
+   *  change against the comment that explains it, so the seed shifts one of them by minutes. */
+  minutesLater?: number
 }
 
 export type DemoSeedReaction = {
@@ -63,14 +67,39 @@ export type DemoSeedMention = {
 export type DemoSeedFeedEvent = {
   id: string
   /** A subset of the feed_events CHECK constraint (migration 0053) — the types a
-   *  seed has reason to write. `hearing_added` carries `{ time, location,
-   *  description }`, matching what the calendar reconciler writes in
-   *  queue/processor.ts and what billCardModel's hearingLine() reads. */
-  type: 'priority_set' | 'position_set' | 'comment_added' | 'vote_milestone' | 'bill_updated' | 'hearing_added'
+   *  seed has reason to write. `hearing_added` and `hearing_changed` carry
+   *  `{ time, location, description }`, matching what the calendar reconciler
+   *  writes in queue/processor.ts and what billCardModel's hearingLine() reads. */
+  type: 'priority_set' | 'position_set' | 'comment_added' | 'vote_milestone' | 'bill_updated' | 'hearing_added' | 'hearing_changed'
   externalId: string
   userId: string
   metadata: Record<string, unknown>
   daysAgo: number
+  /** Minutes after the `daysAgo` time of day (negative is earlier). Whole days cannot order a
+   *  change against the comment that explains it, so the seed shifts one of them by minutes. */
+  minutesLater?: number
+}
+
+/**
+ * A change a persona made to a team field, which the reset writes as the
+ * `field_changed` team event the app writes (the bill page's activity line).
+ * `old` and `new` are stored values: a priority's `high`, a position's text, a
+ * custom field's raw value. `old` is null for a first set. The newest change of
+ * a field ends on the value the seed sets for it.
+ */
+export type DemoSeedFieldChange = {
+  id: string
+  externalId: string
+  userId: string
+  field: 'priority' | 'position' | 'customField'
+  /** The custom field's id, for `field: 'customField'`. */
+  fieldId?: string
+  old: string | null
+  new: string | null
+  daysAgo: number
+  /** Minutes after the `daysAgo` time of day (negative is earlier). Whole days cannot order a
+   *  change against the comment that explains it, so the seed shifts one of them by minutes. */
+  minutesLater?: number
 }
 
 export type DemoSeedCalendarEvent = {
@@ -146,6 +175,11 @@ export type DemoSeed = {
   sessions: { data: DemoSeedSession[] }
   /** State coverage for a multi-state tenant; null for a STATE-scoped one. */
   stateCoverage: string[] | null
+  /** The data credit GET /config serves (`attribution`). A demo never hears from
+   *  central, the only source of it on a live instance, so the seed names the
+   *  providers its states come from. Omit for "not known yet" (the Stage filter
+   *  is then offered). Written verbatim to association_config.data_attribution. */
+  attribution?: Attribution
 
   users: DemoSeedUser[]
   roles: DemoSeedRole[]
@@ -153,15 +187,23 @@ export type DemoSeed = {
   customFields: DemoSeedCustomField[]
 
   priorities: Array<{ externalId: string; priority: 'high' | 'medium' | 'low' }>
-  positions: Array<{ id: string; externalId: string; position: string; setBy: string; daysAgo: number }>
+  positions: Array<{ id: string; externalId: string; position: string; setBy: string; daysAgo: number; minutesLater?: number }>
   votes: Array<{ id: string; externalId: string; userId: string; position: string; daysAgo: number }>
   comments: DemoSeedComment[]
   reactions: DemoSeedReaction[]
   mentions: DemoSeedMention[]
   feedEvents: DemoSeedFeedEvent[]
+  /** Legislative activity on analyzed bills with no priority and no team activity.
+   *  Kept apart from `feedEvents`, which describe the team's bills. The reset writes
+   *  these like any feed event, then the day's `no_priority_updates` row for each
+   *  UTC day they land on, as the queue processor does when a legislative event
+   *  lands on an analyzed bill. Omit for a seed with none. */
+  noPriorityEvents?: DemoSeedFeedEvent[]
   customFieldValues: Array<{ externalId: string; fieldId: string; value: string; setBy: string; daysAgo: number }>
   notes: Array<{ id: string; externalId: string; content: string; daysAgo: number }>
   calendarEvents: DemoSeedCalendarEvent[]
+  /** The team field changes shown as activity lines on bill pages. */
+  teamFieldChanges: DemoSeedFieldChange[]
   /** Two or three views written for this demo's audience. At least one joins
    *  subjects and tags with the OR group operator (`match=any`), the case saved
    *  views were built for. */

@@ -1,3 +1,4 @@
+import { color } from '../styles/tokens'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -137,7 +138,6 @@ const BILL = {
   voteSummary: [],
   subjects: [],
   relatedBillIds: [],
-  companionBillIds: [],
   texts: [],
   calendar: [],
   supplements: [],
@@ -211,14 +211,12 @@ describe('BillDetail org noun labels', () => {
     expect(await screen.findByText('Association relevance')).toBeInTheDocument()
   })
 
-  it('renders the position badge tooltip using orgNoun possessive', async () => {
+  it('gives the position badge no hover bubble, which only restated the "position" label', async () => {
     makeMockApiFetch()
     render(<MemoryRouter><BillDetail /></MemoryRouter>)
-    // Wait for bill to load and position section to appear
     await screen.findByText('Association position')
-    // PositionBadge is mocked to expose the tooltip prop as data-tooltip
-    const badge = document.querySelector('[data-tooltip]')
-    expect(badge?.getAttribute('data-tooltip')).toBe("Your association's official position on this bill")
+    // PositionBadge is mocked to expose a tooltip prop as data-tooltip; none is passed.
+    expect(document.querySelector('[data-tooltip]')).toBeNull()
   })
 })
 
@@ -333,12 +331,29 @@ describe('BillDetail stuck-state repair affordance', () => {
     expect(screen.queryByRole('button', { name: /run analysis|enable full analysis/i })).not.toBeInTheDocument()
   })
 
-  it('still shows Enable full analysis (not Run analysis) for a lightweight stub to admins', async () => {
+  it('shows Run analysis to admins on an untracked stub, with the stub message', async () => {
     authState.role = 'admin'
     makeMockApiFetch({ matchType: null, textStatus: 'available', aiProcessedAt: null, aiSkipReason: null, tenantSummary: null, tags: [], relevanceScore: null })
     render(<MemoryRouter><BillDetail /></MemoryRouter>)
     await screen.findByText('Test Bill')
-    expect(await screen.findByRole('button', { name: /enable full analysis/i })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Run analysis' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /enable full analysis/i })).not.toBeInTheDocument()
+    expect(screen.getByText(/Sponsors, full action history, and bill text are not/)).toBeInTheDocument()
+  })
+
+  it('shows an untracked, fully ingested bill its data and the no-analysis message', async () => {
+    authState.role = 'admin'
+    makeMockApiFetch({
+      matchType: null, fullyIngested: true, textStatus: 'available', aiProcessedAt: null, aiSkipReason: null,
+      tenantSummary: null, tags: [], relevanceScore: null,
+      sponsor: 'Jane Smith', history: [{ date: '2026-05-02', action: 'Introduced in the House', chamber: 'lower' }],
+    })
+    render(<MemoryRouter><BillDetail /></MemoryRouter>)
+    await screen.findByText('Test Bill')
+    expect(await screen.findByText("This bill doesn't match your keywords, so it has no AI analysis.")).toBeInTheDocument()
+    expect(screen.queryByText(/are not\./)).not.toBeInTheDocument()
+    expect(screen.getByText('Jane Smith')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run analysis' })).toBeInTheDocument()
   })
 })
 
@@ -676,6 +691,56 @@ describe('BillDetail sponsors row', () => {
   })
 })
 
+describe('BillDetail sponsor party chips', () => {
+  beforeEach(() => vi.restoreAllMocks())
+
+  it('keeps the sponsor chip look: default size, party colors, no underline', async () => {
+    makeMockApiFetch({
+      sponsor: 'Prime Sponsor', sponsorParty: 'R', sponsorUrl: 'https://legislature.example/prime',
+      coSponsors: [{ name: 'Cosponsor One', party: 'D', url: null, primary: false }, { name: 'Cosponsor Two', party: 'I', url: null, primary: false }],
+    })
+    render(<MemoryRouter><BillDetail /></MemoryRouter>)
+    expect(await screen.findByText('Prime Sponsor', { exact: false })).toBeInTheDocument()
+    const d = screen.getByText('D')
+    expect(d.style.fontSize).toBe('10px')
+    expect(d.style.padding).toBe('1px 4px')
+    expect(d.style.marginLeft).toBe('3px')
+    expect(d.style.display).toBe('inline-block')
+    expect(d.style.textDecoration).toBe('none')
+    expect(d.style.color).toBe(color.linkBlue)
+    expect(screen.getByText('I').style.color).toBe(color.textSlate500)
+  })
+})
+
+describe('BillDetail sponsor links', () => {
+  beforeEach(() => vi.restoreAllMocks())
+
+  it('links a sponsor and a co-sponsor with an http(s) url, in a new tab', async () => {
+    makeMockApiFetch({
+      sponsor: 'Prime Sponsor', sponsorUrl: 'https://legislature.example/prime',
+      coSponsors: [{ name: 'Cosponsor One', party: null, url: 'http://legislature.example/one', primary: false }],
+    })
+    render(<MemoryRouter><BillDetail /></MemoryRouter>)
+    const prime = await screen.findByRole('link', { name: /Prime Sponsor/ })
+    expect(prime).toHaveAttribute('href', 'https://legislature.example/prime')
+    expect(prime).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('link', { name: /Cosponsor One/ })).toHaveAttribute('href', 'http://legislature.example/one')
+  })
+
+  it.each([['javascript:', 'javascript:alert(1)'], ['data:', 'data:text/html,<script>alert(1)</script>'], ['protocol-relative', '//legislature.example/x'], ['relative', '/members/x']])(
+    'renders a sponsor and a co-sponsor whose url is %s as plain text', async (_label, url) => {
+      makeMockApiFetch({
+        sponsor: 'Prime Sponsor', sponsorUrl: url,
+        coSponsors: [{ name: 'Cosponsor One', party: null, url, primary: false }],
+      })
+      render(<MemoryRouter><BillDetail /></MemoryRouter>)
+      expect(await screen.findByText('Prime Sponsor')).toBeInTheDocument()
+      expect(screen.getByText('Cosponsor One')).toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: /Prime Sponsor|Cosponsor One/ })).toBeNull()
+      expect(document.querySelector(`a[href="${url}"]`)).toBeNull()
+    })
+})
+
 describe('BillDetail reaction hover name list stays in sync with the count', () => {
   beforeEach(() => { vi.restoreAllMocks(); authState.role = 'member' })
 
@@ -999,9 +1064,9 @@ describe('overflow menu', () => {
     try {
       render(<MemoryRouter><BillDetail /></MemoryRouter>)
       await waitFor(() => expect(screen.getByText('HB 1')).toBeInTheDocument())
-      await user.click(screen.getByRole('button', { name: 'Enable full analysis' }))
+      await user.click(screen.getByRole('button', { name: 'Run analysis' }))
       await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Analyzing…'))
-      expect(screen.getByRole('button', { name: 'Enable full analysis' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Run analysis' })).toBeDisabled()
     } finally {
       fetchSpy.mockRestore()
     }

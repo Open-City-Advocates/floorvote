@@ -1,8 +1,9 @@
 import type React from 'react'
 import { color, radius, fontSize, fontWeight } from './tokens'
+import { primaryButtonColors } from './primaryButton'
 
 // Shared "action row" styles — the flex row that holds a save/action button
-// plus adjacent hint/result text, used across Config, Account, and Draft-bills pages.
+// plus adjacent hint/result text, used across the Config and Account pages.
 export const actionRowStyle: React.CSSProperties = {
   display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12,
   marginTop: 20, paddingTop: 16, borderTop: `1px solid ${color.borderDefault}`,
@@ -15,7 +16,7 @@ export const actionRowStyleFirst: React.CSSProperties = {
 }
 
 export const actionBtnBlue = (disabled: boolean): React.CSSProperties => ({
-  background: disabled ? color.accentBlueMuted : color.accentBlue, color: color.textOnFill, border: 'none', borderRadius: radius.md,
+  ...primaryButtonColors(disabled), border: 'none', borderRadius: radius.md,
   padding: '8px 14px', cursor: disabled ? 'not-allowed' : 'pointer', fontSize: fontSize.sm, fontWeight: fontWeight.medium,
   width: 224, flexShrink: 0, whiteSpace: 'normal', textAlign: 'center', lineHeight: 1.4,
 })

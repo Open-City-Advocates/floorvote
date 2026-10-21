@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { drizzle } from 'drizzle-orm/d1'
 import * as schema from '../../src/db/schema'
-import { app } from '../../src/index-legiscan'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { app } from '../../src/index'
+import { clearDb } from '../helpers/migrations'
 
 // The operator routes scripts/verify-instance.sh drives. None may call LegiScan,
 // change which bills a tenant tracks, or feed the ingestor.
@@ -11,7 +11,7 @@ import { setupLsDb } from '../helpers/setupLsDb'
 const AUTH = { 'x-admin-secret': 'sek', 'content-type': 'application/json' }
 const BASE: any = { ...env, ADMIN_SECRET: 'sek' }
 
-beforeEach(async () => { await setupLsDb() })
+beforeEach(async () => { await clearDb() })
 afterEach(() => { vi.unstubAllGlobals() })
 
 async function seedTenant(over: Partial<typeof schema.tenants.$inferInsert> = {}) {
@@ -251,5 +251,58 @@ describe('POST /tenants/:id/verify-ai', () => {
     await db.delete(schema.bills)
     const e: any = { ...BASE, TENANT_RI: { verifyAi: async () => ({ status: 'ok' }) } }
     expect((await call('ri/verify-ai', { method: 'POST', headers: AUTH }, e)).status).toBe(404)
+  })
+})
+
+// Release 2 of the neutral handle rename (#305): the probe and the AI check name
+// the bill in the form the instance reads, as every other message does. An
+// instance whose CentralApi binding reports neutral handles gets `bill:<n>`, and
+// any other gets `legiscan:<n>`, and the route reports the handle it sent.
+describe('verification handles follow what the instance reads', () => {
+  const capable = { deliveryProbe: async () => ({ probe: null }), capabilities: async () => ({ neutralHandles: true }) }
+
+  it('probes a release-1 instance with the legacy handle, and reports that handle', async () => {
+    const db = await seedTenant()
+    await seedBills(db)
+    const { env2, sent } = queueEnv({ deliveryProbe: async () => ({ probe: null }) })
+    const res = await call('ri/verify-delivery', { method: 'POST', headers: AUTH, body: JSON.stringify({ nonce: 'n-1' }) }, env2)
+    expect(await res.json()).toMatchObject({ billId: 'legiscan:100' })
+    expect(sent).toEqual([{ tenantId: 'ri', billId: 'legiscan:100', probe: 'n-1' }])
+  })
+
+  it('probes an instance that reports neutral handles with the neutral handle, and reports that handle', async () => {
+    const db = await seedTenant()
+    await seedBills(db)
+    const { env2, sent } = queueEnv(capable)
+    const res = await call('ri/verify-delivery', { method: 'POST', headers: AUTH, body: JSON.stringify({ nonce: 'n-2' }) }, env2)
+    expect(await res.json()).toMatchObject({ ok: true, billId: 'bill:100', via: 'binding' })
+    expect(sent).toEqual([{ tenantId: 'ri', billId: 'bill:100', probe: 'n-2' }])
+  })
+
+  it('probes with the legacy handle when the capability call fails', async () => {
+    const db = await seedTenant()
+    await seedBills(db)
+    const { env2, sent } = queueEnv({ deliveryProbe: async () => ({ probe: null }), capabilities: async () => { throw new Error('boom') } })
+    const res = await call('ri/verify-delivery', { method: 'POST', headers: AUTH, body: JSON.stringify({ nonce: 'n-3' }) }, env2)
+    expect(await res.json()).toMatchObject({ billId: 'legiscan:100' })
+    expect(sent).toEqual([{ tenantId: 'ri', billId: 'legiscan:100', probe: 'n-3' }])
+  })
+
+  it('asks a release-1 instance to analyze the bill by its legacy handle', async () => {
+    const db = await seedTenant()
+    await seedBills(db)
+    const seen: string[] = []
+    const e: any = { ...BASE, TENANT_RI: { verifyAi: async (billId: string) => { seen.push(billId); return { status: 'ok' } } } }
+    await call('ri/verify-ai', { method: 'POST', headers: AUTH }, e)
+    expect(seen).toEqual(['legiscan:100'])
+  })
+
+  it('asks an instance that reports neutral handles to analyze the bill by its neutral handle', async () => {
+    const db = await seedTenant()
+    await seedBills(db)
+    const seen: string[] = []
+    const e: any = { ...BASE, TENANT_RI: { ...capable, verifyAi: async (billId: string) => { seen.push(billId); return { status: 'ok' } } } }
+    await call('ri/verify-ai', { method: 'POST', headers: AUTH }, e)
+    expect(seen).toEqual(['bill:100'])
   })
 })

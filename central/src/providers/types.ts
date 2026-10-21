@@ -1,6 +1,6 @@
 import type { Env } from '../types'
 import type { StatusStage } from '../../../shared/statusStages'
-import type { ExtraDisplay } from '../../../shared/providerExtras'
+import type { ExtraDisplay, ExtraPlacement } from '../../../shared/providerExtras'
 import type { CalendarKind } from '../../../shared/calendarKinds'
 import type { RelationshipKind } from '../../../shared/relationshipKinds'
 import type { DataAttribution } from '../../../shared/dataAttribution'
@@ -38,6 +38,14 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
   readonly displayName: string
 
   /**
+   * What members call the body whose calendar `listBodyEvents` returns, such
+   * as "Council": the Calendar page's control reads "Council events". Only a
+   * provider that publishes a calendar needs one; without it the control reads
+   * "Legislature events".
+   */
+  readonly bodyName?: string
+
+  /**
    * The credit instances show for this provider's data, in the footer of
    * every instance covering one of its states: the publisher's name and link,
    * one plain sentence on where the data comes from and its terms, and the
@@ -73,14 +81,6 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
    * claim for a provider that isn't configured is refused, and its sync skips.
    */
   configured?(env: Readonly<Pick<Env, K>>): boolean
-
-  /**
-   * The env key that named the provider's states before the ownership table,
-   * such as 'LIMS_STATES' (comma-separated). For one release, the first sync
-   * writes an ownership row for each state it names that has no row, under the
-   * same refusal rule as a claim. Goes away with that seeding.
-   */
-  readonly statesEnvKey?: K
 
   /** Every session the provider lists for a state, current and prior. */
   listSessions(state: string, ctx: ProviderContext<K>): Promise<SyncSession[]>
@@ -125,6 +125,16 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
 
   /** A sponsor's profile page on the provider's site, for a person record with no link of its own. */
   personUrl?(person: { state: string; name: string; peopleId: number }): string
+
+  /**
+   * A person's own profile page, for a link on their name wherever it appears:
+   * a sponsor, or a voter in a roll call. Built from what central stored for
+   * the person, `bio` (the parsed `bio_json`) and `ballotpedia`, so it needs no
+   * call to the provider. Null when it has none. Core sends only an http(s) URL,
+   * and a voter with no profile URL is plain text. `personUrl` stays the last
+   * resort for a sponsor alone. Omitted when the provider has no per-person page.
+   */
+  profileUrl?(person: { bio: { social?: { biography?: string } } | null; ballotpedia: string | null }): string | null
 
   /**
    * Keep the calendar identity central gave every entry before identities
@@ -224,12 +234,33 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
   readonly ingestQueue?: ProviderEnvKey
 
   /**
+   * The hours of the day (0 through 23, ET) at which a session of this
+   * provider with no `full_sync_hours_et` override runs a full pass. Omitted
+   * means LegiScan's schedule (`DEFAULT_FULL_HOURS_ET`) and its raw passes in
+   * between. A provider whose pass is cheap lists every hour.
+   */
+  readonly fullHoursEt?: readonly number[]
+
+  /**
    * For a provider whose per-measure details can change while its listed
    * record doesn't: core re-queues tracked measures whose status isn't
    * terminal in the vocabulary once their details are older than `maxAge` (an
    * SQLite datetime modifier, such as '-2 days'), at most `perPass` per pass.
    */
   readonly detailsRefresh?: { maxAge: string; perPass: number }
+
+  /**
+   * For a provider whose full ingest is cheap (no metered budget): every
+   * changed bill of its states gets a full ingest, tracked or not, in place of
+   * a monitor stub, so every covering instance holds full bills. Bills that
+   * have never had a full ingest are queued at most `perPass` a pass across
+   * all the provider's sessions, fewer while earlier ones still wait in the
+   * queue, so a backfill or a new session's first pass drains over several
+   * passes at the pace the queue does; a
+   * changed bill already fully ingested is queued without a cap. LegiScan
+   * declares nothing: a getBill per untracked bill would spend its budget.
+   */
+  readonly ingestAll?: { perPass: number }
 
   /**
    * Whether the provider's measure carries the bill's whole set of roll calls,
@@ -282,6 +313,24 @@ export interface ProviderVocabulary {
    * more than a link.
    */
   readonly relationships?: VocabularyRelationships
+  /**
+   * The states where instances suggest companions from matching titles (#521),
+   * and the bill types that can be suggested. Omitted when the provider opts in
+   * no state. Opt in only a state whose provider names no identical companions
+   * (never one in `relationships.identicalStates`) and whose titles are long
+   * enough to tell bills apart. Central serves each bill's title key from it on
+   * every read, so a change reaches an instance's pages at once, and its stored
+   * keys on each bill's next delivery (or a metadata refresh).
+   */
+  readonly titleCompanions?: VocabularyTitleCompanions
+}
+
+/** Title-matched companion suggestions (`ProviderVocabulary.titleCompanions`). */
+export interface VocabularyTitleCompanions {
+  /** The states opted in, by two-letter abbreviation. */
+  readonly states: readonly string[]
+  /** The bill types that can be suggested, by the value the provider writes to `bills.bill_type`. Never a resolution. */
+  readonly billTypes: readonly string[]
 }
 
 /**
@@ -307,6 +356,14 @@ export interface VocabularyRelationships {
    * labels it lists, and the rest fall through to `default`.
    */
   readonly states?: Readonly<Record<string, Readonly<Record<string, RelationshipKind>>>>
+  /**
+   * The states whose feeds carry a label this vocabulary maps to `identical`,
+   * as central's stored relationships show. Read only to keep title-matched
+   * companion suggestions (`ProviderVocabulary.titleCompanions`) off there,
+   * since two sources of grouping would compete. The vocabulary test fails if
+   * one is opted in. List a state here when its feed starts naming companions.
+   */
+  readonly identicalStates?: readonly string[]
 }
 
 /**
@@ -355,6 +412,8 @@ export interface VocabularyExtra {
   readonly explainer?: string
   /** How the bill page shows its value. */
   readonly display: ExtraDisplay
+  /** Where the bill page shows it. `panel` (the "Additional information" fold-out) when missing. */
+  readonly placement?: ExtraPlacement
 }
 
 /**
@@ -377,7 +436,7 @@ export type FieldInventory = Readonly<Record<string, FieldUse>>
 /** What a provider does with one feed field (`FieldInventory`). */
 export type FieldUse = 'mapped' | { readonly extra: string } | { readonly ignored: string }
 
-export type { StatusStage, ExtraDisplay, CalendarKind, RelationshipKind }
+export type { StatusStage, ExtraDisplay, ExtraPlacement, CalendarKind, RelationshipKind }
 
 /** One session's vote dataset, as `listVoteDatasets` lists it. */
 export interface VoteDataset {
@@ -413,6 +472,22 @@ export interface ProviderContext<K extends ProviderEnvKey = ProviderEnvKey> {
    */
   ids(kind: string, nativeKeys: readonly string[]): Promise<Map<string, number>>
   /**
+   * What the provider keeps between runs: small text entries under keys it
+   * names, for what it fetched once and shouldn't fetch again (a feed that
+   * answers one request per record, and allows few requests, is the case it
+   * exists for). Durable, and the provider's own: no provider reads
+   * another's. Nothing expires, so a provider drops what it no longer needs.
+   * An entry is text, so the provider serializes what it keeps.
+   */
+  cache: {
+    /** Every entry whose key starts with `prefix` (the empty prefix lists them all), by key. */
+    list(prefix: string): Promise<Map<string, string>>
+    /** Add these entries, replacing any with the same key. */
+    put(entries: Readonly<Record<string, string>>): Promise<void>
+    /** Remove these keys. A key that isn't there is ignored. */
+    drop(keys: readonly string[]): Promise<void>
+  }
+  /**
    * The central ids already minted for these keys, without minting any: a key
    * central has never seen is left out. For linking to a record the provider
    * isn't sure exists, such as the earlier session's copy of a carried-over
@@ -420,12 +495,29 @@ export interface ProviderContext<K extends ProviderEnvKey = ProviderEnvKey> {
    */
   knownIds(kind: string, nativeKeys: readonly string[]): Promise<Map<string, number>>
   /**
+   * Whether core has stored a record of this provider's for the session whose
+   * native key matches `glob` (SQLite GLOB). For a provider that must tell a
+   * feed that has nothing yet from one that lost what it had.
+   */
+  hasStored(sessionId: number, glob: string): Promise<boolean>
+  /**
    * The people core has stored for this provider, by central id ascending, for
    * resolving the names its records use. People a cutover carried over from
    * another provider come after the rest, so where two share a name, the
    * last one listed is the person instances already know.
    */
   people(): Promise<{ peopleId: number; name: string; role: string | null }[]>
+  /**
+   * Email the operators an ops alert (the `ALERT_EMAILS` recipients), for
+   * something a person has to look at that would otherwise go unnoticed,
+   * such as a record the provider has set aside because it can't read it.
+   * Core sends it, with the provider's id in the subject, and it never
+   * throws. With no recipients set it only logs. A throw doesn't always
+   * alert on its own (a failed body-events month is only logged), so call
+   * this for anything a person must see. The provider keeps whatever
+   * stops it alerting twice for one thing (`cache`).
+   */
+  alert(message: { subject: string; text: string }): Promise<void>
 }
 
 /** A session as central stores it, handed to the list methods. */
@@ -519,6 +611,14 @@ export interface ProviderSnapshot {
    * keeps the stored ETag.
    */
   unchanged?: boolean
+  /**
+   * `records` are only the records that changed since `SnapshotSession.etag`
+   * (a partial snapshot). Core runs the pass on its stored records with
+   * these replacing the ones they name, by bill id, and never removes a
+   * record one leaves out. Answering a null ETag (a read in full) with a
+   * partial snapshot is an error, and the pass fails closed.
+   */
+  partial?: boolean
 }
 
 /**
@@ -535,6 +635,8 @@ export interface ProviderPerson {
   first_name?: string | null
   middle_name?: string | null
   last_name?: string | null
+  /** The member's Bioguide id, for Congress. A cutover matches people on it when both providers have one. */
+  bioguide_id?: string | null
   bio?: MeasurePerson['bio']
 }
 
@@ -654,7 +756,8 @@ export interface MeasurePerson {
   opensecrets_id?: string
   knowwho_pid?: number
   ballotpedia?: string
-  bioguide_id?: string
+  /** The member's Bioguide id. Absent leaves a stored one alone on ingest, and null clears it. */
+  bioguide_id?: string | null
   bio?: {
     social?: {
       biography?: string
@@ -706,7 +809,7 @@ interface MeasureVote {
    * Per-member votes. getBill never returns these (LegiScan needs a getRollCall
    * per vote); providers that include them inline, such as DC LIMS, set this and
    * the ingestor writes roll_call_votes. vote_id follows LegiScan: 1 Yea, 2 Nay,
-   * 3 NV, 4 Absent.
+   * 3 NV, 4 Absent. Virginia's Abstain, which LegiScan has no id for, is 5.
    */
   member_votes?: { people_id: number | null; vote_id: number; vote_text: string }[]
 }
@@ -841,6 +944,14 @@ export interface CentralMeasure {
   referrals: { date: string; committee_id: number; chamber: string; chamber_id: number; name: string }[]
   progress: { date: string; event: number }[]
   sponsors: MeasureSponsor[]
+  /**
+   * People the measure names besides its sponsors, such as the members who
+   * voted on it (`votes`' `member_votes`), so a vote shows under a name and
+   * not a number. Core adds each one it has no `people` row for and leaves an
+   * existing row alone, so a sponsor's fuller record from another measure is
+   * never cut down to what a roll call says.
+   */
+  people?: MeasurePerson[]
   history: MeasureHistoryEntry[]
   sasts: MeasureSast[]
   subjects: MeasureSubject[]

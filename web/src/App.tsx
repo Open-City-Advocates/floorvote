@@ -1,4 +1,4 @@
-import { createBrowserRouter, createRoutesFromElements, RouterProvider, Route, Navigate, Outlet, useMatches } from 'react-router-dom'
+import { createBrowserRouter, createRoutesFromElements, RouterProvider, Route, Navigate, Outlet, useLocation, useMatches } from 'react-router-dom'
 import { color, fontSize } from './styles/tokens'
 import { AuthProvider } from './context/AuthContext'
 import { DemoProvider, useDemo } from './context/DemoContext'
@@ -22,8 +22,7 @@ import { Profile } from './pages/Profile'
 import { Members } from './pages/admin/Members'
 import { Config } from './pages/admin/Config'
 import { Notifications } from './pages/admin/Notifications'
-import { EventRules } from './pages/admin/EventRules'
-import { DraftBills } from './pages/admin/DraftBills'
+import { CalendarEventsMoved } from './pages/admin/CalendarEventsMoved'
 import { Calendar, calendarLoader } from './pages/Calendar'
 import { ocaRoutes } from './oca'
 import { useAuth } from './hooks/useAuth'
@@ -35,6 +34,7 @@ import { useNavPendingCursor } from './hooks/useNavPendingCursor'
 import { UnsavedTextProvider } from './lib/unsavedText'
 import { legalDocs, hasTerms, hasPrivacy } from './lib/legalDocs'
 import { useFocusTrap } from './lib/useFocusTrap'
+import { billsListPath } from '../../shared/billFilter'
 import { useState, useRef, useContext, lazy, Suspense } from 'react'
 
 // Exported for App.demoBanner.test.tsx, which pins the "render nothing until
@@ -146,8 +146,13 @@ function AppLayout() {
                       agenda/feed DateDivider shadow, which intentionally extends
                       ±20px past the content column) would otherwise spill past the
                       viewport and create unwanted left-right scroll once the column
-                      nears the viewport width (narrow desktop and mobile). */}
-                  <main ref={mainRef} id="main-content" className="app-main" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', scrollbarGutter: 'stable' }}><Outlet /></main>
+                      nears the viewport width (narrow desktop and mobile).
+                      position: 'relative' — makes the scroll container the
+                      containing block for absolutely positioned content. Without
+                      it, a visually hidden live region with no positioned
+                      ancestor is placed against the page, far down a long page,
+                      and the document scrolls too: a second scrollbar. */}
+                  <main ref={mainRef} id="main-content" className="app-main" style={{ flex: 1, position: 'relative', overflowY: 'auto', overflowX: 'hidden', scrollbarGutter: 'stable' }}><Outlet /></main>
                 </div>
               </div>
             </FeedUnreadProvider>
@@ -175,6 +180,11 @@ const LegalPage = lazy(() => import('./pages/LegalPage').then((m) => ({ default:
 // for however long its 10s-deadline attempts keep retrying.
 function RootHydrateFallback() {
   return <LoadingState variant="full" progress={{ current: null }} />
+}
+
+function AccountMoved() {
+  const { search, hash } = useLocation()
+  return <Navigate to={{ pathname: '/account', search, hash }} replace />
 }
 
 // Marks the bill detail routes for AppLayout's split pane (BillListPane).
@@ -209,14 +219,24 @@ export const routes = createRoutesFromElements(
         <Route path="bills/:billId" element={<BillDetail />} loader={billDetailLoader} errorElement={<BillDetailError />} handle={BILL_ROUTE_HANDLE} />
         <Route path="calendar" element={<Calendar />} loader={calendarLoader} />
         {ocaRoutes}
-        <Route path="profile" element={<Profile />} />
+        <Route path="account" element={<Profile />} />
+        {/* The Account page's old URL. Sent emails and their List-Unsubscribe
+            headers link to /profile#<setting>, so the hash and query carry over. */}
+        <Route path="profile" element={<AccountMoved />} />
+        {/* The Settings → Draft bills page is retired: drafts are created from
+            the Bills page and listed there under the Drafts filter, so old
+            links and bookmarks land on that filtered list. Outside
+            RequireAdmin on purpose — the Drafts filter is on the Bills page
+            for every signed-in member, and a member's old link should reach
+            it rather than bounce to the feed. Still inside RequireAuth, so a
+            signed-out visitor goes to login first. */}
+        <Route path="admin/drafts" element={<Navigate to={billsListPath({ drafts: true })} replace />} />
         <Route element={<RequireAdmin />}>
           <Route path="admin" element={<Navigate to="/admin/members" replace />} />
           <Route path="admin/members" element={<Members />} />
           <Route path="admin/config" element={<Config />} />
           <Route path="admin/notifications" element={<Notifications />} />
-          <Route path="admin/drafts" element={<DraftBills />} />
-          <Route path="admin/calendar-events" element={<EventRules />} />
+          <Route path="admin/calendar-events" element={<CalendarEventsMoved />} />
         </Route>
         {/* Canonical + legacy bill URLs — greedy param routes; React Router
             ranks static segments above these, so order vs. /admin etc. is safe. */}

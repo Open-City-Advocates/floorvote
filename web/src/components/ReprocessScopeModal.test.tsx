@@ -42,7 +42,7 @@ describe('ReprocessScopeModal', () => {
 
   it('invokes onChoose("all") when the "all bills" action is clicked', () => {
     const { onChoose } = mount()
-    fireEvent.click(screen.getByRole('button', { name: /yes, all 5 fully analyzed bills/i }))
+    fireEvent.click(screen.getByRole('button', { name: /yes, all 5 analyzed bills/i }))
     expect(onChoose).toHaveBeenCalledWith('all')
   })
 
@@ -72,5 +72,13 @@ describe('ReprocessScopeModal', () => {
   it('shows what reprocessing replaces and preserves', () => {
     mount()
     expect(screen.getByText(/Comments, votes, priority, positions, and notes are untouched/)).toBeInTheDocument()
+  })
+
+  it('takes its own title and intro for a case other than saved instructions', () => {
+    mount({ title: 'Summary citations turned on', intro: 'Existing summaries get citations only when re-run.' })
+    expect(screen.getByRole('dialog', { name: 'Summary citations turned on' })).toBeTruthy()
+    expect(screen.getByText(/only when re-run/)).toBeInTheDocument()
+    expect(screen.queryByText(/instructions you just saved/i)).toBeNull()
+    expect(screen.queryByRole('dialog', { name: /instructions saved/i })).toBeNull()
   })
 })

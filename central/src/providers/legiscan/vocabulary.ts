@@ -96,6 +96,7 @@ export const vocabulary: ProviderVocabulary = {
     1: { label: 'Hearing', kind: 'hearing', explainer: 'A committee meeting on the bill, where the public can usually testify or submit written comments.' },
     2: { label: 'Executive Session', kind: 'markup', explainer: 'A committee meeting where members discuss and vote on bills. The public can usually watch but not testify.' },
     3: { label: 'Markup Session', kind: 'markup', explainer: 'A committee meeting where members amend the bill and vote on whether to report it.' },
+    10: { label: 'Deadline', kind: 'deadline', explainer: 'A date the law sets for the bill\'s next step, such as the end of the time to sign or veto it, or the day an emergency or temporary law expires.' },
   },
 
   // LegiScan's SAST types (see docs/internal/legiscan-api.md). Only the two
@@ -110,5 +111,23 @@ export const vocabulary: ProviderVocabulary = {
       // Michigan files tie-barred packages of different bills as "Same As."
       MI: { 'Same As': 'package' },
     },
+    // The states whose relationships in central carry "Same As" or
+    // "Crossfiled" as identical (October 2026). Michigan's "Same As" is a
+    // package, so it isn't one.
+    identicalStates: ['NJ', 'TX', 'US', 'WA', 'WI'],
+  },
+
+  // Companion suggestions from matching titles (#521), where LegiScan names
+  // no identical companions, for bills only. Measured against central's bills
+  // in October 2026, a pair's first texts agree in size within 5% for 98% of
+  // Rhode Island's 723 same-title pairs, 93% of Pennsylvania's 307, and 92% of
+  // Michigan's 229, none of which are its "Same As" packages. Left off: states
+  // whose titles are short subject headings (CA, IN, IL, AZ, and VA by triage,
+  // and UT and WY, whose median titles run 33 and 40 characters), states where
+  // LegiScan labels companions (identicalStates), and NV, whose titles carry
+  // a unique request number, so none is ever shared.
+  titleCompanions: {
+    states: ['MI', 'PA', 'RI'],
+    billTypes: ['B'],
   },
 }

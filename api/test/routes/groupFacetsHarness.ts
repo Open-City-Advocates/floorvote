@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { env, SELF } from 'cloudflare:test'
+import { env } from 'cloudflare:test'
 import { eq, inArray } from 'drizzle-orm'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill } from '../helpers'
+import { resetDb, applyMigrations, seedUser, seedSession, seedBill, appFetch } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { clearBillStatesCache } from '../../src/lib/billStates'
 import {
@@ -10,16 +10,23 @@ import {
 
 // The harness of the group-aware facet tests (#380): requests against the list and the facets, and the
 // random-fixture suite that checks every facet count against the list. Each random fixture runs in a file of
-// its own, since the Workers test pool slows with the number of requests a file has made.
+// its own, to keep each file's run short for the time-balanced shards in vitest.config.mts.
+//
+// The requests go to the app in process (`appFetch`), not through `SELF.fetch` (#860). Each `SELF.fetch` cost more than
+// the one before it, even for a health check on an empty database, so by the last test of a file one request took many
+// times what the first had, and that last test timed out on a busy machine with no count wrong. See
+// groupFacetsHarnessSpeed.test.ts.
 
 export type Counts = Record<string, number>
 export type Facets = {
-  status: Counts; stage: Counts; session: Counts; year: Counts; state: Counts
-  priority: Counts; position: Counts; tags: Counts; subjects: Counts
-  customFields: Record<string, Counts>
+  status: Counts; stage: Counts; statusGroups?: Record<string, { stage: string | null; rank: number }>; sessionName: Counts; year: Counts; state: Counts
+  priority: Counts; position: Counts; tag: Counts; subject: Counts
+  field: Record<string, Counts>
   myBillsCount: number; newMatchesCount: number; unvotedCount: number; draftCount: number
   // Unfiltered, per bill (#528): the states with subjects, and on * coverage the states with bills.
   subjectStates: string[]; billStates?: string[]
+  // Whether the tenant has any draft, unfiltered.
+  hasDrafts: boolean
 }
 
 let cookie: string
@@ -27,12 +34,12 @@ export let ada: string
 export const db = () => getDb(env.DB)
 
 export async function facets(qs = ''): Promise<Facets> {
-  const res = await SELF.fetch(`https://x/api/bills/facets?${qs}`, { headers: { Cookie: cookie } })
+  const res = await appFetch(`https://x/api/bills/facets?${qs}`, { headers: { Cookie: cookie } })
   expect(res.status).toBe(200)
   return await res.json() as Facets
 }
 export async function total(qs = ''): Promise<number> {
-  const res = await SELF.fetch(`https://x/api/bills?pageSize=200&${qs}`, { headers: { Cookie: cookie } })
+  const res = await appFetch(`https://x/api/bills?pageSize=200&${qs}`, { headers: { Cookie: cookie } })
   expect(res.status).toBe(200)
   return ((await res.json()) as { pagination: { total: number } }).pagination.total
 }
@@ -57,15 +64,30 @@ const COUNT = 34
 
 // [the anchor's query, the dimensions it filters, whose own counts it narrows under AND]
 const AND_ANCHORS: Array<[string, string[]]> = [
-  ['', []], ['status=Passed', ['status']], ['priority=high', ['priority']], ['tag=Energy', ['tag']], ['position=Support', ['position']],
-  ['cf_cf2=x', ['cf_cf2']], ['subject=NJ:Elections', ['subject']], ['minRelevance=4', []],
+  ['', []], ['status=Passed', ['status', 'stage']], ['priority=high', ['priority']], ['tag=Energy', ['tag']], ['position=Support', ['position']],
+  ['field.cf2=x', ['field.cf2']], ['subject=NJ:Elections', ['subject']], ['minRelevance=4', []],
   ['unvoted=1', []], ['newMatches=1', []], ['myBills=1', []],
-  ['priority=none', ['priority']], ['position=none', ['position']], ['priority=__any__&status=Introduced', ['priority', 'status']],
+  ['priority=none', ['priority']], ['position=none', ['position']], ['priority=__any__&status=Introduced', ['priority', 'status', 'stage']],
+]
+// Status and stage are one fact (#677): an anchor that sets either leaves both of their counts out of the check, since
+// neither promises the total after picking the other (the union), and it still checks every other count against the list.
+// The same, for the provider facts that were never the active filter (state, stage, year, session) and for drafts: each is
+// a dimension with a facet of its own, so each must leave itself out of its own count and no other's. Drafts is a scope,
+// which narrows every count. They run in files of their own (groupFacetsRandom4, 5), to keep each file's run short for
+// the time-balanced shards in vitest.config.mts.
+const PROVIDER_AND_ANCHORS: Array<[string, string[]]> = [
+  ['state=NJ', ['state']], ['stage=passed', ['stage', 'status']], ['year=2026', ['year']], ['sessionName=2025', ['sessionName']], ['drafts=1', []],
+  ['year=2026&sessionName=2025', ['year', 'sessionName']], ['state=TX&stage=introduced', ['state', 'stage', 'status']], ['drafts=1&status=Passed', ['status', 'stage']],
+  ['status=Passed&stage=introduced', ['status', 'stage']],
+]
+const PROVIDER_OR_ANCHORS = [
+  'state=NJ', 'stage=passed', 'year=2026', 'sessionName=2025', 'drafts=1', 'year=2025&sessionName=2026', 'state=TX&stage=introduced&year=2026',
+  'drafts=1&priority=high', 'sessionName=2025&status=Passed', 'status=Passed&stage=introduced',
 ]
 const OR_ANCHORS = [
-  'status=Passed', 'priority=high', 'tag=Energy', 'position=Support', 'cf_cf1=Labor', 'subject=NJ:Elections',
+  'status=Passed', 'priority=high', 'tag=Energy', 'position=Support', 'field.cf1=Labor', 'subject=NJ:Elections',
   'status=Passed&priority=high', 'status=Introduced&tag=Labor&position=Oppose', 'priority=none&state=TX',
-  'status=Passed&unvoted=1', 'priority=high&newMatches=1', 'tag=Energy&myBills=1', 'position=none&cf_cf1=__any__',
+  'status=Passed&unvoted=1', 'priority=high&newMatches=1', 'tag=Energy&myBills=1', 'position=none&field.cf1=__any__',
 ]
 
 /**
@@ -74,7 +96,9 @@ const OR_ANCHORS = [
  * stale values, ties, and a value on one bill that the group's others never had. It is built once for the
  * tests, which only read.
  */
-export function randomFixtureSuite(seed: number, modes: Array<'AND' | 'OR'> = ['AND', 'OR']) {
+export function randomFixtureSuite(seed: number, modes: Array<'AND' | 'OR'> = ['AND', 'OR'], anchors: 'core' | 'provider' = 'core') {
+  const andAnchors = anchors === 'core' ? AND_ANCHORS : PROVIDER_AND_ANCHORS
+  const orAnchors = anchors === 'core' ? OR_ANCHORS : PROVIDER_OR_ANCHORS
   describe(`every count matches the list on a random fixture (seed ${seed})`, () => {
     beforeAll(async () => {
       await reset()
@@ -119,13 +143,13 @@ export function randomFixtureSuite(seed: number, modes: Array<'AND' | 'OR'> = ['
       if (!skip.includes('status')) add('status', f.status)
       if (!skip.includes('stage')) add('stage', f.stage)
       if (!skip.includes('year')) add('year', f.year)
-      add('session', f.session)
+      if (!skip.includes('sessionName')) add('sessionName', f.sessionName)
       if (!skip.includes('state')) add('state', f.state)
       if (!skip.includes('priority')) add('priority', f.priority)
       if (!skip.includes('position')) add('position', f.position)
-      if (!skip.includes('tag')) add('tag', f.tags)
-      if (!skip.includes('subject')) add('subject', f.subjects)
-      for (const [fieldId, counts] of Object.entries(f.customFields)) if (!skip.includes(`cf_${fieldId}`)) add(`cf_${fieldId}`, counts)
+      if (!skip.includes('tag')) add('tag', f.tag)
+      if (!skip.includes('subject')) add('subject', f.subject)
+      for (const [fieldId, counts] of Object.entries(f.field)) if (!skip.includes(`field.${fieldId}`)) add(`field.${fieldId}`, counts)
       return out
     }
 
@@ -145,10 +169,10 @@ export function randomFixtureSuite(seed: number, modes: Array<'AND' | 'OR'> = ['
       checks.forEach(([label, , promised], i) => expect(actual[i], label).toBe(promised))
     }
 
-    for (const [qs, skip] of modes.includes('AND') ? AND_ANCHORS : []) {
+    for (const [qs, skip] of modes.includes('AND') ? andAnchors : []) {
       it(`AND: ${qs || 'no filter'}`, async () => { await expectCountsMatch(qs, skip) })
     }
-    for (const qs of modes.includes('OR') ? OR_ANCHORS : []) {
+    for (const qs of modes.includes('OR') ? orAnchors : []) {
       it(`OR: ${qs}`, async () => { await expectCountsMatch(`${qs}&match=any`, []) })
     }
   })

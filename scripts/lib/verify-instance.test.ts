@@ -96,6 +96,28 @@ describe('resolveConfig', () => {
     expect(cfg.resume).toEqual({ cmd: './scripts/new-instance.sh --slug ri', steps: { deploy: 4, secrets: 5, verify: 11 } })
   })
 
+  it('reads whether attachments are bound from the instance own block in api/wrangler.toml', () => {
+    const toml = `${WRANGLER_TOML}
+[[env.other.r2_buckets]]
+binding = "ATTACHMENTS_BUCKET"
+bucket_name = "acme-other-files"
+`
+    // Only another instance binds a bucket: this one is off.
+    expect(resolveConfig(['ri'], BASE_ENV, io({ '/repo/api/wrangler.toml': toml })).attachments).toBe('off')
+    const bound = `${toml}
+[[env.ri.r2_buckets]]
+binding = "SOMETHING_ELSE"
+bucket_name = "acme-ri-other"
+
+[[env.ri.r2_buckets]]
+binding = "ATTACHMENTS_BUCKET"
+bucket_name = "acme-ri-files"
+`
+    expect(resolveConfig(['ri'], BASE_ENV, io({ '/repo/api/wrangler.toml': bound })).attachments).toEqual({ bucket: 'acme-ri-files' })
+    // No config to read: say so rather than guess.
+    expect(resolveConfig(['ri'], BASE_ENV, io()).attachments).toBe('unknown')
+  })
+
   it('rejects an unknown flag', () => {
     expect(() => resolveConfig(['ri', '--nope'], BASE_ENV, io())).toThrow(UsageError)
   })
@@ -131,12 +153,12 @@ function makeWorld(overrides: Record<string, Route> = {}, opts: { probeArrivesAf
     }),
     [`POST ${CENTRAL}/api/tenants/ri/verify-delivery`]: ({ body }) => {
       nonce = body?.nonce ?? 'n-1'
-      return { json: { ok: true, nonce, billId: 'legiscan:42', via: 'binding' } }
+      return { json: { ok: true, nonce, billId: 'bill:42', via: 'binding' } }
     },
     [`GET ${CENTRAL}/api/tenants/ri/delivery-probe`]: () => {
       polls += 1
       if (polls < arrivesAfter) return { json: { probe: null } }
-      return { json: { probe: { nonce, billId: 'legiscan:42', receivedAt: '2026-10-14 12:00:00', readStatus: opts.probeReadStatus ?? 200 } } }
+      return { json: { probe: { nonce, billId: 'bill:42', receivedAt: '2026-10-14 12:00:00', readStatus: opts.probeReadStatus ?? 200 } } }
     },
     [`POST ${CENTRAL}/api/tenants/ri/verify-ai`]: () => ({ json: { status: 'ok', billNumber: 'HB 1', tags: 2, relevanceScore: 7 } }),
     [`POST ${CENTRAL}/api/tenants/ri/send-sample-email`]: () => ({ json: { ok: true, provider: 'cloudflare' } }),
@@ -167,7 +189,7 @@ function makeWorld(overrides: Record<string, Route> = {}, opts: { probeArrivesAf
 function config(over: Partial<VerifyConfig> = {}): VerifyConfig {
   return {
     slug: 'ri', centralUrl: CENTRAL, adminSecret: 's3cret', appUrl: APP, workerUrl: WORKER,
-    to: 'ops@acme.example', ai: true, expectBuild: 'abc1234', expectStates: [], resume: null,
+    to: 'ops@acme.example', ai: true, expectBuild: 'abc1234', expectStates: [], resume: null, attachments: 'off',
     ...over,
   }
 }
@@ -339,12 +361,12 @@ describe('check 3: queue delivery', () => {
     const { by } = await run(world)
     expect(by('delivery').status).toBe('pass')
     expect(world.calls.filter(c => c.url.endsWith('/delivery-probe'))).toHaveLength(3)
-    expect(by('delivery').detail).toContain('legiscan:42')
+    expect(by('delivery').detail).toContain('bill:42')
   })
 
   it('ignores a probe left over from an earlier run', async () => {
     const world = makeWorld({
-      [`GET ${CENTRAL}/api/tenants/ri/delivery-probe`]: () => ({ json: { probe: { nonce: 'stale', billId: 'legiscan:1', receivedAt: 'x', readStatus: 200 } } }),
+      [`GET ${CENTRAL}/api/tenants/ri/delivery-probe`]: () => ({ json: { probe: { nonce: 'stale', billId: 'bill:1', receivedAt: 'x', readStatus: 200 } } }),
     })
     const { by } = await run(world)
     expect(by('delivery').status).toBe('fail')
@@ -571,5 +593,19 @@ describe('report and exit code', () => {
   it('falls back to re-running verification when a failure has no mapped step', () => {
     const cfg = config({ resume: { cmd: 'cmd', steps: { verify: 11 } } })
     expect(formatReport([fail], cfg)).toContain('cmd --from-step 11')
+  })
+})
+
+describe('the attachments line', () => {
+  it('reports attachments on or off without counting it as a check', async () => {
+    const world = makeWorld()
+    const { results } = await run(world)
+    const on = formatReport(results, config({ attachments: { bucket: 'acme-ri-files' } }))
+    expect(on).toMatch(/Attachments: on \(acme-ri-files\b/)
+    const off = formatReport(results, config({ attachments: 'off' }))
+    expect(off).toMatch(/Attachments: off\b/)
+    expect(off).toContain('5 passed, 0 failed, 0 skipped')
+    expect(exitCode(results)).toBe(0)
+    expect(formatReport(results, config({ attachments: 'unknown' }))).toMatch(/Attachments: unknown\b/)
   })
 })

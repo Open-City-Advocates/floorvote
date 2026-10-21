@@ -1,14 +1,16 @@
 import { Hono } from 'hono'
-import { eq, desc, count, ne, and, or, sql, isNull, isNotNull, notInArray, inArray } from 'drizzle-orm'
+import { eq, desc, count, ne, and, or, sql, isNotNull, notInArray, inArray, type SQL } from 'drizzle-orm'
 import { filedSlug } from '../lib/sessionSlug'
 import { requireAuth } from '../middleware/auth'
 import { getDb } from '../db/client'
 import { feedEvents, bills, users } from '../db/schema'
-import { PASSIVE_EVENT_TYPES } from '../../../shared/feedUtils'
+import { LEGISLATIVE_EVENT_TYPES, NO_PRIORITY_UPDATES, PASSIVE_EVENT_TYPES } from '../../../shared/feedUtils'
 import { nowDb } from '../lib/dbTime'
 import { activeUser } from '../lib/accountDeletion'
-import type { AppEnv } from '../types'
-import { userTitleSql } from '../lib/userTitle'
+import type { AppDb, AppEnv } from '../types'
+import { groupHasPriority, loadGroupPriorities, priorityWorn } from '../lib/teamFields'
+import { getNewMatchMinRelevance, loadUntriagedNewMatchGroups, untriagedNewMatch } from '../lib/newMatch'
+import { defaultFeedShows, rowBills, rowDays, rowPage, utcDay } from '../lib/noPriorityRow'
 
 export const feedRouter = new Hono<AppEnv>()
 
@@ -18,7 +20,6 @@ feedRouter.get('/', async (c) => {
   const page = Math.max(1, Number(c.req.query('page') || 1))
   const limit = Math.min(100, Math.max(1, Number(c.req.query('limit') || 20)))
   const offset = (page - 1) * limit
-  const scope = c.req.query('scope') as 'default' | 'analyzed' | undefined
 
   const db = getDb(c.env.DB)
   const currentUser = c.get('user')
@@ -44,17 +45,28 @@ feedRouter.get('/', async (c) => {
   // that costs one more page fetch, never the short page #54 was about. Erring
   // toward a superset here is deliberate for that reason: the reverse — a server
   // stricter than the client — is unrecoverable downstream.
+  //
+  // A companion group is one policy (#381): it is prioritized when any member is
+  // (the group's priority is the one set most recently on a member), and its
+  // day-group holds the engagement events of every member, since the client
+  // rolls the members' events into one card. The group's EXISTS arm follows the
+  // plain one, and only a bill in a group reaches it.
   const passiveTypes = [...PASSIVE_EVENT_TYPES]
-  const defaultVisible = or(
-    isNotNull(bills.priority),
-    notInArray(feedEvents.type, passiveTypes),
-    sql`EXISTS (
+  const engagementOnDay = (siblingBills: SQL) => sql`EXISTS (
       SELECT 1 FROM feed_events sib
-       WHERE sib.bill_id = ${feedEvents.billId}
+       WHERE ${siblingBills}
          AND sib.suppressed != 1
          AND date(sib.created_at) = date(${feedEvents.createdAt})
          AND sib.type NOT IN (${sql.join(passiveTypes.map((t) => sql`${t}`), sql`, `)})
-    )`,
+    )`
+  const defaultVisible = or(
+    groupHasPriority(bills),
+    notInArray(feedEvents.type, passiveTypes),
+    engagementOnDay(sql`sib.bill_id = ${feedEvents.billId}`),
+    and(
+      isNotNull(bills.groupKey),
+      engagementOnDay(sql`sib.bill_id IN (SELECT g.id FROM bills g WHERE g.group_key = ${bills.groupKey})`),
+    ),
   )
 
   // activeUser is evaluated against the left-joined `users` row; events whose
@@ -62,19 +74,21 @@ feedRouter.get('/', async (c) => {
   // users.deactivatedAt NULL, and isNull(NULL) is true — so those are unaffected.
   //
   // The bills join is a left join so an event with no bill (a bulk edit) still
-  // returns: such a row has NULL bills columns, which the default scope already
-  // treats as visible when its type is not passive. The analyzed scope filters on
-  // the bill's match, which a bill-less event has no bill to fail. The new-matches
-  // row is left out of it: this scope already lists every match, each as a
-  // bill_matched event, so the day's summary would only repeat them.
-  const baseWhere = scope === 'analyzed'
-    ? and(
-        ne(feedEvents.suppressed, true),
-        ne(feedEvents.type, 'new_matches'),
-        or(isNull(feedEvents.billId), isNotNull(bills.matchType)),
-        activeUser,
-      )
-    : and(ne(feedEvents.suppressed, true), activeUser, defaultVisible)
+  // returns: such a row has NULL bills columns, which defaultVisible treats as
+  // visible when its type is not passive.
+  //
+  // The no-priority updates row is passive, so defaultVisible (and with it the
+  // nav dot below) never admits it. The feed's list admits it by its own
+  // rule instead, from the bills whose legislative events defaultVisible hides
+  // (lib/noPriorityRow): on a day those make two or more entries, the row; on a
+  // day they make one, that entry's updates, which the client draws as the
+  // bill's card (#921). Never both, so the total counts each once. Those updates
+  // are passive too, so they never move the dot either.
+  //
+  // There is one feed: this route reads no `scope` (the "All analyzed bills" one
+  // is gone, #922), so a client that still sends the parameter gets this feed.
+  const minRelevance = await getNewMatchMinRelevance(db)
+  const baseWhere = and(ne(feedEvents.suppressed, true), activeUser, defaultFeedShows(defaultVisible, minRelevance))
 
   const [rows, countRow, latestRow, seenRow] = await Promise.all([
     db
@@ -87,15 +101,18 @@ feedRouter.get('/', async (c) => {
         billAbstract: bills.abstract,
         billSummary: bills.tenantSummary,
         billPriority: bills.priority,
+        billGroupKey: bills.groupKey,
         billSession: bills.session,
         billSessionSlug: bills.sessionSlug,
         billState: bills.state,
         billMatchType: bills.matchType,
+        billNewMatchAt: bills.newMatchAt,
+        billTriagedAt: bills.triagedAt,
         billIsDraft: bills.isDraft,
         userId: feedEvents.userId,
         userName: users.name,
         userEmail: users.email,
-        userTitle: userTitleSql,
+        userTitle: users.title,
         metadata: feedEvents.metadata,
         createdAt: feedEvents.createdAt,
       })
@@ -137,6 +154,64 @@ feedRouter.get('/', async (c) => {
       .get(),
   ])
 
+  // A companion group's events wear the group's priority, whichever member holds it.
+  const groupPriorities = await loadGroupPriorities(db, rows.map((r) => r.billGroupKey))
+
+  // Whether a card is an untriaged new match, which an admin's card shows as the
+  // amber "New · Set priority" dropdown. A group is triaged as one (see
+  // loadUntriagedNewMatchGroups); a bill in no group reads its own columns.
+  const newMatchGroups = await loadUntriagedNewMatchGroups(db, rows.map((r) => r.billGroupKey))
+  const isNewMatch = (r: (typeof rows)[number]) => untriagedNewMatch({
+    groupKey: r.billGroupKey, matchType: r.billMatchType, newMatchAt: r.billNewMatchAt, priority: r.billPriority, triagedAt: r.billTriagedAt,
+  }, newMatchGroups)
+
+  // The day's new-matches row names every matched bill, but a companion group is
+  // one policy (#638), so it counts once: the row's `count` is its distinct cards.
+  const matchCounts = await newMatchCounts(db, rows.filter((r) => r.type === 'new_matches'))
+
+  // A worn priority per row: a companion group's events wear the group's.
+  const wornPriority = (r: (typeof rows)[number]) =>
+    priorityWorn({ priority: r.billPriority ?? null, groupKey: r.billGroupKey ?? null }, groupPriorities)
+
+  // Each no-priority updates row's bills, resolved now for the whole page in
+  // two queries, however many rows it holds: how many entries, the first two
+  // for its chips, and the time of its newest update (lastAt), by which the
+  // viewer's feed files it under their own day. The rest load on expand.
+  //
+  // The same read of the page's days marks the updates that stand in for a row
+  // of one (#921): a legislative update on the one entry its UTC day's row
+  // resolves to. The client draws them as that bill's card, where its rule for
+  // the default feed would otherwise hide them, and they raise no banner.
+  const rowSummaries = new Map<string, { count: number; firstBills: unknown[]; lastAt: string }>()
+  const loneCards = new Set<string>()
+  const pageRows = rows.filter((x) => x.type === NO_PRIORITY_UPDATES)
+  const loneCandidates = rows.filter((r) =>
+    r.billId !== null && LEGISLATIVE_EVENT_TYPES.includes(r.type) && wornPriority(r) === null)
+  if (pageRows.length > 0 || loneCandidates.length > 0) {
+    const days = await rowDays(db, [...pageRows, ...loneCandidates].map((r) => utcDay(r.createdAt)), minRelevance)
+    for (const r of loneCandidates) {
+      const entries = days.get(utcDay(r.createdAt))?.entries ?? []
+      if (entries.length === 1 && entries[0].memberIds.includes(r.billId!)) loneCards.add(r.id)
+    }
+    const leads = (day: string) => (days.get(day)?.entries ?? []).slice(0, 2).map((e) => e.memberIds[0])
+    const billsById = await rowBills(db, pageRows.flatMap((r) => leads(utcDay(r.createdAt))))
+    for (const r of pageRows) {
+      const day = days.get(utcDay(r.createdAt))
+      // A row whose bills left it between the page's query and this one counts 0, which the client hides.
+      rowSummaries.set(r.id, {
+        count: day?.entries.length ?? 0,
+        firstBills: leads(utcDay(r.createdAt)).flatMap((id) => billsById.get(id) ?? []),
+        lastAt: day?.lastAt ?? r.createdAt,
+      })
+    }
+  }
+  const metadataOf = (r: { id: string; metadata: string }): unknown => {
+    const stored = JSON.parse(r.metadata) as object
+    if (matchCounts.has(r.id)) return { ...stored, count: matchCounts.get(r.id) }
+    if (rowSummaries.has(r.id)) return { ...stored, ...rowSummaries.get(r.id) }
+    return stored
+  }
+
   return c.json({
     events: rows.map((r) => ({
       id: r.id,
@@ -147,17 +222,18 @@ feedRouter.get('/', async (c) => {
       billNumber: r.billNumber ?? '',
       billTitle: r.billTitle || r.billAbstract || '',
       billSummary: r.billSummary ?? null,
-      billPriority: r.billPriority ?? null,
+      billPriority: wornPriority(r),
+      billGroupKey: r.billGroupKey ?? null,
       billMatchType: r.billMatchType ?? null,
+      billNewMatch: isNewMatch(r),
       billSessionSlug: filedSlug({ session: r.billSession, sessionSlug: r.billSessionSlug }),
       billState: r.billState ?? null,
       billIsDraft: r.billIsDraft ?? false,
       userId: r.userId,
       userName: r.userName || r.userEmail,
       userTitle: r.userTitle,
-      // `subtitle` is the old name for `title`. Remove in the release after this one.
-      userSubtitle: r.userTitle,
-      metadata: JSON.parse(r.metadata) as unknown,
+      metadata: metadataOf(r),
+      noPriorityCard: loneCards.has(r.id),
       createdAt: r.createdAt,
     })),
     total: countRow?.total ?? 0,
@@ -167,6 +243,28 @@ feedRouter.get('/', async (c) => {
     lastSeenFeed: seenRow?.lastSeenFeed ?? null,
   })
 })
+
+// A page of the no-priority updates row's expanded list.
+const ROW_PAGE = 50
+
+// Each new-matches row's count of new matches: its bills, with the members of one
+// companion group counted once. An id with no bill row (deleted since) counts as
+// one, as it did before groups.
+async function newMatchCounts(db: AppDb, rows: Array<{ id: string; metadata: string }>): Promise<Map<string, number>> {
+  const named = new Map(rows.map((r) => {
+    const ids = (JSON.parse(r.metadata) as { billIds?: unknown }).billIds
+    return [r.id, Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : []] as const
+  }))
+  const allIds = [...new Set([...named.values()].flat())]
+  const groupOf = new Map<string, string | null>()
+  // D1 rejects more than 100 bound parameters per statement.
+  for (let i = 0; i < allIds.length; i += 90) {
+    for (const b of await db.select({ id: bills.id, groupKey: bills.groupKey }).from(bills).where(inArray(bills.id, allIds.slice(i, i + 90))).all()) {
+      groupOf.set(b.id, b.groupKey)
+    }
+  }
+  return new Map([...named].map(([id, ids]) => [id, new Set(ids.map((b) => groupOf.get(b) ? `group:${groupOf.get(b)}` : b)).size]))
+}
 
 feedRouter.post('/seen', async (c) => {
   const user = c.get('user')
@@ -181,15 +279,42 @@ feedRouter.post('/seen', async (c) => {
 // Bills a bill-less event is about, read from metadata.billIds. Fetched on demand
 // when a Feed row is expanded rather than inlined in GET /feed: a bulk edit can name
 // up to 1000 bills and the Feed polls page 1 every 20 seconds. Ids whose bill has
-// since been deleted are skipped, so the list is what still exists.
+// since been deleted are skipped, so the list is what still exists. Each bill
+// carries its AI summary and the priority it wears, for its chip's hover card.
+//
+// A no-priority updates row names no bills: its list is resolved now, from its
+// day's events, by relevance, a page at a time (?page, ?limit, about 50 a page),
+// each entry with its bills' changes that day and whether it reads as an untriaged
+// new match. See lib/noPriorityRow. ?removed is how many entries the reader has
+// dropped from the pages it already has (an admin set their priority): the row
+// has shrunk by that many ahead of this page, so the page starts that much earlier
+// and no entry slips past between two pages.
 feedRouter.get('/events/:id/bills', async (c) => {
   const db = getDb(c.env.DB)
   const event = await db
-    .select({ metadata: feedEvents.metadata })
+    .select({ type: feedEvents.type, metadata: feedEvents.metadata, createdAt: feedEvents.createdAt })
     .from(feedEvents)
     .where(eq(feedEvents.id, c.req.param('id')))
     .get()
   if (!event) return c.json({ error: 'not found' }, 404)
+
+  if (event.type === NO_PRIORITY_UPDATES) {
+    const page = Math.max(1, Number(c.req.query('page') || 1) || 1)
+    const limit = Math.min(100, Math.max(1, Number(c.req.query('limit') || ROW_PAGE) || ROW_PAGE))
+    const minRelevance = await getNewMatchMinRelevance(db)
+    const day = utcDay(event.createdAt)
+    const removedParam = c.req.query('removed') ?? ''
+    const removed = /^\d+$/.test(removedParam) ? Number(removedParam) : 0
+    const start = Math.max(0, (page - 1) * limit - removed)
+    const entries = (await rowDays(db, [day], minRelevance)).get(day)?.entries ?? []
+    return c.json({
+      entries: await rowPage(db, day, minRelevance, entries.slice(start, start + limit)),
+      total: entries.length,
+      page,
+      limit,
+      hasMore: start + limit < entries.length,
+    })
+  }
 
   const named = (JSON.parse(event.metadata) as { billIds?: unknown }).billIds
   const ids = Array.isArray(named) ? named.filter((x): x is string => typeof x === 'string') : []
@@ -197,20 +322,25 @@ feedRouter.get('/events/:id/bills', async (c) => {
   const byId = new Map<string, typeof found[number]>()
   const found: Array<{
     id: string; billNumber: string; title: string; abstract: string | null
-    state: string; session: string | null; sessionSlug: string | null; isDraft: boolean
+    state: string; session: string | null; sessionSlug: string | null; isDraft: boolean; groupKey: string | null
+    summary: string | null; priority: 'high' | 'medium' | 'low' | null
   }> = []
   // D1 rejects more than 100 bound parameters per statement.
   for (let i = 0; i < ids.length; i += 90) {
     found.push(...await db
       .select({
         id: bills.id, billNumber: bills.billNumber, title: bills.title, abstract: bills.abstract,
-        state: bills.state, session: bills.session, sessionSlug: bills.sessionSlug, isDraft: bills.isDraft,
+        state: bills.state, session: bills.session, sessionSlug: bills.sessionSlug, isDraft: bills.isDraft, groupKey: bills.groupKey,
+        summary: bills.tenantSummary, priority: bills.priority,
       })
       .from(bills)
       .where(inArray(bills.id, ids.slice(i, i + 90)))
       .all())
   }
   for (const b of found) byId.set(b.id, b)
+  // What a chip's hover card shows, as the sidebar's does: the bill's AI summary,
+  // and the priority it wears (its group's, when it is in one).
+  const groupPriorities = await loadGroupPriorities(db, found.map((b) => b.groupKey))
 
   return c.json({
     bills: ids.flatMap((id) => {
@@ -222,6 +352,9 @@ feedRouter.get('/events/:id/bills', async (c) => {
         state: b.state ?? null,
         sessionSlug: filedSlug(b),
         isDraft: b.isDraft ?? false,
+        groupKey: b.groupKey ?? null,
+        summary: b.summary ?? null,
+        priority: priorityWorn({ priority: b.priority ?? null, groupKey: b.groupKey ?? null }, groupPriorities),
       }] : []
     }),
   })

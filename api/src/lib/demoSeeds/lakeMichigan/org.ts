@@ -1,5 +1,6 @@
 import type { DemoSeedModule, DemoSeedSession } from '../types'
 import type { TaxonomyItem } from '../../taxonomy'
+import { LEGISCAN_ATTRIBUTION } from '../../../../../shared/dataAttribution'
 
 /** Eight themes, each represented by at least two of the seed's 20 bills. */
 const TAXONOMY: TaxonomyItem[] = [
@@ -51,7 +52,7 @@ const MODULES: Record<string, DemoSeedModule> = {
 export const LM_ORG = {
   associationName: 'Lake Michigan Alliance',
   bannerText:
-    'Demo instance. The bills are real legislation from Michigan, Wisconsin, Illinois, Indiana, and ' +
+    'This is a demo. The bills are real legislation from Michigan, Wisconsin, Illinois, Indiana, and ' +
     'Congress — the organization, its staff, the hearing dates, and the most recent legislative ' +
     'activity are fictional. Anything you change resets every few hours.',
   orgNoun: 'alliance',
@@ -59,11 +60,14 @@ export const LM_ORG = {
 
 Note: they track four state legislatures — Michigan, Wisconsin, Illinois, and Indiana — plus Congress. State bills usually set standards, funding, or permitting duties for state agencies and local utilities, while federal bills more often authorize programs and appropriate money. Weigh a bill's relevance by its practical effect on water in the basin, not by which body passed it.
 
-When writing the summary, start directly with an action verb or gerund phrase — do not begin with "This bill", "The bill", or the bill number. For example, you could start with "Requires community water systems to...", "Establishes a grant program for...", etc.
+*How to write the summary*
+- Open with one sentence stating the bill's main effect, starting with a verb ("Requires…", "Establishes…", "Prohibits…"). Never write "This bill", "The bill", or the bill number anywhere in the summary.
+- Use the one-sentence form only when the bill makes a single change with nothing attached (one new requirement, one changed date, one renamed program). If it also sets a deadline, penalty, fee, or funding, or changes more than one thing, use the list below, however low its relevance. When unsure, use the list.
+- Otherwise, follow that sentence with a list of 2–8 items, most consequential first. Start each item with a short bold label naming what it governs, then a colon, then one sentence that starts with a verb and says who bears the duty. Keep each deadline, dollar amount, threshold, or penalty in the item it belongs to.
+- If the bill states an effective date, make it the last item, labeled Effective date.
+- Write no other prose, and use bold only for the item labels.
 
-Scale the description to the bill's complexity and relevance. For less relevant, simple, or narrow bills 1–2 plain sentences should suffice. For bills that are longer and more relevant, you might write a paragraph or two. For a bill with multiple distinct provisions, you might also—or instead—use a list of 2–8 items, with the most impactful provisions first (unless there is some other order that would be more logical). Each item should start with a verb and be one sentence. You should aim to minimize redundancy in the description.
-
-Many of the bills you see will be short, procedural, or only tangentially related to water. When the text supports only a narrow description, give a narrow one — "Extends the sunset date for the state well-testing program to 2030." is a complete summary, and padding it out to sound substantive is worse than leaving it brief. If the available text is too thin to tell what the bill actually does, describe what it appears to do and stop there.
+Many of the bills you see will be short, procedural, or only tangentially related to water. Don't pad a single change to sound substantive ("Extends the sunset date for the state well-testing program to 2030." is a complete summary), and don't compress a bill with several provisions into one sentence either: the rules above decide its shape. If the available text is too thin to tell what the bill actually does, describe what it appears to do and stop there.
 
 Describe what the bill does, not whether it is good policy. The organization records its own stance separately as an official position, and takes one on only a small share of what it tracks — so a summary should read the same whether they end up supporting the bill, opposing it, or never taking a view. Don't predict whether a bill will pass.`,
   relevanceQuestion: "Rate the bill's relevance to Great Lakes water quality and drinking water infrastructure.",
@@ -73,4 +77,6 @@ Describe what the bill does, not whether it is good policy. The organization rec
   modules: MODULES,
   sessions: { data: SESSIONS },
   stateCoverage: ['MI', 'WI', 'IL', 'IN', 'US'] as string[],
+  // Every state and Congress here is on LegiScan. A live instance learns this from central; the demo never calls it.
+  attribution: { providers: [{ id: 'legiscan', ...LEGISCAN_ATTRIBUTION }] },
 }

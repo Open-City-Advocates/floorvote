@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { env, SELF } from 'cloudflare:test'
 import { and, eq } from 'drizzle-orm'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill } from '../helpers'
+import { clearDb, seedUser, seedSession, seedBill } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { associationConfig, billCustomFieldValues, bills, customFieldDefinitions, officialPositions, teamEvents } from '../../src/db/schema'
 import { syncIdenticalCompanions } from '../../src/lib/companionGroups'
@@ -96,8 +96,7 @@ describe('team fields across a companion group', () => {
   }
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     vi.mocked(centralFetch).mockReset()
     vi.mocked(centralFetch).mockRejectedValue(new Error('central unreachable'))
     for (const [name, role] of [['ann', 'member'], ['ada', 'admin']] as const) {
@@ -111,10 +110,11 @@ describe('team fields across a companion group', () => {
   })
 
   describe('reading', () => {
-    it("shows every shared value the same on each member's page, the one set most recently", async () => {
+    it("shows every shared value the same on each member's page, the one set most recently, and the lead's analysis", async () => {
       await conflictingValues()
       await group()
-      const expected = { position: 'Support', priority: 'high', committee: 'Labor', summary: 'S1713 summary', tags: ['Labor'] }
+      // A190 leads (equally far along, no texts, and its number comes first), so its analysis shows, though S1713's is newer.
+      const expected = { position: 'Support', priority: 'high', committee: 'Labor', summary: 'A190 summary', tags: ['Energy'] }
       expect(await shown('a190')).toEqual(expected)
       expect(await shown('b1713')).toEqual(expected)
     })

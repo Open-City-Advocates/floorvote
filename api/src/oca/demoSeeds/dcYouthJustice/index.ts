@@ -93,6 +93,7 @@ export const DC_YOUTH_JUSTICE_SEED: DemoSeed = {
   ],
   customFieldValues: DCYJ_CUSTOM_FIELD_VALUES, notes: DCYJ_NOTES,
   calendarEvents: DCYJ_CALENDAR_EVENTS,
+  teamFieldChanges: [],
   // Written for a youth-justice coalition. The first is the one OR view: the
   // DYRS and detention tags, or anything Youth Affairs leads. The tags are the
   // ones copied from OCA's analysis, so its count can drift when OCA's tags do;
@@ -103,7 +104,7 @@ export const DC_YOUTH_JUSTICE_SEED: DemoSeed = {
       // 11 bills: 6 tagged DYRS, 4 tagged Pretrial & Detention, and B26-0479, which Youth Affairs leads.
       id: 'dcyj-view-dyrs-detention', name: 'DYRS, detention, or Youth Affairs', slug: 'dyrs-detention-or-youth-affairs',
       query: viewQuery([
-        ['match', 'any'], ['tag', 'DYRS'], ['tag', 'Pretrial & Detention'], ['cf_lead-committee', 'Youth Affairs'],
+        ['match', 'any'], ['tag', 'DYRS'], ['tag', 'Pretrial & Detention'], ['field.lead-committee', 'Youth Affairs'],
       ]),
     },
     {

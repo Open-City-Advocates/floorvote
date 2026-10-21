@@ -17,7 +17,7 @@ vi.stubGlobal('fetch', fetchMock)
 import { processIngestorQueue } from '../../src/queue/processor'
 import * as legiscan from '../../src/providers/legiscan/client'
 import { toHandle } from '../../src/lib/billHandle'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { clearDb } from '../helpers/migrations'
 
 type Committee = { committee_id: number; chamber: string; chamber_id: number; name: string }
 
@@ -50,7 +50,7 @@ async function ingest(...responses: any[]) {
 }
 
 async function getBill(billId: number) {
-  const { app } = await import('../../src/index-legiscan')
+  const { app } = await import('../../src/index')
   const res = await app.fetch(new Request(`http://central/api/bills/${toHandle(billId)}`, {
     headers: { 'x-admin-secret': 'test-secret' },
   }), env as any)
@@ -59,7 +59,7 @@ async function getBill(billId: number) {
 }
 
 beforeEach(async () => {
-  await setupLsDb()
+  await clearDb()
   fetchMock.mockReset()
   fetchMock.mockRejectedValue(new Error('no network in this test'))
   const db = drizzle(env.DB, { schema })

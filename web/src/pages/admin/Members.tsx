@@ -15,11 +15,14 @@ import { MemberNameCell } from '../../components/MemberNameCell'
 import { usePageTitle } from '../../hooks/usePageTitle'
 import { useDemo } from '../../context/DemoContext'
 import { color, radius, fontSize, fontWeight, shadow } from '../../styles/tokens'
+import { primaryButtonColors } from '../../styles/primaryButton'
 import { orgRolesLabel } from '../../lib/orgNoun'
 import { MissingRequiredReason, useRequiredSubmit } from '../../components/RequiredField'
 import { inlineEditCancelStyle, inlineEditSaveStyle } from '../../lib/inlineEditStyles'
-import { ChangeEmailDialog } from '../../components/ChangeEmailDialog'
+import { MemberEmailEditor } from '../../components/MemberEmailEditor'
 import { emailChangedLabel, memberEmailChangeLabel, type EmailChangeStepFields } from '../../lib/emailChangedLabel'
+import { emailChangeReducer, IDLE as EMAIL_CHANGE_IDLE, type EmailChangeAction, type EmailChangeState } from '../../lib/emailChangeState'
+import { EmailChangePill } from '../../components/EmailChangePill'
 
 type Role = { id: string; name: string }
 
@@ -48,6 +51,16 @@ type Member = {
 // and the invite actions alike.
 function isPendingInvite(m: Pick<Member, 'invitedBy' | 'hasLoggedIn' | 'deactivatedAt'>): boolean {
   return m.invitedBy !== null && !m.hasLoggedIn && !m.deactivatedAt
+}
+
+// The count line: members and pending invites, counted apart the way the
+// sidebar's member count does; deactivated members are in neither.
+function memberCountLine(all: Member[]): string {
+  const active = all.filter(m => !m.deactivatedAt)
+  const pending = active.filter(isPendingInvite).length
+  const joined = active.length - pending
+  const line = `${joined} ${joined === 1 ? 'member' : 'members'}`
+  return pending === 0 ? line : `${line}, ${pending} pending ${pending === 1 ? 'invite' : 'invites'}`
 }
 
 interface AuthEvent extends EmailChangeStepFields {
@@ -258,8 +271,13 @@ export function Members() {
   // Toast state
   const [toast, setToast] = useState<string | null>(null)
 
-  // "Change email…" dialog: the pending invite being edited, if any.
-  const [changeEmailMember, setChangeEmailMember] = useState<Member | null>(null)
+  // Where each member's email change stands, shown as a pill in their row
+  // (lib/emailChangeState), editing included: the address is edited in the row.
+  const [emailChanges, setEmailChanges] = useState<Record<string, EmailChangeState>>({})
+  const resendButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
+  function dispatchEmailChange(id: string, action: EmailChangeAction) {
+    setEmailChanges(prev => ({ ...prev, [id]: emailChangeReducer(prev[id] ?? EMAIL_CHANGE_IDLE, action) }))
+  }
 
   // Owner-only account-deletion policy toggle
   const [accountDeletionEnabled, setAccountDeletionEnabled] = useState(false)
@@ -545,21 +563,52 @@ export function Members() {
   }
 
   function handleEmailChanged(member: Member, email: string, pending: boolean) {
-    setChangeEmailMember(null)
     if (pending) {
       // An active member's address changes only when they confirm it from the new one.
+      dispatchEmailChange(member.id, { type: 'sent', to: email, announce: `Link sent to ${email}. The address changes once they confirm it.` })
       setToast(`Confirmation sent to ${email}. The change takes effect once it is confirmed.`)
       setTimeout(() => setToast(null), 4000)
-      actionsTriggerRefs.current[member.id]?.focus()
+      requestAnimationFrame(() => resendButtonRefs.current[member.id]?.focus())
       return
     }
     // The new invite is now the latest email, with no outcome yet, so the
     // row is a plain pending invite again (as the next members fetch says).
     setMembers(prev => prev.map(m => (m.id === member.id ? { ...m, email, emailBounce: null } : m)))
+    dispatchEmailChange(member.id, { type: 'confirmed', email })
     setToast(`New invite sent to ${email}.`)
     setTimeout(() => setToast(null), 4000)
     actionsTriggerRefs.current[member.id]?.focus()
   }
+
+  async function handleResendEmailChange(member: Member, to: string) {
+    dispatchEmailChange(member.id, { type: 'resend' })
+    try {
+      await apiFetch(`/admin/members/${member.id}/change-email`, { method: 'POST', body: JSON.stringify({ email: to }) })
+      dispatchEmailChange(member.id, { type: 'resent', announce: `Link sent again to ${to}.` })
+    } catch (err) {
+      dispatchEmailChange(member.id, {
+        type: 'resendFailed',
+        message: err instanceof ApiError ? err.message : "Couldn't send the link again. Try again.",
+      })
+    }
+    // The button was disabled while sending, which drops focus.
+    requestAnimationFrame(() => resendButtonRefs.current[member.id]?.focus())
+  }
+
+  function handleCancelEmailChange(member: Member) {
+    dispatchEmailChange(member.id, { type: 'cancel' })
+    actionsTriggerRefs.current[member.id]?.focus()
+  }
+
+  // A members fetch that already shows the new address means they confirmed it.
+  useEffect(() => {
+    for (const m of members) {
+      const state = emailChanges[m.id]
+      if (state?.kind === 'pending' && state.to.toLowerCase() === m.email.toLowerCase()) {
+        dispatchEmailChange(m.id, { type: 'confirmed', email: m.email })
+      }
+    }
+  }, [members, emailChanges])
 
   async function handleSetMemberRoles(memberId: string, roleIds: string[]) {
     try {
@@ -616,7 +665,7 @@ export function Members() {
       items.push({ kind: 'action', label: 'Resend invite', disabled: demoLocked, onClick: () => { close(); handleResendInvite(member) } })
       // Only an Owner may change a pending Owner's address (the server refuses it too).
       if (canManageThisMember) {
-        items.push({ kind: 'action', label: 'Change email…', disabled: demoLocked, onClick: () => { close(); setChangeEmailMember(member) } })
+        items.push({ kind: 'action', label: 'Change email…', disabled: demoLocked, onClick: () => { close(); dispatchEmailChange(member.id, { type: 'open', value: member.email }) } })
       }
     }
 
@@ -624,7 +673,7 @@ export function Members() {
     // address. Owners may ask for anyone and admins for Standard members (the
     // server refuses the rest, and every superadmin account).
     if (!isSelf && !isDeactivated && !isPendingInvite(member) && (currentUserIsOwner || member.role === 'member')) {
-      items.push({ kind: 'action', label: 'Change email…', disabled: demoLocked, onClick: () => { close(); setChangeEmailMember(member) } })
+      items.push({ kind: 'action', label: 'Change email…', disabled: demoLocked, onClick: () => { close(); dispatchEmailChange(member.id, { type: 'open', value: member.email }) } })
     }
 
     if (!isSelf && member.hasLoggedIn && !isDeactivated) {
@@ -684,8 +733,7 @@ export function Members() {
     fontFamily: 'inherit',
   }
   const btnPrimary: React.CSSProperties = {
-    background: color.accentBlue,
-    color: color.textOnFill,
+    ...primaryButtonColors(false),
     border: 'none',
     borderRadius: radius.md,
     padding: '8px 20px',
@@ -785,7 +833,7 @@ export function Members() {
             </select>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <button type="submit" disabled={inviteLoading || demoLocked} style={{ ...btnPrimary, opacity: inviteLoading || demoLocked ? 0.6 : 1, cursor: demoLocked ? 'not-allowed' : 'pointer' }}>
+            <button type="submit" disabled={inviteLoading || demoLocked} style={{ ...btnPrimary, ...primaryButtonColors(inviteLoading || demoLocked), cursor: inviteLoading || demoLocked ? 'not-allowed' : 'pointer' }}>
               {inviteLoading ? 'Sending…' : 'Send invites'}
             </button>
             {inviteError && <span style={{ fontSize: fontSize.sm, color: color.textErrorRed }}>{inviteError}</span>}
@@ -922,7 +970,7 @@ export function Members() {
             />
             <button
               {...addRoleGate.buttonProps(handleAddRole)}
-              style={{ fontSize: fontSize.sm, padding: '5px 14px', borderRadius: radius.md, border: 'none', background: !addRoleGate.disabled ? color.accentBlue : color.borderDefault, color: !addRoleGate.disabled ? color.textOnFill : color.textMuted, cursor: !addRoleGate.disabled ? 'pointer' : 'not-allowed', fontWeight: fontWeight.medium }}
+              style={{ fontSize: fontSize.sm, padding: '5px 14px', borderRadius: radius.md, border: 'none', ...primaryButtonColors(addRoleGate.disabled), cursor: !addRoleGate.disabled ? 'pointer' : 'not-allowed', fontWeight: fontWeight.medium }}
             >
               {addingRole ? 'Adding…' : 'Add'}
             </button>
@@ -939,7 +987,7 @@ export function Members() {
             onClick={() => { setUnknownOpen(true); loadUnknownAttempts() }}
             style={{
               fontSize: fontSize.sm,
-              color: color.accentBlue,
+              color: color.linkBlue,
               background: 'none',
               border: 'none',
               cursor: 'pointer',
@@ -988,7 +1036,7 @@ export function Members() {
         {!listLoading && !listError && (
           <div style={{ ...HELPER_TEXT, marginTop: 14, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <span>
-              {filtering ? `Showing ${shownMembers.length} of ${members.length}` : `${members.length} ${members.length === 1 ? 'member' : 'members'}`}
+              {filtering ? `Showing ${shownMembers.length} of ${members.length}` : memberCountLine(members)}
             </span>
             <button
               type="button"
@@ -1000,7 +1048,7 @@ export function Members() {
                 alignItems: 'center',
                 gap: 4,
                 fontSize: fontSize.sm,
-                color: copyableEmails.length === 0 ? color.textMuted : color.accentBlue,
+                color: copyableEmails.length === 0 ? color.textMuted : color.linkBlue,
                 background: 'none',
                 border: 'none',
                 cursor: copyableEmails.length === 0 ? 'not-allowed' : 'pointer',
@@ -1059,6 +1107,28 @@ export function Members() {
                         email={member.email}
                         title={member.title}
                         isSelf={isSelf}
+                      />
+                      {emailChanges[member.id]?.kind === 'editing' && (
+                        <MemberEmailEditor
+                          member={member}
+                          pendingInvite={isPendingInvite(member)}
+                          state={emailChanges[member.id] as Extract<EmailChangeState, { kind: 'editing' }>}
+                          dispatch={(action) => dispatchEmailChange(member.id, action)}
+                          onCancel={() => handleCancelEmailChange(member)}
+                          onChanged={(email, pending) => handleEmailChanged(member, email, pending)}
+                        />
+                      )}
+                      <EmailChangePill
+                        state={emailChanges[member.id] ?? EMAIL_CHANGE_IDLE}
+                        onResend={() => {
+                          const state = emailChanges[member.id]
+                          if (state?.kind === 'pending') void handleResendEmailChange(member, state.to)
+                        }}
+                        onCancel={() => handleCancelEmailChange(member)}
+                        resendRef={(el) => { resendButtonRefs.current[member.id] = el }}
+                        confirmedAnnounce={isPendingInvite(member)
+                          ? `Invite address changed to ${member.email}, and a new invite was sent.`
+                          : `Address changed to ${member.email}.`}
                       />
                     </td>
                     <td data-label="Role" style={{ padding: '10px 12px', color: color.textSlate500 }}>
@@ -1542,7 +1612,7 @@ export function Members() {
               <button onClick={() => setUnknownOpen(false)} style={{ background: 'none', border: 'none', fontSize: fontSize.xl, cursor: 'pointer', color: color.textMuted }}>×</button>
             </div>
             <p style={{ fontSize: fontSize.sm, color: color.textMuted, marginBottom: 16 }}>
-              Login attempts from email addresses not registered on this instance.
+              Login attempts from email addresses that don’t belong to a member.
             </p>
             {unknownLoading ? (
               <div style={{ fontSize: fontSize.sm, color: color.textMuted }}>Loading…</div>
@@ -1570,14 +1640,6 @@ export function Members() {
             )}
           </div>
         </div>
-      )}
-      {changeEmailMember && (
-        <ChangeEmailDialog
-          member={changeEmailMember}
-          pendingInvite={isPendingInvite(changeEmailMember)}
-          onClose={() => { const id = changeEmailMember.id; setChangeEmailMember(null); actionsTriggerRefs.current[id]?.focus() }}
-          onChanged={(email, pending) => handleEmailChanged(changeEmailMember, email, pending)}
-        />
       )}
       {/* Toast notification */}
       {toast && (

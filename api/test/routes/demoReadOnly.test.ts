@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { app } from '../../src/index'
-import { resetDb, applyMigrations, seedUser, seedSession } from '../helpers'
+import { clearDb, seedUser, seedSession } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { users } from '../../src/db/schema'
 import { DEMO_WRITE_ALLOWLIST } from '../../src/middleware/auth'
@@ -26,8 +26,7 @@ describe('demo read-only guard', () => {
   const demoEnv = { ...env, DEMO_MODE: 'true' }
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const userId = await seedUser({ role: 'owner' })
     cookie = `session=${await seedSession(userId)}`
   })
@@ -129,8 +128,7 @@ describe('demo write rate limit', () => {
   const denyEnv = { ...demoEnv, DEMO_WRITE_RATE_LIMITER: fakeLimiter(false) }
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const userId = await seedUser({ role: 'owner' })
     cookie = `session=${await seedSession(userId)}`
   })
@@ -232,6 +230,9 @@ describe('demo write rate limit', () => {
 const DENIED = new Set([
   ...OCA_DEMO_DENIED,
   'DELETE /api/admin/custom-fields/:id',
+  // Comment attachments are off on a demo (lib/attachments.ts), and these refuse there too.
+  'DELETE /api/attachments/:id',
+  'POST /api/attachments',
   'DELETE /api/admin/members/:id',
   'DELETE /api/admin/roles/:id',
   'DELETE /api/admin/views/:id',
@@ -274,7 +275,10 @@ const DENIED = new Set([
   // Grouping and splitting change the conversation every visitor sees.
   'POST /api/bills/:id/group',
   'POST /api/bills/:id/split',
+  // Dismissing a companion suggestion changes what every visiting admin is offered. A demo offers none.
+  'POST /api/bills/:id/companion-suggestion/dismiss',
   'POST /api/bills/bulk',
+  'POST /api/bills/bulk-delete',
   'POST /api/bills/bulk-dismiss',
   'POST /api/bills/draft',
   'POST /api/calendar/backfill',
@@ -287,6 +291,7 @@ const DENIED = new Set([
   'POST /api/mute-link',
   'POST /api/users/me/deactivate',
   'POST /api/users/me/email-change',
+  'PUT /api/admin/claim-links',
   'PUT /api/admin/custom-fields/:id',
   'PUT /api/admin/custom-fields/reorder',
   'PUT /api/admin/deletion-policy',
@@ -295,6 +300,7 @@ const DENIED = new Set([
   'PUT /api/admin/views/:id',
   'PUT /api/admin/views/reorder',
   'PUT /api/calendar/events/:id',
+  'PUT /api/views/:id/subscription',
 ])
 
 const registered = () => {
@@ -312,8 +318,7 @@ describe('demo write categorisation', () => {
   const demoEnv = { ...env, DEMO_MODE: 'true' }
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const userId = await seedUser({ role: 'owner' })
     cookie = `session=${await seedSession(userId)}`
   })
@@ -337,8 +342,8 @@ describe('demo write categorisation', () => {
 
   it('pins the size of each category so a silent shift is visible', () => {
     expect(DEMO_WRITE_ALLOWLIST.size).toBe(23)
-    expect(DENIED.size).toBe(57 + OCA_DEMO_DENIED.length)
-    expect(registered().length).toBe(86 + OCA_DEMO_DENIED.length)
+    expect(DENIED.size).toBe(63 + OCA_DEMO_DENIED.length)
+    expect(registered().length).toBe(92 + OCA_DEMO_DENIED.length)
   })
 
   it('refuses every denied route with the read-only message', async () => {

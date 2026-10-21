@@ -24,8 +24,10 @@ import { matchesUnion } from './keywords'
  * so a rule can be as broad or as narrow as the team wants. Topics are the
  * instance's own content: nothing in code presets them.
  *
- * The api applies the rules (api/src/lib/eventRules.ts), and the settings page
- * previews them, both with `eventMatchesRules`.
+ * The api applies the rules (api/src/lib/eventRules.ts) with `eventMatchesRules`.
+ * Since #420 the Calendar page's control edits them, offering every event or
+ * chosen committees only; the rest of this shape keeps matching for rules
+ * saved before it.
  */
 export interface EventRules {
   /** Committees, by central committee id, each with its name for display and joint hearings. */
@@ -35,6 +37,14 @@ export interface EventRules {
   topics: EventRuleTopic[]
   /** Show any event with a bill the instance tracks (a keyword match, an added bill, or a prioritized one) on its agenda. */
   trackedBills: boolean
+  /**
+   * States whose every event shows, whatever committee holds it (#695). The
+   * Calendar page's gear sets rules per state, so one state can show every
+   * event while another shows chosen committees. Absent when no state is
+   * shown in full: a committee is the only way an event of a state not listed
+   * here is selected.
+   */
+  allStates?: string[]
 }
 
 export interface EventRuleCommittee {
@@ -60,6 +70,8 @@ export interface EventFacets {
   committeeId: string | null
   committee: string | null
   jointWith: string | null
+  /** The state whose legislature holds the event. Absent on an event described before states were kept. */
+  state?: string | null
   kind: string
   type: string | null
   title: string
@@ -120,7 +132,10 @@ export function parseEventRules(input: unknown): EventRules | string {
     }
   }
   if (r.trackedBills !== undefined && typeof r.trackedBills !== 'boolean') return 'trackedBills must be true or false'
-  return { committees, kinds, topics, trackedBills: r.trackedBills === true }
+  const allStates = list(r.allStates, 'allStates')
+  if (typeof allStates === 'string') return allStates
+  if (allStates.some(code => !/^[A-Z]{2}$/.test(code))) return 'allStates entries must be two-letter uppercase state codes'
+  return { committees, kinds, topics, trackedBills: r.trackedBills === true, ...(allStates.length > 0 ? { allStates } : {}) }
 }
 
 /** "Youth Affairs" for "Committee on Youth Affairs": how a legislature's calendar names it in joint hearings. */
@@ -144,6 +159,7 @@ function isKind(event: EventFacets, value: string): boolean {
  */
 export function eventMatchesRules(event: EventFacets, rules: EventRules, agenda: AgendaBills): boolean {
   if (agenda.prioritized) return true
+  if (event.state && rules.allStates?.includes(event.state)) return true
   for (const c of rules.committees) {
     const held = event.committeeId === c.committeeId
       || (!!event.jointWith && matchesUnion(event.jointWith, [shortCommitteeName(c.name)]).matched)
@@ -202,4 +218,121 @@ export function rulesFromCouncilCalendar(legacy: unknown, committees: readonly {
   }
   if (keywords.length > 0) out.topics.push({ name: COUNCIL_CALENDAR_TOPIC, keywords: [...new Set(keywords)] })
   return out
+}
+
+/**
+ * What a saved rule keeps beyond the Calendar control's one choice (#420): the
+ * control offers every event or chosen committees, so a rule saved earlier
+ * with kinds, event types, topics, tracked bills, or a committee narrowed to
+ * a kind keeps all of it. It matches exactly as before and shows in the
+ * control as one line with Remove.
+ */
+export interface LegacyParts {
+  kinds: string[]
+  topics: string[]
+  trackedBills: boolean
+  narrowedCommittees: { name: string; kind: string }[]
+}
+
+export function legacyParts(rules: EventRules | null): LegacyParts {
+  return {
+    kinds: rules?.kinds ?? [],
+    topics: (rules?.topics ?? []).map(t => t.name),
+    trackedBills: rules?.trackedBills === true,
+    narrowedCommittees: (rules?.committees ?? []).flatMap(c => c.kind ? [{ name: c.name, kind: c.kind }] : []),
+  }
+}
+
+export function hasLegacyParts(parts: LegacyParts): boolean {
+  return parts.kinds.length > 0 || parts.topics.length > 0 || parts.trackedBills || parts.narrowedCommittees.length > 0
+}
+
+/** "Kept from an earlier setting: ..." for the control's menu, or '' when nothing is kept. */
+export function legacyNote(parts: LegacyParts): string {
+  if (!hasLegacyParts(parts)) return ''
+  const phrases = [
+    ...parts.kinds.map(k => `every ${k} event`),
+    ...parts.narrowedCommittees.map(c => `${c.name}, ${c.kind} events only`),
+    ...parts.topics.map(t => `the topic "${t}"`),
+    ...(parts.trackedBills ? ['events with a bill we track'] : []),
+  ]
+  const list = phrases.length <= 2 ? phrases.join(' and ') : `${phrases.slice(0, -1).join(', ')}, and ${phrases[phrases.length - 1]}`
+  return `Kept from an earlier setting: ${list}.`
+}
+
+/** The rules with every legacy part removed: each committee's every event, and nothing else. */
+export function withoutLegacyParts(rules: EventRules): EventRules {
+  return {
+    committees: rules.committees.map(({ committeeId, name }) => ({ committeeId, name })),
+    kinds: [],
+    topics: [],
+    trackedBills: false,
+    // A state shown in full is the gear's own choice (#695), not a part kept from before it.
+    ...(rules.allStates?.length ? { allStates: rules.allStates } : {}),
+  }
+}
+
+/**
+ * The rules with one committee chosen or not, the rest as it was. With no
+ * rules, choosing a committee starts rules that select only it. A committee
+ * already listed stays as it is, with any narrowing it has.
+ */
+export function withCommittee(rules: EventRules | null, committee: { committeeId: string; name: string }, on: boolean): EventRules {
+  const base = rules ?? EMPTY_EVENT_RULES
+  const listed = base.committees.some(c => c.committeeId === committee.committeeId)
+  if (on) {
+    if (listed) return base
+    return { ...base, committees: [...base.committees, { committeeId: committee.committeeId, name: committee.name }] }
+  }
+  return { ...base, committees: base.committees.filter(c => c.committeeId !== committee.committeeId) }
+}
+
+/** How one configurable state's events show: every event, or only the chosen committees. */
+export type StateChoice = { mode: 'all' } | { mode: 'only'; committeeIds: string[] }
+
+/**
+ * One state's choice under `rules`, for the Calendar page's gear (#695).
+ * `stateCommitteeIds` are the committees listed for that state. No rules, or a
+ * state in `allStates`, is every event.
+ */
+export function stateChoice(rules: EventRules | null, state: string, stateCommitteeIds: readonly string[]): StateChoice {
+  if (!rules || rules.allStates?.includes(state)) return { mode: 'all' }
+  const mine = new Set(stateCommitteeIds)
+  return { mode: 'only', committeeIds: rules.committees.map(c => c.committeeId).filter(id => mine.has(id)) }
+}
+
+/** The rules a state's choice edits: no rules means every configured state shows every event. */
+function startingRules(rules: EventRules | null, configured: readonly string[]): EventRules {
+  return rules ?? { ...EMPTY_EVENT_RULES, allStates: [...configured] }
+}
+
+/** Rules with `allStates` left off when empty, so a rule with no state shown in full is the shape saved before #695. */
+function tidy(rules: EventRules, allStates: string[]): EventRules {
+  const { allStates: _dropped, ...rest } = rules
+  return allStates.length > 0 ? { ...rest, allStates } : rest
+}
+
+/**
+ * The rules with one state shown in full, every other state as it was. Null
+ * (no rules) once every configured state shows every event: the same as
+ * choosing "All events" before there were states.
+ */
+export function withStateAll(rules: EventRules | null, state: string, configured: readonly string[], stateCommitteeIds: readonly string[]): EventRules | null {
+  const base = startingRules(rules, configured)
+  const allStates = [...new Set([...(base.allStates ?? []), state])]
+  if (configured.every(s => allStates.includes(s))) return null
+  const mine = new Set(stateCommitteeIds)
+  return tidy({ ...base, committees: base.committees.filter(c => !mine.has(c.committeeId)) }, allStates)
+}
+
+/**
+ * The rules with one state limited to `committees`, every other state as it
+ * was: the state leaves `allStates`, and its committees are replaced.
+ */
+export function withStateOnly(rules: EventRules | null, state: string, configured: readonly string[], committees: readonly { committeeId: string; name: string }[], stateCommitteeIds: readonly string[]): EventRules | null {
+  const base = startingRules(rules, configured)
+  const mine = new Set(stateCommitteeIds)
+  const kept = base.committees.filter(c => !mine.has(c.committeeId))
+  const added = committees.map(({ committeeId, name }) => ({ committeeId, name }))
+  return tidy({ ...base, committees: [...kept, ...added] }, (base.allStates ?? []).filter(s => s !== state))
 }

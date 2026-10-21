@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { app } from '../../src/index'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill, seedMagicLink, seedRole, seedUserRole, seedAuthEvent } from '../helpers'
+import { clearDb, seedUser, seedSession, seedBill, seedMagicLink, seedRole, seedUserRole, seedAuthEvent } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { users, sessions, magicLinks, associationConfig, bills, comments, memberVotes, notes, feedEvents, roles, userRoles, authEvents, teamEvents } from '../../src/db/schema'
 import { eq } from 'drizzle-orm'
@@ -27,8 +27,7 @@ describe('Admin Members API', () => {
   let memberCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
     const adminToken = await seedSession(adminId)
     adminCookie = `session=${adminToken}`
@@ -723,8 +722,7 @@ describe('auth event logging — admin invite', () => {
   let adminCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
     const adminToken = await seedSession(adminId)
     adminCookie = `session=${adminToken}`
@@ -769,8 +767,7 @@ describe('Admin Config API', () => {
   let memberCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const db = getDb(env.DB)
     await db.delete(associationConfig)
     adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
@@ -1014,8 +1011,7 @@ describe('POST /admin/refresh-metadata', () => {
   let adminCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
     const adminToken = await seedSession(adminId)
     adminCookie = `session=${adminToken}`
@@ -1066,8 +1062,7 @@ describe('POST /admin/reprocess-bill/:externalId', () => {
   let adminCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin' })
     const adminToken = await seedSession(adminId)
     adminCookie = `session=${adminToken}`
@@ -1113,8 +1108,7 @@ describe('POST /admin/reprocess-bill/:externalId for a bill pulled in by its gro
   }, { ...env, BILL_QUEUE: mockQueue })
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     sent.length = 0
     adminCookie = `session=${await seedSession(await seedUser({ role: 'admin' }))}`
     await seedBill({ id: 'a190', billNumber: 'A190', externalId: 'legiscan:190', matchType: 'keyword', tenantSummary: 'x', aiProcessedAt: '2026-09-01 00:00:00' })
@@ -1127,6 +1121,17 @@ describe('POST /admin/reprocess-bill/:externalId for a bill pulled in by its gro
   it('marks the regeneration a group analysis, so local keywords can\'t make it a match', async () => {
     expect((await regenerate('legiscan:1713')).status).toBe(200)
     expect(sent).toEqual([{ tenantId: env.TENANT_ID, billId: 'legiscan:1713', forceAI: true, groupAnalysis: true, interactive: true }])
+  })
+
+  it('queues a neutral handle under the spelling the bill is stored with, so a group analysis is still marked (#305)', async () => {
+    expect((await regenerate('bill:1713')).status).toBe(200)
+    expect(sent).toEqual([{ tenantId: env.TENANT_ID, billId: 'legiscan:1713', forceAI: true, groupAnalysis: true, interactive: true }])
+  })
+
+  it('queues a legacy handle under the neutral spelling a migrated bill is stored with', async () => {
+    await getDb(env.DB).update(bills).set({ externalId: 'bill:1713' }).where(eq(bills.id, 'b1713'))
+    expect((await regenerate('legiscan:1713')).status).toBe(200)
+    expect(sent).toEqual([{ tenantId: env.TENANT_ID, billId: 'bill:1713', forceAI: true, groupAnalysis: true, interactive: true }])
   })
 
   it('leaves a tracked bill\'s regeneration as it was', async () => {
@@ -1144,8 +1149,7 @@ describe('GET /admin/config taxonomy handling', () => {
   let adminCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const db = getDb(env.DB)
     await db.delete(associationConfig)
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
@@ -1197,8 +1201,7 @@ describe('Role CRUD', () => {
   let memberCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
     const adminToken = await seedSession(adminId)
     adminCookie = `session=${adminToken}`
@@ -1424,8 +1427,7 @@ describe('PUT /admin/members/:id/roles', () => {
   let memberCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
     const adminToken = await seedSession(adminId)
     adminCookie = `session=${adminToken}`
@@ -1481,8 +1483,7 @@ describe('PUT /admin/config — keyword-sync side effect', () => {
   let adminCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const db = getDb(env.DB)
     await db.delete(sessions)
     await db.delete(users)
@@ -1531,8 +1532,7 @@ describe('POST /admin/keyword-resync', () => {
   let adminCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const db = getDb(env.DB)
     await db.delete(associationConfig)
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
@@ -1713,10 +1713,10 @@ describe('POST /admin/keyword-resync', () => {
     })
   })
 
-  describe('cleanup pass — the group tags a demote moves (#562)', () => {
+  describe('cleanup pass — the group tags a demote moves record no event (#562)', () => {
     // Since #554 a group's tags come from a tracked member first, so demoting a bill to untracked can move them
-    // with no analysis to record it. The cleanup records the change itself, as the null-actor tags event an analysis
-    // writes. Bills below match 'election' or don't ('Voting' ones are stale); the group's tags are the most
+    // with no analysis. The bill's comment thread shows only changes people made, so no event records the move.
+    // Bills below match 'election' or don't ('Voting' ones are stale); the group's tags are the most
     // recent analysis among its tracked members.
     type TagsEvent = { billId: string; actorUserId: string | null; label: string; old: string[]; new: string[] }
     const db = () => getDb(env.DB)
@@ -1726,7 +1726,14 @@ describe('POST /admin/keyword-resync', () => {
 
     async function member(id: string, o: { title?: string; tags: string[]; at: string; matchType?: 'keyword' | 'manual' | null; group?: string; priority?: 'high' }) {
       await seedBill({ id, externalId: `legiscan:${id}`, billNumber: id.toUpperCase(), state: 'NJ', title: o.title ?? STALE, matchType: o.matchType === undefined ? 'keyword' : o.matchType, priority: o.priority, ...analyzed(o.tags, o.at) })
-      if (o.group) await db().update(bills).set({ groupKey: o.group }).where(eq(bills.id, id))
+      if (o.group) {
+        await db().update(bills).set({ groupKey: o.group }).where(eq(bills.id, id))
+        const leadId = `lead-${o.group}`
+        if (!await db().select({ id: bills.id }).from(bills).where(eq(bills.id, leadId)).get()) {
+          await seedBill({ id: leadId, externalId: `legiscan:${leadId}`, billNumber: 'Z1', state: 'NJ', title: MATCHING, matchType: 'keyword', statusRank: 900 })
+          await db().update(bills).set({ groupKey: o.group }).where(eq(bills.id, leadId))
+        }
+      }
     }
     async function cleanup() {
       await db().delete(associationConfig)
@@ -1742,19 +1749,19 @@ describe('POST /admin/keyword-resync', () => {
     }
     const matchTypeOf = async (id: string) => (await db().select({ m: bills.matchType }).from(bills).where(eq(bills.id, id)).get())!.m
 
-    it('records one tags event, with no actor, when the demoted bill held the group\'s tags', async () => {
+    it('records no event when the demoted bill held the group\'s tags', async () => {
       await member('a1', { tags: ['Labor'], at: '2026-09-02 00:00:00', group: 'g1' })
       await member('b1', { title: MATCHING, tags: ['Energy'], at: '2026-09-01 00:00:00', group: 'g1' })
       expect(await cleanup()).toMatchObject({ demoted: 1 })
       expect(await matchTypeOf('a1')).toBeNull()
-      expect(await tagsEvents()).toEqual([{ billId: 'a1', actorUserId: null, label: 'tags', old: ['Labor'], new: ['Energy'] }])
+      expect(await tagsEvents()).toEqual([])
     })
 
-    it('records the change when the demoted bill was the group\'s only tracked one and a companion\'s analysis takes over', async () => {
+    it('records no event when the demoted bill was the group\'s only tracked one and a companion\'s analysis takes over', async () => {
       await member('a1', { tags: ['Labor'], at: '2026-09-01 00:00:00', group: 'g1' })
       await member('c1', { tags: ['Energy'], at: '2026-09-02 00:00:00', matchType: null, group: 'g1' })
       await cleanup()
-      expect(await tagsEvents()).toEqual([{ billId: 'a1', actorUserId: null, label: 'tags', old: ['Labor'], new: ['Energy'] }])
+      expect(await tagsEvents()).toEqual([])
     })
 
     it('records nothing when the group\'s tags are the same without the demoted bill', async () => {
@@ -1794,27 +1801,7 @@ describe('POST /admin/keyword-resync', () => {
       expect(await tagsEvents()).toEqual([])
     })
 
-    it('still tells central about the demotes, and returns 200, when the event can\'t be written', async () => {
-      await member('a1', { tags: ['Labor'], at: '2026-09-02 00:00:00', group: 'g1' })
-      await member('b1', { title: MATCHING, tags: ['Energy'], at: '2026-09-01 00:00:00', group: 'g1' })
-      await db().delete(associationConfig)
-      await db().insert(associationConfig).values({ key: 'keywords', value: JSON.stringify(['election']) })
-      // The advisory event is the one write that fails: its table is gone.
-      await env.DB.exec('DROP TABLE team_events')
-      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
-      vi.mocked(centralFetch).mockClear()
-      const res = await app.request('/api/admin/keyword-resync', { method: 'POST', headers: { Cookie: adminCookie } },
-        { ...env, BILL_QUEUE: { sendBatch: vi.fn().mockResolvedValue(undefined) } })
-      expect(res.status).toBe(200)
-      expect(await res.json()).toMatchObject({ demoted: 1 })
-      expect(await matchTypeOf('a1')).toBeNull()
-      const sent = vi.mocked(centralFetch).mock.calls.filter(([, path]) => path.startsWith('/admin/update-bill-match-types/'))
-      expect(sent.map(([, , init]) => JSON.parse(String(init?.body)))).toEqual([{ updates: [{ externalId: 'legiscan:a1', matchType: null }] }])
-      expect(errors).toHaveBeenCalled()
-      errors.mockRestore()
-    })
-
-    it('records one event per group whose tags moved, across a bulk cleanup', async () => {
+    it('records no event for any group whose tags moved, across a bulk cleanup', async () => {
       // g1 and g2 follow their demoted bill's tags. g3's demoted bill wasn't followed. g4 has two demoted bills
       // at once, which move its group's tags once. A bill in no group sits among them.
       await member('a1', { tags: ['Labor'], at: '2026-09-02 00:00:00', group: 'g1' })
@@ -1823,18 +1810,12 @@ describe('POST /admin/keyword-resync', () => {
       await member('b2', { title: MATCHING, tags: ['Energy'], at: '2026-09-01 00:00:00', group: 'g2' })
       await member('a3', { tags: ['Labor'], at: '2026-09-01 00:00:00', group: 'g3' })
       await member('b3', { title: MATCHING, tags: ['Energy'], at: '2026-09-02 00:00:00', group: 'g3' })
-      // Seeded with the larger id first, so "the first one read" and "the smallest id" differ.
       await member('a4b', { tags: ['Labor'], at: '2026-09-02 00:00:00', group: 'g4' })
       await member('a4', { tags: ['Labor'], at: '2026-09-03 00:00:00', group: 'g4' })
       await member('b4', { title: MATCHING, tags: ['Energy'], at: '2026-09-01 00:00:00', group: 'g4' })
       await member('solo', { tags: ['Labor'], at: '2026-09-02 00:00:00' })
       expect(await cleanup()).toMatchObject({ demoted: 6 })
-      const events = await tagsEvents()
-      expect(events.map(e => [e.billId, e.old, e.new, e.actorUserId]).sort((x, y) => String(x[0]).localeCompare(String(y[0])))).toEqual([
-        ['a1', ['Labor'], ['Energy'], null],
-        ['a2', ['Labor'], ['Energy'], null],
-        ['a4', ['Labor'], ['Energy'], null],
-      ].sort((x, y) => String(x[0]).localeCompare(String(y[0]))))
+      expect(await tagsEvents()).toEqual([])
     })
   })
 })
@@ -1842,7 +1823,7 @@ describe('POST /admin/keyword-resync', () => {
 describe('POST /admin/keyword-resync-preview — priority protection', () => {
   let adminCookie: string
   beforeEach(async () => {
-    await resetDb(); await applyMigrations()
+    await clearDb()
     await getDb(env.DB).delete(associationConfig)
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
     adminCookie = `session=${await seedSession(adminId)}`
@@ -1867,7 +1848,7 @@ describe('POST /admin/keyword-resync-preview — priority protection', () => {
 describe('POST /admin/keyword-resync-preview — wildcard keyword', () => {
   let adminCookie: string
   beforeEach(async () => {
-    await resetDb(); await applyMigrations()
+    await clearDb()
     await getDb(env.DB).delete(associationConfig)
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
     adminCookie = `session=${await seedSession(adminId)}`
@@ -1917,8 +1898,7 @@ describe('POST /admin/reprocess-llm-all — scope', () => {
   let adminCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
     const adminToken = await seedSession(adminId)
     adminCookie = `session=${adminToken}`
@@ -1980,8 +1960,7 @@ describe('GET /admin/members/:id/auth-events', () => {
   let adminCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com' })
     const adminToken = await seedSession(adminId)
     adminCookie = `session=${adminToken}`
@@ -2035,8 +2014,7 @@ describe('GET /admin/members — loginTrouble flag', () => {
   let adminCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin User' })
     const adminToken = await seedSession(adminId)
     adminCookie = `session=${adminToken}`
@@ -2091,8 +2069,7 @@ describe('GET /admin/unknown-login-attempts', () => {
   let adminCookie: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const adminId = await seedUser({ role: 'admin', email: 'admin@example.com' })
     const adminToken = await seedSession(adminId)
     adminCookie = `session=${adminToken}`

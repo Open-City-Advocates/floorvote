@@ -8,8 +8,6 @@ export const users = sqliteTable('users', {
   name: text('name').notNull().default(''),
   role: text('role', { enum: ['admin', 'member', 'owner'] }).notNull().default('member'),
   title: text('title'),
-  // The old name for `title`, kept in sync until the drop migration (follow-up issue), so the previous build still works if a deploy is rolled back.
-  subtitle: text('subtitle'),
   invitedBy: text('invited_by'),
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
   lastActive: text('last_active').notNull().default(sql`(datetime('now'))`),
@@ -151,11 +149,18 @@ export const bills = sqliteTable('bills', {
   stateUrl: text('state_url'),
   providerUpdatedAt: text('provider_updated_at'),
   textR2Key: text('text_r2_key'),
+  // Anything that edits this by hand must also run pruneClaimSources (lib/claimResolution.ts) on claim_sources.
   tenantSummary: text('tenant_summary'),
   tags: text('tags').notNull().default('[]'),
   // Statutory citations the bill affects, verbatim as printed. See
   // migrations/0066_affected_citations.sql for why these are not normalised.
   affectedCitations: text('affected_citations').notNull().default('[]'),
+  // Claim sources from the analysis (#568): a JSON array of {claim, quote} or,
+  // for a PDF, {claim, quote, page}, pinned to the document the model read.
+  // All three null when the bill has none. See migrations/0108_claim_sources.sql.
+  claimSources: text('claim_sources'),
+  claimSourcesDocId: text('claim_sources_doc_id'),
+  claimSourcesTextHash: text('claim_sources_text_hash'),
   priority: text('priority', { enum: ['high', 'medium', 'low'] }),
   // When the priority was last set (migration 0101). A companion group reads
   // its priority from the member where it was set most recently.
@@ -217,6 +222,12 @@ export const bills = sqliteTable('bills', {
   //   WHERE ai_processed_at IS NOT NULL GROUP BY 1 ORDER BY 1 DESC
   // To ask what is still stuck, use the predicate in lib/healStalledAi.ts.
   aiHealAttempts: integer('ai_heal_attempts').notNull().default(0),
+  // When a pulled lead's request to central was last renewed (lib/companionAnalysis.ts, migration 0118).
+  fetchRenewedAt: text('fetch_renewed_at'),
+  // When central's full message for the bill was last applied (migration 0117),
+  // null for a bill that has only had stubs. Written by the queue processor's
+  // full path alone, and the bill page's test for full or stub.
+  fullyIngestedAt: text('fully_ingested_at'),
   textStatus: text('text_status'),
   newMatchAt: text('new_match_at'),
   // Where the keyword match came from, as central declared it (MatchProvenance
@@ -238,6 +249,13 @@ export const bills = sqliteTable('bills', {
   // when it's in no group, as a JSON array (migration 0103). A tag filter tests
   // these. Written only by the triggers 0106 recreates, never by the app.
   groupTags: text('group_tags').notNull().default('[]'),
+  // The key central serves for title-matched companion suggestions (#521):
+  // the bill's type and normalized title, or null when no suggestion can come
+  // from it. With `chamber`, the bill's chamber as central sends it, written on
+  // every delivery (lib/companionSuggestion.ts). Indexed with state and session
+  // for bills that have one (migration 0110).
+  titleKey: text('title_key'),
+  chamber: text('chamber'),
 })
 
 // Identical relationships, as central's vocabulary reads them, by bill handle
@@ -268,6 +286,19 @@ export const billGroupOverrides = sqliteTable('bill_group_overrides', {
   index('idx_bill_group_overrides_other').on(t.otherBillId),
 ])
 
+// An admin's dismissal of a title-matched companion suggestion (#521), kept per
+// instance as a pair of bills, smaller id first, like a group override
+// (migration 0110). The pair is never suggested again.
+export const companionSuggestionDismissals = sqliteTable('companion_suggestion_dismissals', {
+  billId: text('bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
+  otherBillId: text('other_bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
+  actorUserId: text('actor_user_id'),
+  createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
+}, (t) => [
+  primaryKey({ columns: [t.billId, t.otherBillId] }),
+  index('idx_companion_suggestion_dismissals_other').on(t.otherBillId),
+])
+
 // Structured events about a bill's team-level state, one row per bill (migration
 // 0100): a companion group forming or splitting so far. `type` has no CHECK
 // constraint, so a new kind of event needs no table rebuild. A null actor
@@ -291,6 +322,19 @@ export const billSubjects = sqliteTable('bill_subjects', {
 }, (t) => [
   primaryKey({ columns: [t.billId, t.subjectName] }),
   index('idx_bill_subjects_name').on(t.state, t.subjectName),
+])
+
+/** The committees a bill was referred to, from central (#471, migration 0116). `isCurrent` marks the one it is pending in. */
+export const billCommittees = sqliteTable('bill_committees', {
+  billId:      text('bill_id').notNull().references(() => bills.id, { onDelete: 'cascade' }),
+  committeeId: text('committee_id').notNull(),
+  state:       text('state').notNull(),
+  name:        text('name').notNull(),
+  chamber:     text('chamber'),
+  isCurrent:   integer('is_current', { mode: 'boolean' }).notNull().default(false),
+}, (t) => [
+  primaryKey({ columns: [t.billId, t.committeeId] }),
+  index('idx_bill_committees_committee').on(t.committeeId, t.billId),
 ])
 
 export const memberVotes = sqliteTable('member_votes', {
@@ -333,6 +377,24 @@ export const commentReactions = sqliteTable('comment_reactions', {
   uniqReaction: uniqueIndex('comment_reactions_comment_user_emoji_unique').on(t.commentId, t.userId, t.emoji),
 }))
 
+/** A file attached to a comment (#465). See migration 0115 and lib/attachments.ts. */
+export const commentAttachments = sqliteTable('comment_attachments', {
+  id: text('id').primaryKey(),
+  commentId: text('comment_id'),
+  uploaderId: text('uploader_id').notNull(),
+  r2Key: text('r2_key').notNull().unique(),
+  name: text('name').notNull(),
+  contentType: text('content_type').notNull(),
+  size: integer('size').notNull(),
+  checksum: text('checksum'),
+  confirmedAt: text('confirmed_at'),
+  createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
+  deletedAt: text('deleted_at'),
+}, (t) => ({
+  commentIdx: index('idx_comment_attachments_comment').on(t.commentId),
+  uploaderIdx: index('idx_comment_attachments_uploader').on(t.uploaderId, t.createdAt),
+}))
+
 export const notes = sqliteTable('notes', {
   id: text('id').primaryKey(),
   billId: text('bill_id').notNull(),
@@ -347,7 +409,7 @@ export const notes = sqliteTable('notes', {
 export const feedEvents = sqliteTable('feed_events', {
   id: text('id').primaryKey(),
   type: text('type', {
-    enum: ['bill_added', 'priority_set', 'position_set', 'comment_added', 'vote_milestone', 'bill_updated', 'hearing_added', 'hearing_changed', 'hearing_cancelled', 'bill_matched', 'new_matches'],
+    enum: ['bill_added', 'priority_set', 'position_set', 'comment_added', 'vote_milestone', 'bill_updated', 'hearing_added', 'hearing_changed', 'hearing_cancelled', 'bill_matched', 'new_matches', 'no_priority_updates'],
   }).notNull(),
   // Null for an event about no single bill (a bulk edit, and later instance-level
   // events). Such an event keeps what it is about in `metadata`, and survives the
@@ -449,6 +511,17 @@ export const savedViews = sqliteTable('saved_views', {
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
   updatedAt: text('updated_at').notNull().default(sql`(datetime('now'))`),
 })
+
+// A member's inclusion of a saved view in their email digest (#449). One row per
+// member and view, which a delete of either removes. The view's filter stays on
+// the view, so an edit to it carries through to everyone who included it.
+export const savedViewSubscriptions = sqliteTable('saved_view_subscriptions', {
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  viewId: text('view_id').notNull().references(() => savedViews.id, { onDelete: 'cascade' }),
+  createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.userId, t.viewId] }),
+}))
 
 export const calendarEvents = sqliteTable('calendar_events', {
   id: text('id').primaryKey(),

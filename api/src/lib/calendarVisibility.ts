@@ -1,5 +1,6 @@
-import { and, eq, isNotNull, isNull, or, sql } from 'drizzle-orm'
+import { and, eq, isNull, or, sql, type SQL } from 'drizzle-orm'
 import { bills, calendarEvents, customFieldDefinitions } from '../db/schema'
+import { groupHasPriority, holdsGroupValue, type BillsTable } from './teamFields'
 
 /**
  * Which calendar rows the calendar page, the ICS feed, and the dashboard's
@@ -19,14 +20,16 @@ import { bills, calendarEvents, customFieldDefinitions } from '../db/schema'
  */
 /**
  * A bill's own entry ('hearing' source: hearings, markups, deadlines) that
- * qualifies for display: its bill has a priority, and no body event the
+ * qualifies for display: its bill has a priority, or a bill it is grouped
+ * with has (a companion group has one priority, so a hearing on a member
+ * shows whichever member the priority was set on), and no body event the
  * instance shows covers it. The one definition the calendar, ICS feed,
  * dashboard count, and week-ahead email share, so they can't drift apart.
  * Needs `bills` left-joined on calendar_events.bill_id.
  */
 export const prioritizedBillEntry = and(
   eq(calendarEvents.source, 'hearing'),
-  isNotNull(bills.priority),
+  groupHasPriority(bills),
   or(
     isNull(calendarEvents.coveredBy),
     // A cover whose event the instance doesn't have, or hides, shows the entry after all.
@@ -36,16 +39,23 @@ export const prioritizedBillEntry = and(
 
 /**
  * A date custom field's value that becomes a team calendar event: a `date`
- * field (every one, with no per-field opt-in) on a bill with a priority, the
- * same rule a bill's own entries follow. The one definition the calendar, the
- * ICS feed, the dashboard count, and the week-ahead email share
- * (lib/dateFieldEvents.ts). Needs custom_field_definitions joined on the
- * value's field and `bills` on its bill.
+ * field (every one, with no per-field opt-in) whose value is its group's
+ * current one (`holdsGroupValue`: a bill in no group is its own group) on a
+ * group with a priority on any member (`groupHasPriority`), the same rule a
+ * bill's own entries follow. A value a newer one replaced, on another member,
+ * projects nothing, so a group has at most one event per field. The one
+ * definition the calendar, the ICS feed, the dashboard count, and the
+ * week-ahead email share (lib/dateFieldEvents.ts). Needs the value's rows as
+ * `p`, their bill as `me` (`holdsGroupValue`'s aliases), and
+ * custom_field_definitions joined on the value's field.
  */
-export const prioritizedDateFieldValue = and(
-  eq(customFieldDefinitions.type, 'date'),
-  isNotNull(bills.priority),
-)!
+export function prioritizedDateFieldValue(me: BillsTable): SQL {
+  return and(
+    eq(customFieldDefinitions.type, 'date'),
+    holdsGroupValue('bill_custom_field_values'),
+    groupHasPriority(me),
+  )!
+}
 
 export const visibleCalendarEvent = or(
   prioritizedBillEntry,

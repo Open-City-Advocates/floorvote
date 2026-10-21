@@ -14,11 +14,9 @@ import { authEventActor, authEventActorName, authReqContext } from '../lib/authE
 import { getCookie } from 'hono/cookie'
 import { hashToken } from '../lib/crypto'
 import { checkRateLimit } from '../../../shared/rateLimit'
-import { verifyTurnstile } from '../../../shared/turnstile'
 import { isSuperadminRequest } from '../lib/superadminRequest'
 import { requestEmailChange, EMAIL_CHANGE_ERRORS } from '../lib/emailChange'
 import { isSuperadminUser, SUPERADMIN_PROFILE_MANAGED_ERROR } from '../lib/superadminProfile'
-import { userTitleSql } from '../lib/userTitle'
 
 export const usersRouter = new Hono<AppEnv>()
 
@@ -29,7 +27,7 @@ usersRouter.use('*', requireAuth)
 usersRouter.get('/', async (c) => {
   const db = getDb(c.env.DB)
   const rows = await db
-    .select({ id: users.id, name: users.name, email: users.email, title: userTitleSql, role: users.role })
+    .select({ id: users.id, name: users.name, email: users.email, title: users.title, role: users.role })
     .from(users)
     .where(activeUser)
     // By the name as shown, ignoring case: a member with no name sorts by their
@@ -52,14 +50,10 @@ usersRouter.get('/', async (c) => {
     rolesByUser.get(row.userId)!.push({ id: row.roleId, name: row.roleName })
   }
 
-  // `subtitle` is the old name for `title`. Remove in the release after this one.
-  return c.json(rows.map(u => ({ ...u, subtitle: u.title, roles: rolesByUser.get(u.id) ?? [] })))
+  return c.json(rows.map(u => ({ ...u, roles: rolesByUser.get(u.id) ?? [] })))
 })
 
 // PATCH /users/me — update title, name, and/or the email settings.
-// A tab on the previous web bundle sends the title as `subtitle`, which is
-// still accepted, and every save echoes the title under both names. Remove the
-// `subtitle` handling in the release after this one.
 // Each field changes only when its key is present: a missing key means "no
 // change", so saving only the email settings leaves the name and title alone.
 // A present but blank (or null) name clears it, stored as an empty string; the
@@ -71,13 +65,11 @@ usersRouter.patch('/me', async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
   const raw = body && typeof body === 'object' ? body : {}
   // A superadmin's name and title are kept in central and overwritten at each sign-in.
-  // The previous web bundle's `subtitle` key means the title. Remove in the release after this one.
-  const titleKey = 'title' in raw ? 'title' : 'subtitle' in raw ? 'subtitle' : null
-  if (('name' in raw || titleKey) && await isSuperadminUser(c, currentUser.email)) {
+  if (('name' in raw || 'title' in raw) && await isSuperadminUser(c, currentUser.email)) {
     return c.json({ error: SUPERADMIN_PROFILE_MANAGED_ERROR }, 403)
   }
-  const updates: { title?: string | null; subtitle?: string | null; name?: string; emailDigestEnabled?: number; emailDigestMatchesEnabled?: number; emailWeekAheadEnabled?: number; emailRepliesEnabled?: number } = {}
-  const echo: { title?: string | null; subtitle?: string | null; name?: string; emailDigestEnabled?: boolean; emailDigestMatchesEnabled?: boolean; emailWeekAheadEnabled?: boolean; emailRepliesEnabled?: boolean } = {}
+  const updates: { title?: string | null; name?: string; emailDigestEnabled?: number; emailDigestMatchesEnabled?: number; emailWeekAheadEnabled?: number; emailRepliesEnabled?: number } = {}
+  const echo: { title?: string | null; name?: string; emailDigestEnabled?: boolean; emailDigestMatchesEnabled?: boolean; emailWeekAheadEnabled?: boolean; emailRepliesEnabled?: boolean } = {}
 
   if ('name' in raw) {
     if (raw.name !== null && typeof raw.name !== 'string') {
@@ -89,8 +81,8 @@ usersRouter.patch('/me', async (c) => {
     }
     updates.name = echo.name = name
   }
-  if (titleKey) {
-    const sent = raw[titleKey]
+  if ('title' in raw) {
+    const sent = raw.title
     if (sent !== null && typeof sent !== 'string') {
       return c.json({ error: 'Title must be a string' }, 400)
     }
@@ -98,9 +90,7 @@ usersRouter.patch('/me', async (c) => {
     if (title && title.length > 200) {
       return c.json({ error: 'Title too long (max 200 characters)' }, 400)
     }
-    // `subtitle` is the old name for `title`. Remove in the release after this one.
-    // keep subtitle in sync until the drop migration (follow-up issue)
-    updates.title = updates.subtitle = echo.title = echo.subtitle = title
+    updates.title = echo.title = title
   }
   if (typeof raw.emailDigestEnabled === 'boolean') {
     updates.emailDigestEnabled = raw.emailDigestEnabled ? 1 : 0
@@ -173,21 +163,18 @@ usersRouter.post('/me/deactivate', async (c) => {
   return c.json({ ok: true })
 })
 
-// POST /users/me/email-change  { email, turnstileToken }
+// POST /users/me/email-change  { email }
 // Ask to change your own sign-in email. Nothing changes until the change is
 // confirmed from the new address (lib/emailChange.ts). No re-authentication,
-// by decision: the session is the proof. Limited per IP and gated by
-// Turnstile the way the sign-in form is, plus three requests per member a day.
+// by decision: the session is the proof. No Turnstile either: the member is
+// signed in, so there is no anonymous sender to screen. Limited per IP, plus
+// three requests per member a day.
 usersRouter.post('/me/email-change', async (c) => {
   const ip = c.req.header('CF-Connecting-IP') || 'unknown'
   if (!(await checkRateLimit(c.env.LOGIN_RATE_LIMITER, `email-change:${ip}`))) {
     return c.json({ error: 'Too many requests. Please wait a moment and try again.' }, 429)
   }
-  const body = await c.req.json<{ email?: unknown; turnstileToken?: unknown }>().catch(() => ({} as { email?: unknown; turnstileToken?: unknown }))
-  const turnstileToken = typeof body.turnstileToken === 'string' ? body.turnstileToken : undefined
-  if (!(await verifyTurnstile(c.env.TURNSTILE_SECRET_KEY, turnstileToken, ip))) {
-    return c.json({ error: 'Verification required.' }, 403)
-  }
+  const body = await c.req.json<{ email?: unknown }>().catch(() => ({} as { email?: unknown }))
 
   const db = getDb(c.env.DB)
   const currentUser = c.get('user')
@@ -238,7 +225,10 @@ usersRouter.get('/me/bills', async (c) => {
   if (billIds.length === 0) return c.json([])
 
   const [billRows, positionRows] = await Promise.all([
-    db.select().from(bills).where(inArray(bills.id, billIds)).all(),
+    // Only the columns the list shows: a full row carries the analysis's
+    // claim sources JSON, which this page has no use for.
+    db.select({ id: bills.id, billNumber: bills.billNumber, title: bills.title, updatedAt: bills.updatedAt })
+      .from(bills).where(inArray(bills.id, billIds)).all(),
     db.select().from(officialPositions).where(inArray(officialPositions.billId, billIds)).all(),
   ])
 
@@ -346,18 +336,17 @@ rolesRouter.get('/', async (c) => {
       userId: users.id,
       name: users.name,
       email: users.email,
-      title: userTitleSql,
+      title: users.title,
     })
     .from(userRoles)
     .innerJoin(users, eq(userRoles.userId, users.id))
     .where(and(inArray(userRoles.roleId, roleIds), exists(db.select({ id: sessions.id }).from(sessions).where(eq(sessions.userId, users.id)))))
     .all()
 
-  const membersByRole = new Map<string, Array<{ id: string; name: string; email?: string; title: string | null; subtitle: string | null }>>()
+  const membersByRole = new Map<string, Array<{ id: string; name: string; email?: string; title: string | null }>>()
   for (const row of memberRows) {
     if (!membersByRole.has(row.roleId)) membersByRole.set(row.roleId, [])
-    // `subtitle` is the old name for `title`. Remove in the release after this one.
-    membersByRole.get(row.roleId)!.push({ id: row.userId, name: row.name, email: row.email, title: row.title, subtitle: row.title })
+    membersByRole.get(row.roleId)!.push({ id: row.userId, name: row.name, email: row.email, title: row.title })
   }
 
   return c.json(allRoles.map(r => ({

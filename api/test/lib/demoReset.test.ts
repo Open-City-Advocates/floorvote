@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedBill } from '../helpers'
+import { clearDb, seedBill } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { calendarEvents, calendarEventBills, associationConfig, users, sessions, magicLinks, feedEvents, roles, customFieldDefinitions } from '../../src/db/schema'
 import { runDemoReset } from '../../src/lib/demoReset'
@@ -27,8 +27,7 @@ const dateFromNow = (n: number) => new Date(Date.now() + n * 86400_000).toISOStr
 
 describe('runDemoReset — calendar seeding', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     // Seed the bills the reset attaches hearings, feed events, and comments to.
     await seedSeedBills()
   })
@@ -201,8 +200,7 @@ const countRows = async (table: string): Promise<number> => {
 
 describe('runDemoReset with the default seed', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
   })
 
   it('is the only registered seed', () => {
@@ -293,15 +291,13 @@ describe('runDemoReset with the default seed', () => {
     expect(await countRows('roles')).toBe(seed.roles.length)
   })
 
-  // The previous build reads users.subtitle, so the seeded roster writes both
-  // columns until the drop migration (see titleColumns.test.ts).
-  it('seeds each persona\'s title into both users.title and users.subtitle', async () => {
+  it('seeds each persona\'s title into users.title alone, leaving the not-yet-dropped subtitle column null', async () => {
     await runDemoReset(env.DB, seed)
     const { results } = await env.DB.prepare('SELECT id, title, subtitle FROM users').all<{ id: string; title: string | null; subtitle: string | null }>()
     expect(results.length).toBe(seed.users.length)
     expect(results.filter(r => r.title !== null).length).toBeGreaterThan(0)
-    for (const r of results) expect(r.subtitle, r.id).toBe(r.title)
     expect(Object.fromEntries(results.map(r => [r.id, r.title]))).toEqual(Object.fromEntries(seed.users.map(u => [u.id, u.title])))
+    for (const r of results) expect(r.subtitle, r.id).toBeNull()
   })
 
   it('derives its keep-lists from the seed, not a hardcoded id list', async () => {
@@ -392,8 +388,7 @@ describe('runDemoReset with the default seed', () => {
 // by a minimal seed that lives with the tests and is not registered.
 describe('runDemoReset with a single-state seed', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
   })
 
   it('omits state_coverage, which only a multi-state seed writes', async () => {

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { drizzle } from 'drizzle-orm/d1'
 import { eq } from 'drizzle-orm'
 import * as schema from '../../src/db/schema'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { clearDb } from '../helpers/migrations'
 import bulkRaw from '../fixtures/lims/bulk-records.json?raw'
 import details0400Raw from '../fixtures/lims/details-B26-0400.json?raw'
 import membersRaw from '../fixtures/lims/members-26.json?raw'
@@ -52,7 +52,7 @@ function makeEnv(extra: Record<string, unknown> = {}) {
     limsQueue, tenantQueue,
     env: {
       ...(env as any),
-      LIMS_API_KEY: 'lims-key', LIMS_STATES: 'DC', LIMS_CATEGORIES: '1,18',
+      LIMS_API_KEY: 'lims-key', LIMS_CATEGORIES: '1,18',
       LIMS_INGESTOR_QUEUE: limsQueue,
       INGESTOR_QUEUE: { sendBatch: vi.fn(), send: vi.fn() },
       [tenantQueueBindingName('oca')]: tenantQueue,
@@ -61,8 +61,13 @@ function makeEnv(extra: Record<string, unknown> = {}) {
   }
 }
 
+/** Stand in for the ingestor having run on every bill: it stamps each one fully ingested at its change hash. */
+async function markIngested() {
+  await env.DB.prepare(`UPDATE bills SET texts_fetched_at = datetime('now'), detail_hash = change_hash`).run()
+}
+
 beforeEach(async () => {
-  await setupLsDb()
+  await clearDb()
   vi.clearAllMocks()
   vi.mocked(lims.getCouncilPeriods).mockResolvedValue([PERIOD])
   vi.mocked(lims.getMembers).mockResolvedValue(JSON.parse(membersRaw))
@@ -72,6 +77,8 @@ beforeEach(async () => {
   vi.mocked(lims.getLegislationDetails).mockResolvedValue(JSON.parse(details0400Raw))
   fetchMock.mockImplementation(async () => new Response(PDF, { status: 200, headers: { 'content-type': 'application/pdf' } }))
   const db = drizzle(env.DB, { schema })
+  // DC is LIMS's by an ownership row, as an operator's claim writes it.
+  await db.insert(schema.stateProviders).values({ state: 'DC', provider: 'lims', previousProvider: 'legiscan' })
   await db.insert(schema.tenants).values({ tenantId: 'oca', name: 'OCA', stateCoverage: '["DC"]', active: true })
   await db.insert(schema.keywordRegistry).values([{ tenantId: 'oca', keyword: 'neglect' }, { tenantId: 'oca', keyword: 'behavioral health' }])
 })
@@ -84,7 +91,7 @@ describe('the DC sync pass', () => {
     expect(lims.getCouncilPeriods).not.toHaveBeenCalled()
   })
 
-  it('seeds the Council Period and members, links bills, and queues matches to the LIMS queue', async () => {
+  it('seeds the Council Period and members, links bills, and queues every bill to the LIMS queue, matches first', async () => {
     const db = drizzle(env.DB, { schema })
     const { env: e, limsQueue } = makeEnv()
 
@@ -101,8 +108,10 @@ describe('the DC sync pass', () => {
     expect(links.get(limsBillId('HN26-0171')!)).toBe('keyword')
     expect(links.get(limsBillId('B26-0001')!)).toBeNull()
 
-    const queued = limsQueue.sendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body.billId)).sort()
-    expect(queued).toEqual([B0400, limsBillId('HN26-0171')!].sort())
+    // LIMS declares ingestAll (#835): every bill gets a full ingest, the tracked ones ahead of the rest.
+    const queued = limsQueue.sendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body.billId))
+    expect(queued.slice(0, 2).sort()).toEqual([B0400, limsBillId('HN26-0171')!].sort())
+    expect(queued.slice(2).sort()).toEqual([limsBillId('B26-0001')!, limsBillId('B26-0769')!].sort())
     expect(e.INGESTOR_QUEUE.sendBatch).not.toHaveBeenCalled()
     expect(lims.getBulkData).toHaveBeenCalledTimes(2)
   })
@@ -111,7 +120,7 @@ describe('the DC sync pass', () => {
     const db = drizzle(env.DB, { schema })
     const first = makeEnv()
     await runLimsSync(first.env, db)
-    // Stand in for the ingestor having run: it writes the same change_hash back.
+    await markIngested()
     const second = makeEnv()
     await runLimsSync(second.env, db)
     expect(second.limsQueue.sendBatch).not.toHaveBeenCalled()
@@ -168,7 +177,7 @@ describe('match provenance from the DC sync', () => {
     }
     vi.mocked(lims.getBulkData).mockImplementation(async (c: number) => c === 1 ? [bulk['B26-0400'], filed] : [])
     const { env: e, limsQueue } = makeEnv({ ADMIN_SECRET: 'test-secret' })
-    const { app } = await import('../../src/index-legiscan')
+    const { app } = await import('../../src/index')
 
     const res = await app.fetch(new Request('http://central/api/admin/lims-import', {
       method: 'POST', headers: { 'x-admin-secret': 'test-secret', 'content-type': 'application/json' },
@@ -191,7 +200,7 @@ describe('match provenance from the DC sync', () => {
     vi.mocked(lims.getBulkData).mockImplementation(async (c: number, cp: number) =>
       cp === 25 && c === 1 ? [secureDc] : c === 1 ? [bulk['B26-0400']] : [])
     const { env: e, limsQueue } = makeEnv({ ADMIN_SECRET: 'test-secret' })
-    const { app } = await import('../../src/index-legiscan')
+    const { app } = await import('../../src/index')
 
     const res = await app.fetch(new Request('http://central/api/admin/lims-import', {
       method: 'POST', headers: { 'x-admin-secret': 'test-secret', 'content-type': 'application/json' },
@@ -287,7 +296,7 @@ describe('routing by the provider column', () => {
     expect(retry).not.toHaveBeenCalled()
     expect(legiscan.getBill).not.toHaveBeenCalled()
     expect(lims.getLegislationDetails).toHaveBeenCalledWith('B26-0400', 'lims-key', expect.any(Function))
-    const { app } = await import('../../src/index-legiscan')
+    const { app } = await import('../../src/index')
     const res = await app.fetch(new Request(`http://central/api/bills/legiscan:${BILL}`, {
       headers: { 'x-admin-secret': 'test-secret' },
     }), e)
@@ -320,6 +329,7 @@ describe('the stored LIMS record', () => {
     expect(built.rawHash).toBe(listed.rawHash)
 
     // An unchanged listing queues nothing and leaves the details alone.
+    await markIngested()
     const again = makeEnv()
     await runLimsSync(again.env, db)
     expect(again.limsQueue.sendBatch).not.toHaveBeenCalled()
@@ -400,11 +410,11 @@ describe('status changes, ownership, and the previous Council Period', () => {
     expect(row).toMatchObject({ lastAction: 'Codified', lastActionDate: '2026-09-01' })
   })
 
-  it('leaves DC on LegiScan while LegiScan DC bills are linked to tenants', async () => {
+  it('leaves DC on LegiScan with no ownership row, whatever LIMS_STATES says', async () => {
     const db = drizzle(env.DB, { schema })
+    await db.delete(schema.stateProviders)
     await db.insert(schema.bills).values({ billId: 1_950_000, sessionId: 2150, state: 'DC', stateId: 51, billNumber: 'B26-0400', changeHash: 'h', title: 't' } as any)
-    await db.insert(schema.billTenants).values({ billId: 1_950_000, tenantId: 'oca', matchType: 'keyword' })
-    const { env: e, limsQueue } = makeEnv()
+    const { env: e, limsQueue } = makeEnv({ LIMS_STATES: 'DC' })
 
     expect(await runLimsSync(e, db)).toEqual([])
     expect(lims.getBulkData).not.toHaveBeenCalled()
@@ -559,7 +569,7 @@ describe('cancellations', () => {
 
 describe('POST /api/admin/lims-sync', () => {
   it('runs a full pass immediately, outside the full-sync hours, and reports it', async () => {
-    const { app } = await import('../../src/index-legiscan')
+    const { app } = await import('../../src/index')
     const schedule = await import('../../src/lib/sync-schedule')
     vi.mocked(schedule.getCurrentEtHour).mockReturnValue(8)   // not a full-pass hour
     try {
@@ -569,7 +579,7 @@ describe('POST /api/admin/lims-sync', () => {
       }), e)
       expect(res.status).toBe(200)
       const body = await res.json() as { ok: boolean; passes: { sessionId: number; records: number; queued: number }[] }
-      expect(body.passes).toEqual([expect.objectContaining({ sessionId: limsSessionId(26), records: 4, queued: 2 })])
+      expect(body.passes).toEqual([expect.objectContaining({ sessionId: limsSessionId(26), records: 4, queued: 4 })])
       expect(limsQueue.sendBatch).toHaveBeenCalled()
       expect(lims.getMembers).toHaveBeenCalled()
     } finally {
@@ -578,7 +588,7 @@ describe('POST /api/admin/lims-sync', () => {
   })
 
   it('rejects a request without the admin secret', async () => {
-    const { app } = await import('../../src/index-legiscan')
+    const { app } = await import('../../src/index')
     const { env: e } = makeEnv({ ADMIN_SECRET: 'test-secret' })
     const res = await app.fetch(new Request('http://central/api/admin/lims-sync', { method: 'POST' }), e)
     expect(res.status).toBe(401)
@@ -588,7 +598,7 @@ describe('POST /api/admin/lims-sync', () => {
 
 describe('POST /api/admin/providers/:id/sync', () => {
   const post = async (id: string) => {
-    const { app } = await import('../../src/index-legiscan')
+    const { app } = await import('../../src/index')
     const { env: e } = makeEnv({ ADMIN_SECRET: 'test-secret' })
     return app.fetch(new Request(`http://central/api/admin/providers/${id}/sync`, {
       method: 'POST', headers: { 'x-admin-secret': 'test-secret' },
@@ -627,7 +637,7 @@ describe('POST /api/admin/lims-import', () => {
   }
 
   async function post(e: any, body: unknown) {
-    const { app } = await import('../../src/index-legiscan')
+    const { app } = await import('../../src/index')
     return app.fetch(new Request('http://central/api/admin/lims-import', {
       method: 'POST', headers: { 'x-admin-secret': 'test-secret', 'content-type': 'application/json' }, body: JSON.stringify(body),
     }), e)
@@ -695,7 +705,7 @@ describe('sponsors of earlier Council Periods', () => {
     const secureDc = { ...bulk['B26-0400'], legislationNumber: 'B25-0345', legislationHistory: bulk['B26-0400'].legislationHistory.map(h => ({ ...h, legislationNumber: 'B25-0345' })) }
     vi.mocked(lims.getBulkData).mockImplementation(async (c: number, cp: number) => cp === 25 && c === 1 ? [secureDc] : c === 1 ? [bulk['B26-0400']] : [])
     const { env: e } = makeEnv({ ADMIN_SECRET: 'test-secret' })
-    const { app } = await import('../../src/index-legiscan')
+    const { app } = await import('../../src/index')
     await app.fetch(new Request('http://central/api/admin/lims-import', {
       method: 'POST', headers: { 'x-admin-secret': 'test-secret', 'content-type': 'application/json' }, body: JSON.stringify({ tenantId: 'oca', numbers: ['B25-0345'] }),
     }), e)

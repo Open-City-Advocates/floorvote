@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { env } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill } from '../helpers'
+import { clearDb, seedUser, seedSession, seedBill } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { app } from '../../src/index'
 import { customFieldDefinitions, billCustomFieldValues } from '../../src/db/schema'
@@ -15,7 +15,7 @@ import { customFieldDefinitions, billCustomFieldValues } from '../../src/db/sche
 type Facets = {
   status: Record<string, number>
   priority: Record<string, number>
-  customFields: Record<string, Record<string, number>>
+  field: Record<string, Record<string, number>>
 }
 
 describe('facet counts under an active custom-field filter', () => {
@@ -26,8 +26,7 @@ describe('facet counts under an active custom-field filter', () => {
   const SLUGS: Record<string, string> = { [MULTI]: 'areas', [SINGLE]: 'stage', [TEXT]: 'owner' }
 
   beforeAll(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const userId = await seedUser()
     token = await seedSession(userId)
     const db = getDb(env.DB)
@@ -84,7 +83,7 @@ describe('facet counts under an active custom-field filter', () => {
   for (const f of filters) {
     for (const n of naming) {
       it(`${f.label} filter (by ${n.label}): other facets equal the total after picking the value`, async () => {
-        const base = f.active.map(([id, v]) => [`cf_${n.keyOf(id)}`, v] as [string, string])
+        const base = f.active.map(([id, v]) => [`field.${n.keyOf(id)}`, v] as [string, string])
         const activeFieldIds = new Set(f.active.map(([id]) => id))
         const got = await facets(base)
         let checked = 0
@@ -97,9 +96,9 @@ describe('facet counts under an active custom-field filter', () => {
         }
         // Another custom field's options are an "other facet" too.
         for (const other of [MULTI, SINGLE, TEXT].filter(id => !activeFieldIds.has(id))) {
-          for (const [value, count] of Object.entries(got.customFields[other] ?? {})) {
+          for (const [value, count] of Object.entries(got.field[other] ?? {})) {
             if (value === '__any__') continue
-            expect(count, `cf ${other}=${value}`).toBe(await total([...base, [`cf_${other}`, value]]))
+            expect(count, `cf ${other}=${value}`).toBe(await total([...base, [`field.${other}`, value]]))
             checked++
           }
         }

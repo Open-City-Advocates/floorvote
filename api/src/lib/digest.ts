@@ -1,16 +1,16 @@
-import { and, eq, gt, inArray, isNotNull, exists, sql } from 'drizzle-orm'
+import { and, eq, gt, inArray, exists, sql } from 'drizzle-orm'
 import { feedEvents, bills, users, sessions, associationConfig } from '../db/schema'
-import { renderDigestEmail, type DigestEvent, type NewMatchDigestItem } from './digestEmail'
-import { sendBatch, unsubscribeHeaders } from './email'
+import { renderDigestEmail, digestSubject, digestCadence, digestCardKey, countUpdatedBills, countNewMatches, countViewBills, type DigestEvent, type NewMatchDigestItem, type ViewDigestSection } from './digestEmail'
+import { buildViewSections, DIGEST_CATEGORIES } from './digestViews'
+import { senderFor, unsubscribeHeaders } from './email'
 import { nowDb } from './dbTime'
 import { getNewMatchMinRelevance, routineNewMatchWhere } from './newMatch'
+import { groupHasPriority, loadGroupPriorities, priorityWorn } from './teamFields'
 import { activeUser } from './accountDeletion'
 import type { AppDb, Env } from '../types'
 import { isModuleEnabled, getModuleSetting, type ModulesConfig } from '../../../shared/modules'
 import { PRODUCT_NAME } from '../../../shared/brand'
 import { userDisplayNameSql } from './displayName'
-
-const DIGEST_CATEGORIES = ['bill_updated', 'hearing_added', 'hearing_changed', 'hearing_cancelled', 'position_set', 'comment_added', 'priority_set']
 
 async function readModules(db: AppDb): Promise<ModulesConfig | undefined> {
   const row = await db.select().from(associationConfig).where(eq(associationConfig.key, 'modules')).get()
@@ -28,8 +28,8 @@ export type DigestResult = { ok: true; recipients: number; sent: number; failed:
 export async function runDigest(
   env: Env, db: AppDb, opts: { ignoreSchedule?: boolean } = {},
 ): Promise<DigestResult> {
-  // Note: demo instances never actually send — sendBatch suppresses all
-  // notification email when DEMO_MODE is set. The digest still shows as enabled
+  // Note: demo instances never actually send — the bulk purpose is suppressed
+  // when DEMO_MODE is set. The digest still shows as enabled
   // (read-only) in the demo UI.
   const modules = await readModules(db)
   if (!isModuleEnabled(modules, 'email-digest')) return { ok: true, recipients: 0, sent: 0, failed: 0 }
@@ -48,12 +48,12 @@ export async function runDigest(
   const since = lastRow?.value ?? new Date(Date.now() - 86400_000).toISOString().slice(0, 19).replace('T', ' ')
   const now = nowDb()
 
-  const events: DigestEvent[] = await db
+  const eventRows = await db
     .select({
       type: feedEvents.type, metadata: feedEvents.metadata, createdAt: feedEvents.createdAt,
       billId: bills.id, billNumber: bills.billNumber, billTitle: bills.title,
       billState: bills.state, billSession: bills.session, billSessionSlug: bills.sessionSlug, priority: bills.priority,
-      summary: bills.tenantSummary, billIsDraft: bills.isDraft,
+      summary: bills.tenantSummary, billIsDraft: bills.isDraft, billGroupKey: bills.groupKey,
       userName: userDisplayNameSql,
     })
     .from(feedEvents)
@@ -61,11 +61,15 @@ export async function runDigest(
     .leftJoin(users, eq(feedEvents.userId, users.id))
     // activeUser excludes events authored by a deactivated member; events from the
     // synthetic 'system' author don't match a users row, so it's a no-op for those.
-    .where(and(isNotNull(bills.priority), inArray(feedEvents.type, DIGEST_CATEGORIES as any), sql`datetime(${feedEvents.createdAt}) > datetime(${since})`, eq(feedEvents.suppressed, false), activeUser))
+    // A companion group is one policy: a group with a priority qualifies through any member, and its events share a card.
+    .where(and(groupHasPriority(bills), inArray(feedEvents.type, DIGEST_CATEGORIES as any), sql`datetime(${feedEvents.createdAt}) > datetime(${since})`, eq(feedEvents.suppressed, false), activeUser))
     .all()
+  // A companion group's events wear the group's priority, whichever member holds it.
+  const groupPriorities = await loadGroupPriorities(db, eventRows.map(e => e.billGroupKey))
+  const events: DigestEvent[] = eventRows.map(e => ({ ...e, priority: priorityWorn({ priority: e.priority, groupKey: e.billGroupKey }, groupPriorities) }))
 
   // New keyword matches awaiting triage — the section admins always get and
-  // members get unless they turned off "Include newly matched bills". Bill-based
+  // members get unless they turned off "Also include newly matched bills in the digest". Bill-based
   // (not feed events) and NOT priority-gated; scoped to the digest window. Only
   // routine matches, under the same new-match definition (and threshold) as the
   // triage list and chip: a seed's or keyword re-run's matches stay in the
@@ -75,6 +79,7 @@ export async function runDigest(
   const newMatches: NewMatchDigestItem[] = await db.select({
       billId: bills.id, billNumber: bills.billNumber, billTitle: bills.title,
       billState: bills.state, billSession: bills.session, billSessionSlug: bills.sessionSlug, relevanceScore: bills.relevanceScore,
+      summary: bills.tenantSummary, billGroupKey: bills.groupKey,
     })
     .from(bills)
     .where(and(
@@ -85,13 +90,20 @@ export async function runDigest(
     ))
     .all()
 
-  if (events.length === 0 && newMatches.length === 0) { await stampLastDigest(db, now); return { ok: true, recipients: 0, sent: 0, failed: 0 } }
-
-  const recipients = await db.select({ email: users.email, role: users.role, matchesEnabled: users.emailDigestMatchesEnabled }).from(users)
+  const recipients = await db.select({ id: users.id, email: users.email, role: users.role, matchesEnabled: users.emailDigestMatchesEnabled }).from(users)
     .where(and(
       eq(users.emailDigestEnabled, 1),
       exists(db.select({ id: sessions.id }).from(sessions).where(eq(sessions.userId, users.id))),
     )).all()
+
+  // Saved views a recipient included (#449): each view's news in the window, minus what the digest already shows
+  // as a priority bill, so a bill appears once. A recipient with views to report gets a digest of their own.
+  const viewSections = await buildViewSections(db, {
+    userIds: recipients.map(r => r.id), since, now,
+    shownKeys: new Set(events.map(digestCardKey)),
+  })
+
+  if (events.length === 0 && newMatches.length === 0 && viewSections.size === 0) { await stampLastDigest(db, now); return { ok: true, recipients: 0, sent: 0, failed: 0 } }
   if (recipients.length === 0) { await stampLastDigest(db, now); return { ok: true, recipients: 0, sent: 0, failed: 0 } }
 
   const nameRow = await db.select().from(associationConfig).where(eq(associationConfig.key, 'association_name')).get()
@@ -99,26 +111,37 @@ export async function runDigest(
   if (nameRow?.value) { try { assocName = JSON.parse(nameRow.value) } catch { assocName = nameRow.value } }
 
   const headers = unsubscribeHeaders(env.APP_URL, 'setting-email-digest')
-  const billCount = new Set(events.map(e => e.billId)).size
+  // One per card, so a companion group counts once however many of its bills changed.
+  const billCount = countUpdatedBills(events)
 
   // Updates lead; the new-match section follows. A recipient who gets the section
   // is every admin/owner and each member who hasn't turned off "Include newly
   // matched bills". The rest get the priority-event digest alone, and none at all
   // when there are no priority events.
-  const prioritySubject = `${assocName}: ${billCount} priority bill${billCount === 1 ? '' : 's'} updated`
-  const subjectWithMatches = billCount > 0
-    ? prioritySubject
-    : `${assocName}: ${newMatches.length} new bill${newMatches.length === 1 ? '' : 's'} matching your keywords`
-  const render = (opts: { newMatches?: NewMatchDigestItem[]; forMember?: boolean }) =>
+  const cadence = digestCadence(since, now)
+  const subjectWithMatches = digestSubject({ updatedBills: billCount, newMatches: countNewMatches(newMatches), cadence })
+  const updatesOnlySubject = digestSubject({ updatedBills: billCount, newMatches: 0, cadence })
+  const render = (opts: { newMatches?: NewMatchDigestItem[]; forMember?: boolean; views?: ViewDigestSection[] }) =>
     renderDigestEmail({ events, assocName, appUrl: env.APP_URL, periodStart: since, periodEnd: now, ...opts })
   const adminHtml = render({ newMatches })
   const memberWithMatchesHtml = render({ newMatches, forMember: true })
   const updatesOnly = events.length > 0
-    ? { subject: prioritySubject, html: render({}) }
+    ? { subject: updatesOnlySubject, html: render({}) }
     : null
 
   const messages = recipients.flatMap(r => {
     const isAdmin = r.role === 'admin' || r.role === 'owner'
+    const views = viewSections.get(r.id)
+    if (views) {
+      // Their own copy: the same sections they would get, and their views after. The subject counts the
+      // same cards the sections show, so it agrees with the others' wording.
+      const withMatches = isAdmin || r.matchesEnabled === 1
+      const mine = withMatches ? newMatches : []
+      const subject = digestSubject({ updatedBills: billCount, newMatches: countNewMatches(mine), viewBills: countViewBills(views), cadence })
+      return [{ to: [r.email], subject, html: render({ newMatches: mine, forMember: !isAdmin, views }), headers }]
+    }
+    // Without views of their own, a recipient has the priority events and (admins and opted-in members) the new matches. With neither, there is nothing for them.
+    if (events.length === 0 && newMatches.length === 0) return []
     if (isAdmin) return [{ to: [r.email], subject: subjectWithMatches, html: adminHtml, headers }]
     if (r.matchesEnabled === 1) return [{ to: [r.email], subject: subjectWithMatches, html: memberWithMatchesHtml, headers }]
     if (updatesOnly) return [{ to: [r.email], ...updatesOnly, headers }]
@@ -126,7 +149,8 @@ export async function runDigest(
   })
   if (messages.length === 0) { await stampLastDigest(db, now); return { ok: true, recipients: 0, sent: 0, failed: 0 } }
 
-  const { sent, failed } = await sendBatch(env, messages, 'digest', db, { bulk: true })
+  const { sent, failed } = await senderFor(env, db).sendBatch(messages.map(m => ({ purpose: 'bulk' as const, ...m })))
+  console.log(`[digest] sent ${sent}, failed ${failed}`)
   await stampLastDigest(db, now)
   return { ok: true, recipients: messages.length, sent, failed }
 }

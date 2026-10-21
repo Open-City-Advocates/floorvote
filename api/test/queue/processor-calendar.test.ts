@@ -2,9 +2,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { env } from 'cloudflare:test'
 import { processCentralNotification } from '../../src/queue/processor'
 import { getDb } from '../../src/db/client'
-import { calendarEvents, feedEvents } from '../../src/db/schema'
+import { bills, calendarEvents, feedEvents } from '../../src/db/schema'
 import { eq } from 'drizzle-orm'
-import { resetDb, applyMigrations, seedBill } from '../helpers'
+import { clearDb, seedBill } from '../helpers'
 
 vi.mock('../../src/lib/llm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/lib/llm')>()
@@ -67,8 +67,7 @@ describe('processCentralNotification — calendar mirror', () => {
   let billId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     vi.clearAllMocks()
     vi.stubGlobal('fetch', vi.fn().mockImplementation(() =>
       Promise.resolve(new Response(JSON.stringify(centralBillJson()), { status: 200, headers: { 'Content-Type': 'application/json' } })),
@@ -139,6 +138,7 @@ describe('processCentralNotification — calendar mirror', () => {
     )
     const changed = calendarBlock('hearing_changed')
     changed.events[0].eventHash = 'h2'
+    changed.events[0].time = '15:00:00'
     changed.changes[0].eventHash = 'h2'
     await processCentralNotification(
       { tenantId: 'ri', billId: 'legiscan:999', calendar: changed } as any,
@@ -148,6 +148,48 @@ describe('processCentralNotification — calendar mirror', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].sequence).toBe(1)
     expect(rows[0].eventHash).toBe('h2')
+  })
+
+  it('stores a new hash without bumping sequence when no visible field changed', async () => {
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', calendar: calendarBlock('hearing_added') } as any,
+      testEnv as any, getDb(env.DB),
+    )
+    const hashOnly = calendarBlock('hearing_changed')
+    hashOnly.events[0].eventHash = 'h2'
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', calendar: hashOnly } as any,
+      testEnv as any, getDb(env.DB),
+    )
+    const rows = await getDb(env.DB).select().from(calendarEvents).where(eq(calendarEvents.billId, billId)).all()
+    expect(rows[0].sequence).toBe(0)
+    expect(rows[0].eventHash).toBe('h2')
+  })
+
+  it('bumps sequence once for each visible field that changes', async () => {
+    const deliver = (patch: Record<string, string>) => {
+      const block = calendarBlock('hearing_changed')
+      Object.assign(block.events[0], patch, { eventHash: `h-${JSON.stringify(patch)}` })
+      return processCentralNotification({ tenantId: 'ri', billId: 'legiscan:999', calendar: block } as any, testEnv as any, getDb(env.DB))
+    }
+    const sequence = async () => (await getDb(env.DB).select().from(calendarEvents).where(eq(calendarEvents.billId, billId)).get())?.sequence
+    const added = calendarBlock('hearing_added')
+    Object.assign(added.events[0], { kind: 'hearing' })
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', calendar: added } as any,
+      testEnv as any, getDb(env.DB),
+    )
+    const seen: Array<number | undefined> = []
+    // Each edit keeps the earlier ones, as a provider's edits do.
+    let current: Record<string, string> = { kind: 'hearing' }
+    for (const patch of [
+      { date: '2026-06-05' }, { location: 'Room 36' }, { description: 'House Cmte on Elections, rescheduled' }, { kind: 'markup' },
+    ]) {
+      current = { ...current, ...patch }
+      await deliver(current)
+      seen.push(await sequence())
+    }
+    expect(seen).toEqual([1, 2, 3, 4])
   })
 
   it('marks a hearing cancelled when it disappears from the events set', async () => {
@@ -169,8 +211,7 @@ describe('processCentralNotification — calendar mirror', () => {
   it('still reconciles calendar when the bill metadata dedup early-returns', async () => {
     // Reset the bill so its providerUpdatedAt matches the central mock's updatedAt ('2026-06-02T00:00:00Z')
     // AND aiProcessedAt is set — this triggers the early-return dedup branch in processCentralNotification.
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     billId = await seedBill({
       billNumber: 'H 5174',
       state: 'RI',
@@ -196,8 +237,7 @@ describe('processCentralNotification — calendar mirror', () => {
   })
 
   it('reconciles calendar for a stub bill (matchType null) when it has priority set', async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     vi.stubGlobal('fetch', vi.fn().mockImplementation(() =>
       Promise.resolve(new Response(JSON.stringify({
         ...centralBillJson('H 7777'),
@@ -260,6 +300,7 @@ describe('processCentralNotification — calendar mirror', () => {
       seen.push((await row()).sequence)
       const changed = calendarBlock('hearing_changed')
       changed.events[0].eventHash = 'h2'
+      changed.events[0].time = '15:00:00'
       changed.changes[0].eventHash = 'h2'
       await deliver(changed)
       seen.push((await row()).sequence)
@@ -307,5 +348,135 @@ describe('processCentralNotification — calendar mirror', () => {
       const fe = await getDb(env.DB).select().from(feedEvents).where(eq(feedEvents.billId, billId)).all()
       expect(fe.filter(e => e.type.startsWith('hearing_'))).toEqual([])
     })
+  })
+})
+
+// A demo's hearings come only from its seed (LM_CALENDAR_EVENTS), written as
+// `hearing` rows with no event hash. Central's calendar never lists them, so
+// reconciling against it cancels every one (#884).
+describe('processCentralNotification — calendar on a demo tenant', () => {
+  const demoEnv = { ...testEnv, DEMO_MODE: 'true' }
+  const SEEDED_AT = '2026-06-01 09:00:00'
+  let billId: string
+
+  const seededRow = (n: number) => ({
+    id: `seed-hearing-${n}`, uid: `seed-hearing-${n}@example.com`, billId, source: 'hearing' as const, kind: null,
+    sequence: 0, date: `2026-06-1${n}`, time: '10:00:00', location: `Room ${n}`,
+    description: `Seeded committee hearing ${n}`, status: 'confirmed' as const, eventHash: null,
+    createdAt: SEEDED_AT, updatedAt: SEEDED_AT,
+  })
+  const stored = async () => getDb(env.DB).select().from(calendarEvents).orderBy(calendarEvents.id).all()
+  const feedTypes = async () => (await getDb(env.DB).select().from(feedEvents).all()).map(e => e.type)
+
+  async function seedBillAndHearings(over: { matchType?: 'keyword' | null, priority?: 'high' | null, providerUpdatedAt?: string, groupKey?: string } = {}) {
+    await clearDb()
+    const { groupKey, ...rest } = over
+    billId = await seedBill({
+      billNumber: 'H 5174', state: 'RI', session: '2026 Regular Session', externalId: 'legiscan:999',
+      matchType: 'keyword', priority: 'high', aiProcessedAt: '2026-06-01T00:00:00Z', ...rest,
+    })
+    if (groupKey) await env.DB.prepare('UPDATE bills SET group_key = ? WHERE id = ?').bind(groupKey, billId).run()
+    await getDb(env.DB).insert(calendarEvents).values([seededRow(1), seededRow(2), seededRow(3)])
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify(centralBillJson()), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+    ))
+    await seedBillAndHearings()
+  })
+
+  it('leaves seeded hearings confirmed and unchanged when central lists none', async () => {
+    const before = await stored()
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', calendar: calendarBlock('hearing_cancelled') } as any,
+      demoEnv as any, getDb(env.DB),
+    )
+    expect(await stored()).toEqual(before)
+  })
+
+  it('leaves seeded hearings unchanged on a metadata refresh (forceMetadata)', async () => {
+    const before = await stored()
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', forceMetadata: true, calendar: calendarBlock('hearing_cancelled') } as any,
+      demoEnv as any, getDb(env.DB),
+    )
+    expect(await stored()).toEqual(before)
+  })
+
+  it('leaves seeded hearings unchanged on an operator AI re-run (full path)', async () => {
+    const before = await stored()
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', forceMetadata: true, forceAI: true, operatorAi: true, calendar: calendarBlock('hearing_cancelled') } as any,
+      demoEnv as any, getDb(env.DB),
+    )
+    expect(await stored()).toEqual(before)
+  })
+
+  it('leaves seeded hearings unchanged when the bill is unchanged and the delivery early-returns', async () => {
+    await seedBillAndHearings({ providerUpdatedAt: '2026-06-02T00:00:00Z' })
+    const before = await stored()
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', calendar: calendarBlock('hearing_cancelled') } as any,
+      demoEnv as any, getDb(env.DB),
+    )
+    expect(await stored()).toEqual(before)
+  })
+
+  it('leaves seeded hearings unchanged on a metadata-only delivery', async () => {
+    const before = await stored()
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', metadataOnly: true, calendar: calendarBlock('hearing_cancelled') } as any,
+      demoEnv as any, getDb(env.DB),
+    )
+    expect(await stored()).toEqual(before)
+  })
+
+  it('adds no hearing of central\'s own and rewrites none of the seed\'s', async () => {
+    const before = await stored()
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', calendar: calendarBlock('hearing_added') } as any,
+      demoEnv as any, getDb(env.DB),
+    )
+    expect(await stored()).toEqual(before)
+  })
+
+  it('writes no hearing feed event', async () => {
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', calendar: calendarBlock('hearing_added') } as any,
+      demoEnv as any, getDb(env.DB),
+    )
+    expect((await feedTypes()).filter(t => t.startsWith('hearing_'))).toEqual([])
+  })
+
+  it('leaves seeded hearings alone on a grouped bill that is not itself tracked', async () => {
+    await seedBillAndHearings({ matchType: null, priority: null, groupKey: 'grp-1' })
+    const before = await stored()
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', calendar: calendarBlock('hearing_cancelled') } as any,
+      demoEnv as any, getDb(env.DB),
+    )
+    expect(await stored()).toEqual(before)
+  })
+
+  it('still stores the bill\'s own metadata on a demo delivery', async () => {
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', forceMetadata: true, calendar: calendarBlock('hearing_cancelled') } as any,
+      demoEnv as any, getDb(env.DB),
+    )
+    const bill = (await getDb(env.DB).select().from(bills).where(eq(bills.id, billId)).get())!
+    expect(bill.title).toBe('Mail ballot processing')
+  })
+
+  it('still cancels a dropped hearing when DEMO_MODE is not true', async () => {
+    const before = await stored()
+    await processCentralNotification(
+      { tenantId: 'ri', billId: 'legiscan:999', calendar: calendarBlock('hearing_cancelled') } as any,
+      { ...testEnv, DEMO_MODE: 'false' } as any, getDb(env.DB),
+    )
+    const after = await stored()
+    expect(after.map(r => r.status)).toEqual(['cancelled', 'cancelled', 'cancelled'])
+    expect(after.map(r => r.sequence)).toEqual(before.map(r => r.sequence + 1))
   })
 })

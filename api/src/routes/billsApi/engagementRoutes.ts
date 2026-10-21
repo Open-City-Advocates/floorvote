@@ -13,12 +13,12 @@ import { muteBill, unmuteBill } from '../../lib/billMutes'
 import { stripHtml } from '../../lib/stripHtml'
 import { COMMENT_PREVIEW_MAX, truncateWithEllipsis } from '../../../../shared/feedUtils'
 import { sanitizeCommentHtml } from '../../lib/sanitizeHtml'
+import { attachmentSummaryText, attachToComment, checkAttachable, loadCommentAttachments } from '../../lib/attachments'
 import type { AppEnv } from '../../types'
 import { nowDb } from '../../lib/dbTime'
 import { activeUser } from '../../lib/accountDeletion'
 import { resolveCustomFieldValues } from '../../lib/customFieldValues'
 import { displayName } from '../../lib/displayName'
-import { titleOf, userTitleSql } from '../../lib/userTitle'
 import { inGroupOf, loadGroupBills, loadGroupNotes, mergeGroupNotes } from '../../lib/companionGroups'
 import { loadGroupTeamValues, recordFieldChanges } from '../../lib/teamFields'
 
@@ -174,7 +174,7 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
         c: comments,
         userName: users.name,
         userEmail: users.email,
-        userTitle: userTitleSql,
+        userTitle: users.title,
       })
       .from(comments)
       .innerJoin(users, eq(comments.userId, users.id))
@@ -195,16 +195,16 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
           .where(and(inArray(commentReactions.commentId, commentIds), isNull(commentReactions.deletedAt), activeUser))
           .all()
       : []
+    const attachmentsByComment = await loadCommentAttachments(db, commentIds)
 
-    const reactionsByComment = new Map<string, Map<string, { count: number; userReacted: boolean; reactors: { name: string; title: string | null; subtitle: string | null }[] }>>()
+    const reactionsByComment = new Map<string, Map<string, { count: number; userReacted: boolean; reactors: { name: string; title: string | null }[] }>>()
     for (const { reaction: r, user: reactor } of reactionRows) {
       if (!reactionsByComment.has(r.commentId)) reactionsByComment.set(r.commentId, new Map())
       const emojiMap = reactionsByComment.get(r.commentId)!
       if (!emojiMap.has(r.emoji)) emojiMap.set(r.emoji, { count: 0, userReacted: false, reactors: [] })
       const entry = emojiMap.get(r.emoji)!
       entry.count++
-      // `subtitle` is the old name for `title`. Remove in the release after this one.
-      entry.reactors.push({ name: displayName(reactor), title: titleOf(reactor), subtitle: titleOf(reactor) })
+      entry.reactors.push({ name: displayName(reactor), title: reactor.title })
       if (r.userId === currentUser.id) entry.userReacted = true
     }
 
@@ -216,13 +216,12 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
         userId: comment.userId,
         userName: userName || userEmail,
         userTitle,
-        // `subtitle` is the old name for `title`. Remove in the release after this one.
-        userSubtitle: userTitle,
         content: comment.content,
         createdAt: comment.createdAt,
         reactions: Array.from(reactionsByComment.get(comment.id)?.entries() ?? []).map(
           ([emoji, data]) => ({ emoji, count: data.count, userReacted: data.userReacted, reactors: data.reactors }),
         ),
+        attachments: attachmentsByComment.get(comment.id) ?? [],
       })),
     )
   })
@@ -234,11 +233,17 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
     const currentUser = c.get('user')
     const bill = await db.select({ id: bills.id }).from(bills).where(eq(bills.id, id)).get()
     if (!bill) return c.json({ error: 'Not found' }, 404)
-    const body = await c.req.json<{ content?: string }>().catch(() => ({} as { content?: string }))
-    if (!body.content?.trim()) return c.json({ error: 'content is required' }, 400)
-    if (new TextEncoder().encode(body.content.trim()).length > 10_240) {
+    const body = await c.req.json<{ content?: string; attachmentIds?: unknown }>().catch(() => ({} as { content?: string; attachmentIds?: unknown }))
+    const text = typeof body.content === 'string' ? body.content.trim() : ''
+    if (new TextEncoder().encode(text).length > 10_240) {
       return c.json({ error: 'Comment too long (max 10 KB)' }, 400)
     }
+    // Files the composer uploaded and confirmed (#465), checked before the
+    // comment is written so a refused file posts nothing.
+    const attachable = await checkAttachable(c.env, db, currentUser.id, body.attachmentIds)
+    if (!attachable.ok) return c.json({ error: attachable.error }, attachable.status)
+    // A comment is text, files, or both: blank text needs at least one file.
+    if (!text && attachable.ids.length === 0) return c.json({ error: 'content is required' }, 400)
     if (c.env.DEMO_MODE === 'true') {
       const live = await db
         .select({ n: sql<number>`count(*)` })
@@ -254,7 +259,7 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
     }
     // Sanitize on write to the same allowlist the on-screen renderer uses — the
     // raw value is otherwise interpolated into mention emails unescaped (H5).
-    const content = sanitizeCommentHtml(body.content.trim())
+    const content = sanitizeCommentHtml(text)
 
     const commentId = crypto.randomUUID()
     const now = nowDb()
@@ -265,11 +270,24 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
       content,
       createdAt: now,
     })
+    const attachments = await attachToComment(db, commentId, attachable.ids)
+    if (!text && attachments.length === 0) {
+      // Another post claimed the files first (two tabs, or a retry after a lost
+      // response). Nothing references this row yet, so remove it.
+      await db.delete(comments).where(eq(comments.id, commentId))
+      return c.json({ error: 'Those files were already attached' }, 409)
+    }
+
+    // A file-only comment has no body to preview, so notifications and the feed
+    // say what was attached instead. This is not stored as the comment's content.
+    const typed = stripHtml(content)
+    const preview = typed || attachmentSummaryText(attachments)
+    const notifyHtml = typed || !preview ? content : sanitizeCommentHtml(`<p>${preview}</p>`)
 
     const mentionedUserIds = await extractAndNotifyMentions(commentId, content, currentUser.id, currentUser.role, id, c.env, c.executionCtx.waitUntil.bind(c.executionCtx))
     // Everyone else who has commented here hears about it too, except the people
     // this comment mentions (they got the mention).
-    await notifyParticipantsOfReply({ id: commentId, html: content, createdAt: now }, currentUser.id, id, mentionedUserIds, c.env, c.executionCtx.waitUntil.bind(c.executionCtx))
+    await notifyParticipantsOfReply({ id: commentId, html: notifyHtml, createdAt: now }, currentUser.id, id, mentionedUserIds, c.env, c.executionCtx.waitUntil.bind(c.executionCtx))
 
     await db.insert(feedEvents).values({
       id: crypto.randomUUID(),
@@ -277,14 +295,14 @@ export function registerEngagementRoutes(router: Hono<AppEnv>) {
       billId: id,
       userId: currentUser.id,
       metadata: JSON.stringify({
-        preview: truncateWithEllipsis(stripHtml(content), COMMENT_PREVIEW_MAX),
+        preview: truncateWithEllipsis(preview, COMMENT_PREVIEW_MAX),
         commentId,
         ...(mentionedUserIds.length > 0 ? { mentionedUserIds } : {}),
       }),
       createdAt: now,
     })
 
-    return c.json({ id: commentId, content, createdAt: now }, 201)
+    return c.json({ id: commentId, content, createdAt: now, attachments }, 201)
   })
 
   // PUT /bills/:id/mute: mute this bill's comments for the member (#355). No

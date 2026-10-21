@@ -3,13 +3,13 @@ import { env } from 'cloudflare:test'
 import { drizzle } from 'drizzle-orm/d1'
 import { eq } from 'drizzle-orm'
 import * as schema from '../../src/db/schema'
-import { app } from '../../src/index-legiscan'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { app } from '../../src/index'
+import { clearDb } from '../helpers/migrations'
 
 const TEST_ENV: any = { ...env, ADMIN_SECRET: 'sek' }
 const AUTH = { Authorization: 'Bearer sek' }
 
-beforeEach(async () => { await setupLsDb() })
+beforeEach(async () => { await clearDb() })
 
 async function seed() {
   const db = drizzle(env.DB, { schema })
@@ -151,6 +151,25 @@ describe('GET /admin/dash/sync/sessions', () => {
     expect(row.fullSyncIsDefault).toBe(true)
     expect(body.data.sineDie[0].sessionId).toBe(2)
     expect(body.data.sineDie[0].sineDie).toBe(true)
+  })
+
+  it('reports a snapshot session\'s default hours from its provider', async () => {
+    await seed()
+    const db = drizzle(env.DB, { schema })
+    await db.insert(schema.sessions).values([
+      { sessionId: 4, state: 'MD', stateId: 21, yearStart: 2026, yearEnd: 2026, prefile: 0, sineDie: 0, prior: 0, special: 0, sessionTag: '', sessionTitle: 'MD 2026', sessionName: 'MD 2026', syncEnabled: true, provider: 'mga' } as any,
+    ])
+    const res = await app.fetch(new Request('http://central/admin/dash/sync/sessions', { headers: AUTH }), TEST_ENV)
+    const body = await res.json() as any
+    const md = body.data.active.find((s: any) => s.sessionId === 4)
+    const everyHour = Array.from({ length: 24 }, (_, h) => h)
+    expect(md.fullSyncHours).toEqual(everyHour)
+    expect(md.fullSyncIsDefault).toBe(true)
+    expect(md.defaultFullHours).toEqual(everyHour)
+    expect(md.snapshot).toBe(true)
+    const ri = body.data.active.find((s: any) => s.sessionId === 1)
+    expect(ri.defaultFullHours).toEqual([5, 13, 23])
+    expect(ri.snapshot).toBe(false)
   })
 
   it('sync-disabled (syncEnabled=false) non-sineDie session appears in active bucket', async () => {

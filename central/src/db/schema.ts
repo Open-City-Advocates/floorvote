@@ -84,6 +84,11 @@ export const bills = sqliteTable('bills', {
   textsFetchedAt:  text('texts_fetched_at'),
   /** When a tenant last asked for the bill to be fetched without tracking it (0040). A lock on asking again, never read as a fetch. */
   textsRequestedAt: text('texts_requested_at'),
+  /** The change_hash the bill's detail was last fetched at, by an ingest (0041). Differs from changeHash while the detail is stale. */
+  detailHash:      text('detail_hash'),
+  /** The change_hash a page view last queued a detail refresh for, and when (0041, lib/stubRefresh.ts). A lock, never read as a fetch. */
+  detailRequestedHash: text('detail_requested_hash'),
+  detailRequestedAt:   text('detail_requested_at'),
   /** The id of the provider that wrote the row (src/providers): 'legiscan' unless another provider did. */
   provider:        text('provider').notNull().default('legiscan'),
   /**
@@ -98,9 +103,23 @@ export const bills = sqliteTable('bills', {
    * don't bind one more parameter per row.
    */
   carriedWaits:    integer('carried_waits'),
+  /**
+   * How many times the ingestor ran the bill's first full ingest under a
+   * provider's ingestAll without one landing (0048, 0049, queue/processor.ts).
+   * A pass sets it one past the limit when it gives the bill up (cron/sync.ts).
+   * Null for none, and with no default, as above.
+   */
+  firstIngestTries: integer('first_ingest_tries'),
+  /**
+   * When a pass last queued that first full ingest, cleared when the message
+   * runs (0049). Null when none waits.
+   */
+  firstIngestQueuedAt: text('first_ingest_queued_at'),
 }, (t) => [
   index('idx_bills_session').on(t.sessionId),
   index('idx_bills_state').on(t.state),
+  index('idx_bills_detail_requested_at').on(t.detailRequestedAt).where(sql`detail_requested_at IS NOT NULL`),
+  index('idx_bills_first_ingest_queued').on(t.provider, t.firstIngestQueuedAt).where(sql`first_ingest_queued_at IS NOT NULL`),
 ])
 
 export const committees = sqliteTable('committees', {
@@ -154,7 +173,7 @@ export const billSasts = sqliteTable('bill_sasts', {
   type:           text('type').notNull(),
   sastBillNumber: text('sast_bill_number').notNull(),
   sastBillId:     integer('sast_bill_id').notNull(),
-}, (t) => [index('idx_bill_sasts_bill').on(t.billId)])
+}, (t) => [index('idx_bill_sasts_bill').on(t.billId), index('idx_bill_sasts_sast_bill_id').on(t.sastBillId)])
 
 export const billSubjects = sqliteTable('bill_subjects', {
   id:          text('id').primaryKey(),
@@ -359,11 +378,14 @@ export const keywordRegistry = sqliteTable('keyword_registry', {
   keyword:  text('keyword').notNull(),
 }, (t) => [primaryKey({ columns: [t.tenantId, t.keyword] })])
 
+// A new column must also go in insertLinkWhileOwner's positional INSERT…SELECT (lib/stateProviders.ts).
 export const billTenants = sqliteTable('bill_tenants', {
   billId:     integer('bill_id').notNull(),
   tenantId:   text('tenant_id').notNull(),
   notifiedAt: text('notified_at'),
   matchType:  text('match_type'),
+  /** When the instance last asked for the bill through POST /tenants/fetch-bills (0046, lib/fetchRequests.ts). */
+  fetchRequestedAt: text('fetch_requested_at'),
 }, (t) => [primaryKey({ columns: [t.billId, t.tenantId] })])
 
 export const apiCallLog = sqliteTable('api_call_log', {
@@ -371,7 +393,10 @@ export const apiCallLog = sqliteTable('api_call_log', {
   loggedAt:  text('logged_at').notNull().default(sql`(datetime('now'))`),
   callType:  text('call_type').notNull(),
   params:    text('params').notNull(),
-})
+}, (t) => [
+  // Every reader filters on logged_at; call_type rides along so the counts never touch the table (0044).
+  index('idx_api_call_log_logged_at').on(t.loggedAt, t.callType),
+])
 
 export const sessionSyncLog = sqliteTable('session_sync_log', {
   id:           integer('id').primaryKey({ autoIncrement: true }),
@@ -382,7 +407,15 @@ export const sessionSyncLog = sqliteTable('session_sync_log', {
   billsChecked: integer('bills_checked').notNull().default(0),
   billsChanged: integer('bills_changed').notNull().default(0),
   billsQueued:  integer('bills_queued').notNull().default(0),
-})
+  /** 'failed' for a snapshot provider's pass that threw; 'ok' for every pass that finished (0045). */
+  status:       text('status', { enum: ['ok', 'failed'] }).notNull().default('ok'),
+  /** The message of the error that ended a failed pass, truncated; null for a pass that finished (0045). */
+  error:        text('error'),
+}, (t) => [
+  index('idx_session_sync_log_session_synced').on(t.sessionId, t.syncedAt),
+  index('idx_session_sync_log_state_synced').on(t.state, t.syncedAt),
+  index('idx_session_sync_log_synced').on(t.syncedAt),
+])
 
 export const magicLinks = sqliteTable('magic_links', {
   id:         text('id').primaryKey(),
@@ -458,7 +491,7 @@ export const resendUsageDaily = sqliteTable('resend_usage_daily', {
 
 /**
  * The raw record each snapshot provider's bill was last built from, and its hash;
- * see migrations-legiscan/0025_source_provenance.sql (renamed by 0027).
+ * see migrations/0025_source_provenance.sql (renamed by 0027).
  */
 export const providerRecords = sqliteTable('provider_records', {
   billId:           integer('bill_id').primaryKey(),
@@ -476,7 +509,7 @@ export const providerRecords = sqliteTable('provider_records', {
 
 /**
  * Which provider central reads each state from; see
- * migrations-legiscan/0030_state_providers.sql and lib/stateProviders.ts. A
+ * migrations/0030_state_providers.sql and lib/stateProviders.ts. A
  * state with no row is LegiScan's.
  */
 export const stateProviders = sqliteTable('state_providers', {
@@ -488,7 +521,7 @@ export const stateProviders = sqliteTable('state_providers', {
   claimedAt:        text('claimed_at').notNull().default(sql`(datetime('now'))`),
 })
 
-/** Central ids that providers mint for their own keys (ProviderContext.ids); see migrations-legiscan/0026_source_ids.sql (renamed by 0027) and lib/providerIds.ts. */
+/** Central ids that providers mint for their own keys (ProviderContext.ids); see migrations/0026_source_ids.sql (renamed by 0027) and lib/providerIds.ts. */
 export const providerIds = sqliteTable('provider_ids', {
   id:        integer('id').primaryKey({ autoIncrement: true }),
   provider:  text('provider').notNull(),
@@ -497,8 +530,19 @@ export const providerIds = sqliteTable('provider_ids', {
 })
 
 /**
+ * What a provider keeps between runs (ProviderContext.cache): text entries under
+ * keys it names. See migrations/0042_provider_cache.sql and lib/providerCache.ts.
+ */
+export const providerCache = sqliteTable('provider_cache', {
+  provider:  text('provider').notNull(),
+  key:       text('key').notNull(),
+  value:     text('value').notNull(),
+  updatedAt: text('updated_at').notNull().default(sql`(datetime('now'))`),
+}, t => [primaryKey({ columns: [t.provider, t.key] })])
+
+/**
  * Cutovers: a state moved from one provider to another with every matched bill
- * keeping its central row id (lib/cutover.ts, migrations-legiscan/0036_cutovers.sql).
+ * keeping its central row id (lib/cutover.ts, migrations/0036_cutovers.sql).
  */
 export const cutovers = sqliteTable('cutovers', {
   id:           text('id').primaryKey(),

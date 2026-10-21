@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { eq } from 'drizzle-orm'
-import { resetDb, applyMigrations, seedBill } from '../helpers'
+import { clearDb, seedBill } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { processCentralNotification } from '../../src/queue/processor'
 import { bills } from '../../src/db/schema'
 import type { TenantQueueMessage } from '../../src/types'
 
-const BILL_ID = 'legiscan:3000000001'
+const BILL_ID = 'bill:3000000001'
 
 function centralBill(extra: Record<string, unknown> = {}) {
   return {
@@ -31,8 +31,7 @@ async function notify(payload: object, flags: Partial<TenantQueueMessage>) {
 
 describe('the status stage and rank central sends', () => {
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
   })
 
   afterEach(() => {

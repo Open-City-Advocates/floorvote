@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { env, createExecutionContext } from 'cloudflare:test'
-import { resetDb, applyMigrations } from '../helpers'
+import { clearDb } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { verifyAi } from '../../src/lib/verifyAi'
 import { CentralApi } from '../../src/centralApi'
@@ -31,8 +31,7 @@ function central(opts: { bill?: Response; text?: Response } = {}) {
 }
 
 beforeEach(async () => {
-  await resetDb()
-  await applyMigrations()
+  await clearDb()
   vi.clearAllMocks()
   vi.mocked(processBill).mockResolvedValue({ summary: 'A summary', tags: ['Elections', 'Voting'], relevanceScore: 8, affectedCitations: [] })
   central()
@@ -65,6 +64,25 @@ describe('verifyAi', () => {
     const args = vi.mocked(processBill).mock.calls[0][0]
     expect(args.aiContext).toBe('You advise county clerks.')
     expect(args.taxonomy.map((t: { name: string }) => t.name)).toEqual(['Clerk Duties'])
+  })
+
+  it('asks for claim sources as the pipeline does, when central pins the text it served', async () => {
+    central({ text: new Response(JSON.stringify({ type: 'html', content: '<p>The full text</p>', docId: '77', textHash: 'h77' }), { status: 200 }) })
+    await verifyAi(gatewayEnv, getDb(env.DB), 'legiscan:42')
+    expect(vi.mocked(processBill).mock.calls[0][0].claimSources).toBe(true)
+  })
+
+  it('does not ask for claim sources when an admin has turned claim links off, as the pipeline does not (#570)', async () => {
+    const db = getDb(env.DB)
+    await db.insert(associationConfig).values({ key: 'claim_links_enabled', value: JSON.stringify(false) })
+    central({ text: new Response(JSON.stringify({ type: 'html', content: '<p>The full text</p>', docId: '77', textHash: 'h77' }), { status: 200 }) })
+    await verifyAi(gatewayEnv, db, 'legiscan:42')
+    expect(vi.mocked(processBill).mock.calls[0][0].claimSources).toBe(false)
+  })
+
+  it('does not ask for claim sources when central sends no doc id, as the pipeline does not', async () => {
+    await verifyAi(gatewayEnv, getDb(env.DB), 'legiscan:42')
+    expect(vi.mocked(processBill).mock.calls[0][0].claimSources).toBe(false)
   })
 
   it('falls back to the title and abstract when central has no text, and says so', async () => {

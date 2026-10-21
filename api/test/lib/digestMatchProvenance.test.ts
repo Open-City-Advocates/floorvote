@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { env } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession, seedBill } from '../helpers'
+import { clearDb, seedUser, seedSession, seedBill } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { associationConfig } from '../../src/db/schema'
 import { processCentralNotification } from '../../src/queue/processor'
@@ -35,7 +35,7 @@ const tenantEnv = { ...env, TENANT_ID: 'test-org', CENTRAL_API_URL: 'https://cen
 let emails: any[]
 
 beforeEach(async () => {
-  await resetDb(); await applyMigrations()
+  await clearDb()
   emails = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: any) => {
     const u = String(url)
@@ -67,7 +67,7 @@ describe('the digest lists only routine new matches', () => {
     await runDigest(env as any, getDb(env.DB))
 
     expect(emails).toHaveLength(1)
-    expect(emails[0].html).toContain('New matches (1)')
+    expect(emails[0].html).toContain('1 new match')
     expect(emails[0].html).toContain('HB 1')
   })
 
@@ -105,7 +105,7 @@ describe('the digest lists only routine new matches', () => {
     await runDigest(env as any, getDb(env.DB))
 
     expect(emails).toHaveLength(1)
-    expect(emails[0].html).toContain('New matches (1)')
+    expect(emails[0].html).toContain('1 new match')
     expect(emails[0].html).toContain('HB 6')
     expect(emails[0].html).not.toContain('HB 7')
   })
@@ -120,7 +120,7 @@ describe('the digest lists only routine new matches', () => {
     await runDigest(env as any, db)
 
     expect(emails).toHaveLength(1)
-    expect(emails[0].html).toContain('New matches (1)')
+    expect(emails[0].html).toContain('1 new match')
     expect(emails[0].html).toContain('HI 1')
     expect(emails[0].html).not.toContain('LO 1')
   })

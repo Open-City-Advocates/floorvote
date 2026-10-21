@@ -2,18 +2,17 @@ import { Hono } from 'hono'
 import { getDb } from '../db/client'
 import {
   users, bills, billTexts,
-  memberVotes, officialPositions, comments, commentReactions, notes,
+  memberVotes, officialPositions, comments, commentReactions, commentAttachments, notes,
   feedEvents, publicReports, associationConfig,
   customFieldDefinitions, billCustomFieldValues,
   calendarEvents, calendarEventBills,
 } from '../db/schema'
 import { gt, and, inArray, sql, type SQL } from 'drizzle-orm'
 import { centralFetch } from '../lib/centralFetch'
-import { HANDLE_PREFIX, parseHandle } from '../../../shared/billHandle'
+import { HANDLE_PREFIXES, legacyHandle, parseHandle } from '../../../shared/billHandle'
 import { EXPORT_TABLES, type ExportTable } from '../../../shared/exportTables'
 import { loadSuppressedSubjectStates, isSubjectsSuppressedForState } from '../lib/billSubjects'
 import type { AppEnv } from '../types'
-import { titleOf } from '../lib/userTitle'
 
 const tableMap = {
   users,
@@ -23,6 +22,7 @@ const tableMap = {
   officialPositions,
   comments,
   commentReactions,
+  commentAttachments,
   notes,
   feedEvents,
   publicReports,
@@ -43,7 +43,7 @@ type TableName = keyof typeof tableMap
 
 const SAFE_USER_COLUMNS = ['id', 'email', 'name', 'role', 'title', 'invitedBy', 'createdAt', 'lastActive', 'deactivatedAt', 'canVote'] as const
 
-// A tenant's `bills` table is dominated by lightweight "monitoring" stubs —
+// A tenant's `bills` table is dominated by monitored bills —
 // bills outside the keyword set the tenant doesn't actually track (on a large
 // multi-state tenant this is ~97% of rows). The export only includes
 // "meaningful" bills: anything the tenant tracks, has analyzed, has prioritized,
@@ -134,8 +134,8 @@ exportApiRouter.get('/rich', async (c) => {
   if (limit > 500) limit = 500
 
   // Only meaningful bills carry useful rich data and are actually viewed;
-  // restricting here avoids pulling rich data for lightweight stubs.
-  const isCentralBill = sql`${bills.externalId} LIKE ${`${HANDLE_PREFIX}%`}`
+  // restricting here avoids pulling rich data for monitored bills.
+  const isCentralBill = sql`(${sql.join(HANDLE_PREFIXES.map(prefix => sql`${bills.externalId} LIKE ${`${prefix}%`}`), sql` OR `)})`
   const where = cursor
     ? sql`${isCentralBill} AND ${MEANINGFUL_BILLS} AND ${bills.id} > ${cursor}`
     : sql`${isCentralBill} AND ${MEANINGFUL_BILLS}`
@@ -159,7 +159,7 @@ exportApiRouter.get('/rich', async (c) => {
 
   type Rich = { amendments?: any[]; supplements?: any[]; votes?: any[] }
   let byId: Record<string, Rich> = {}
-  const ids = billRows.map(b => b.externalId).filter((id): id is string => !!id)
+  const ids = billRows.map(b => b.externalId).filter((id): id is string => !!id).map(legacyHandle)
   if (ids.length > 0) {
     try {
       const res = await centralFetch(c.env, '/bills/rich-batch', {
@@ -247,8 +247,6 @@ exportApiRouter.get('/:table', async (c) => {
       for (const col of SAFE_USER_COLUMNS) {
         filtered[col] = row[col]
       }
-      // The column is `title`, with no `subtitle` alias. A member only the previous build wrote has just `subtitle`.
-      filtered.title = titleOf(row)
       return filtered
     }) as any
   }

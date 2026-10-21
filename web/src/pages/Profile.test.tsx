@@ -71,15 +71,16 @@ describe('Profile heading structure', () => {
     expect(h1s[0]).toHaveTextContent('Profile')
   })
 
-  it('exposes the Your Email and Account section titles as level-2 headings', () => {
+  it('exposes the Notifications, Appearance, and Account section titles as level-2 headings', () => {
     mockConfig({})
     render(<MemoryRouter><Profile /></MemoryRouter>)
-    expect(screen.getByRole('heading', { level: 2, name: 'Your Email' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Notifications' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Appearance' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 2, name: 'Account' })).toBeInTheDocument()
   })
 })
 
-describe('Profile "Your Email" section', () => {
+describe('Profile Notifications section', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     Element.prototype.scrollIntoView = vi.fn()
@@ -88,14 +89,23 @@ describe('Profile "Your Email" section', () => {
   it('holds the replies, digest, and week-ahead switches and states that mention emails are always sent', async () => {
     mockConfig({ 'email-digest': { enabled: true }, 'week-ahead': { enabled: true } })
     render(<MemoryRouter><Profile /></MemoryRouter>)
-    const heading = screen.getByRole('heading', { level: 2, name: 'Your Email' })
+    const heading = screen.getByRole('heading', { level: 2, name: 'Notifications' })
     const section = heading.parentElement as HTMLElement
     const replies = within(section).getByRole('switch', { name: /replies on bills you've commented on/i })
     expect(replies).toBeChecked()
     expect(within(section).getByRole('switch', { name: /recent bill activity/i })).toBeInTheDocument()
     expect(within(section).getByRole('switch', { name: /upcoming hearings and events/i })).toBeInTheDocument()
-    expect(within(section).getByText("You'll always get an email when someone mentions you, your role, @admins, or @everyone.")).toBeInTheDocument()
+    expect(await within(section).findByText("You'll always get an email when someone mentions you or @everyone.")).toBeInTheDocument()
     expect(within(section).queryByRole('switch', { name: /mention/i })).not.toBeInTheDocument()
+  })
+
+  it('says the replies setting covers both the app and email, and points to Mute for one bill', async () => {
+    mockConfig({})
+    render(<MemoryRouter><Profile /></MemoryRouter>)
+    const section = (screen.getByRole('heading', { level: 2, name: 'Notifications' })).parentElement as HTMLElement
+
+    expect(within(section).getByText("Notify me in FloorVote and by email when someone else comments on a bill I've commented on. To stop them on one bill, select \u201cMute comments\u201d on that bill.")).toBeInTheDocument()
+    expect(within(section).queryByText(/replies still appear in your notifications/i)).not.toBeInTheDocument()
   })
 
   it.each([
@@ -104,7 +114,7 @@ describe('Profile "Your Email" section', () => {
     ['setting-week-ahead', /upcoming hearings and events/i],
   ])('email-footer deep link #%s lands on and highlights its switch', async (id, name) => {
     mockConfig({ 'email-digest': { enabled: true }, 'week-ahead': { enabled: true } })
-    render(<MemoryRouter initialEntries={[`/profile#${id}`]}><Profile /></MemoryRouter>)
+    render(<MemoryRouter initialEntries={[`/account#${id}`]}><Profile /></MemoryRouter>)
     const row = document.getElementById(id) as HTMLElement
     expect(row).toContainElement(screen.getByRole('switch', { name }))
     await vi.waitFor(() => expect(row.style.boxShadow).not.toBe(''))
@@ -130,11 +140,10 @@ describe('Profile reply-emails switch', () => {
 describe('Profile title field', () => {
   beforeEach(() => vi.restoreAllMocks())
 
-  it('labels the line under a member\'s name "Title", never "Subtitle"', () => {
+  it('labels the line under a member\'s name "Title"', () => {
     mockConfig({})
     render(<MemoryRouter><Profile /></MemoryRouter>)
     expect(screen.getByLabelText('Title')).toBeInTheDocument()
-    expect(screen.queryByText(/subtitle/i)).not.toBeInTheDocument()
   })
 })
 
@@ -153,7 +162,7 @@ describe('Profile Appearance control', () => {
   })
 
   function appearance() {
-    return within(screen.getByRole('group', { name: 'Appearance' }))
+    return within(screen.getByRole('group', { name: 'Color mode' }))
   }
 
   it('offers System, Light, and Dark, with System chosen by default', () => {

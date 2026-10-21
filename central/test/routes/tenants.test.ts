@@ -2,14 +2,14 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { drizzle } from 'drizzle-orm/d1'
 import * as schema from '../../src/db/schema'
-import { app } from '../../src/index-legiscan'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { app } from '../../src/index'
+import { clearDb } from '../helpers/migrations'
 import { eq } from 'drizzle-orm'
 
 const AUTH = { 'x-admin-secret': 'sek', 'content-type': 'application/json' }
 const TEST_ENV: any = { ...env, ADMIN_SECRET: 'sek' }
 
-beforeEach(async () => { await setupLsDb() })
+beforeEach(async () => { await clearDb() })
 
 async function seedReproc() {
   const db = drizzle(env.DB, { schema })
@@ -261,6 +261,53 @@ describe('POST /tenants/reprocess/:tenantId — untargeted offset pagination', (
   })
 })
 
+describe('POST /tenants/reprocess/:tenantId — operatorAi (demo AI opt-in)', () => {
+  const post = (env2: any, body: unknown, headers: Record<string, string> = AUTH) =>
+    app.fetch(new Request('http://central/api/tenants/reprocess/ri', { method: 'POST', headers, body: JSON.stringify(body) }), env2)
+
+  it('a direct operator call with operatorAi queues messages carrying the flag', async () => {
+    await seedReproc()
+    const { env2, sent } = queueEnv()
+    const res = await post(env2, { billIds: [101], operatorAi: true })
+    expect(res.status).toBe(200)
+    expect(sent).toHaveLength(1)
+    expect(sent[0].operatorAi).toBe(true)
+    expect(sent[0].forceAI).toBe(true)
+  })
+
+  it('without operatorAi the messages carry neither flag', async () => {
+    await seedReproc()
+    const { env2, sent } = queueEnv()
+    await post(env2, { billIds: [101] })
+    expect(sent[0].operatorAi).toBeUndefined()
+    expect(sent[0].forceAI).toBeUndefined()
+  })
+
+  it('a call carrying a caller-tenant header drops the flag', async () => {
+    await seedReproc()
+    const { env2, sent } = queueEnv()
+    await post(env2, { billIds: [101], operatorAi: true }, { ...AUTH, 'x-caller-tenant': 'ri' })
+    expect(sent).toHaveLength(1)
+    expect(sent[0].operatorAi).toBeUndefined()
+    expect(sent[0].forceAI).toBeUndefined()
+  })
+
+  it('an untargeted reprocess (no billIds) drops the flag', async () => {
+    await seedReproc()
+    const { env2, sent } = queueEnv()
+    await post(env2, { operatorAi: true })
+    expect(sent.length).toBeGreaterThan(0)
+    expect(sent.every(m => m.operatorAi === undefined && m.forceAI === undefined)).toBe(true)
+  })
+
+  it('only the literal true counts', async () => {
+    await seedReproc()
+    const { env2, sent } = queueEnv()
+    await post(env2, { billIds: [101], operatorAi: 'true' })
+    expect(sent[0].operatorAi).toBeUndefined()
+  })
+})
+
 describe('POST /tenants/promote-bills/:tenantId — bulk promote', () => {
   async function seedTwoBills() {
     const db = drizzle(env.DB, { schema })
@@ -349,11 +396,6 @@ describe('POST /tenants/promote-bills/:tenantId — bulk promote', () => {
   })
 
   it('does NOT reject an under-limit batch (cap fires only above the limit)', async () => {
-    // A batch under REPROCESS_LIMIT must pass the cap and queue normally. (Kept
-    // small — well under D1's per-statement bound-parameter ceiling. The route
-    // upserts all links in a single statement, so it independently breaks for
-    // very large batches; chunking that insert is a separate latent bug, out of
-    // scope for the quota cap added here.)
     const { env2, sent } = ingestorEnv()
     const billIds = Array.from({ length: 30 }, (_, i) => i + 1)
     const res = await app.fetch(
@@ -365,6 +407,99 @@ describe('POST /tenants/promote-bills/:tenantId — bulk promote', () => {
     expect(res.status).toBe(200)
     expect((await res.json() as any).promoted).toBe(30)
     expect(sent).toHaveLength(30)
+  })
+
+  // D1 binds at most 100 parameters per statement and the upsert binds 3 per row, so one
+  // statement breaks above 33 rows. These sizes straddle the chunk boundaries.
+  async function promoteN(n: number) {
+    const { env2, sent } = ingestorEnv()
+    const billIds = Array.from({ length: n }, (_, i) => i + 1)
+    const res = await app.fetch(
+      new Request('http://central/api/tenants/promote-bills/ri', {
+        method: 'POST', headers: AUTH, body: JSON.stringify({ billIds }),
+      }),
+      env2,
+    )
+    return { res, sent, billIds }
+  }
+  async function riRows() {
+    const db = drizzle(env.DB, { schema })
+    return (await db.select().from(schema.billTenants).all()).filter(r => r.tenantId === 'ri')
+  }
+
+  it.each([30, 33, 34, 150, 1000])('promotes %i bills: every row upserted, every bill queued', async (n) => {
+    const { res, sent, billIds } = await promoteN(n)
+    expect(res.status).toBe(200)
+    expect((await res.json() as any).promoted).toBe(n)
+    const rows = await riRows()
+    expect(rows).toHaveLength(n)
+    expect(rows.every(r => r.matchType === 'manual')).toBe(true)
+    expect(rows.map(r => r.billId).sort((a, b) => a - b)).toEqual(billIds)
+    expect(sent).toHaveLength(n)
+    expect(sent.every(m => m.forceAI === true)).toBe(true)
+    expect(sent.map(m => m.billId).sort((a, b) => a - b)).toEqual(billIds)
+  })
+
+  it('upgrades existing keyword links to manual across chunks and leaves other tenants alone', async () => {
+    const db = drizzle(env.DB, { schema })
+    await db.insert(schema.billTenants).values([
+      { billId: 5, tenantId: 'ri', matchType: 'keyword' },
+      { billId: 80, tenantId: 'ri', matchType: 'keyword' },
+      { billId: 5, tenantId: 'nj', matchType: 'keyword' },
+    ])
+    const { res } = await promoteN(100)
+    expect(res.status).toBe(200)
+    const rows = await riRows()
+    expect(rows).toHaveLength(100)
+    expect(rows.every(r => r.matchType === 'manual')).toBe(true)
+    const nj = (await db.select().from(schema.billTenants).all()).filter(r => r.tenantId === 'nj')
+    expect(nj).toEqual([expect.objectContaining({ billId: 5, matchType: 'keyword' })])
+  })
+
+  it('is idempotent: a second identical request leaves the same rows and succeeds', async () => {
+    const first = await promoteN(150)
+    expect(first.res.status).toBe(200)
+    const second = await promoteN(150)
+    expect(second.res.status).toBe(200)
+    expect((await second.res.json() as any).promoted).toBe(150)
+    expect(await riRows()).toHaveLength(150)
+    expect(second.sent).toHaveLength(150)
+  })
+
+  it('treats repeated billIds as one: each row once, each bill queued once, promoted counts distinct bills', async () => {
+    const { env2, sent } = ingestorEnv()
+    const billIds = [...Array.from({ length: 40 }, (_, i) => i + 1), ...Array.from({ length: 40 }, (_, i) => i + 1), 7, 7]
+    const res = await app.fetch(
+      new Request('http://central/api/tenants/promote-bills/ri', {
+        method: 'POST', headers: AUTH, body: JSON.stringify({ billIds }),
+      }),
+      env2,
+    )
+    expect(res.status).toBe(200)
+    expect((await res.json() as any).promoted).toBe(40)
+    expect(await riRows()).toHaveLength(40)
+    expect(sent).toHaveLength(40)
+    expect(new Set(sent.map(m => m.billId)).size).toBe(40)
+  })
+
+  it('rolls the whole batch back when a later chunk fails, and queues nothing', async () => {
+    // A trigger makes the insert of bill 95 (in the fourth chunk) fail.
+    await env.DB.exec("CREATE TRIGGER fail_bill_95 BEFORE INSERT ON bill_tenants WHEN NEW.bill_id = 95 BEGIN SELECT RAISE(ABORT, 'boom'); END")
+    try {
+      const { res, sent } = await promoteN(100)
+      expect(res.status).toBe(500)
+      expect(sent).toHaveLength(0)
+      expect(await riRows()).toHaveLength(0)
+    } finally {
+      await env.DB.exec('DROP TRIGGER IF EXISTS fail_bill_95')
+    }
+  })
+
+  it('still refuses 1001 bills with nothing written', async () => {
+    const { res, sent } = await promoteN(1001)
+    expect(res.status).toBe(400)
+    expect(sent).toHaveLength(0)
+    expect(await riRows()).toHaveLength(0)
   })
 })
 
@@ -443,10 +578,75 @@ describe('POST /tenants/fetch-bills/:tenantId — fetch bills without tracking t
   it('sends a bill whose texts central already holds on without a provider call', async () => {
     await seedLinked()
     const db = drizzle(env.DB, { schema })
+    // Its detail, texts included, was fetched at the change the bill is at.
+    await db.update(schema.bills).set({ detailHash: 'h1' }).where(eq(schema.bills.billId, 601))
     await db.insert(schema.billTexts).values({ docId: 9001, billId: 601, date: '2026-01-01', type: 'Introduced' })
     const { env2, sent } = ingestorEnv()
     await post(env2, [601, 602])
     expect(sent).toEqual([{ billId: 601, skipFetch: true }, { billId: 602 }])
+  })
+
+  // #801: a bill central holds texts for, whose change hash moved past its last fetch, may have a newer text.
+  describe('a held bill the provider has a newer version of', () => {
+    async function seedMoved() {
+      await seedLinked()
+      const db = drizzle(env.DB, { schema })
+      await db.insert(schema.billTexts).values({ docId: 9001, billId: 601, date: '2026-01-01', type: 'Introduced' })
+      // The sync moved the bill to h1; its detail, texts included, was fetched at h0.
+      await db.update(schema.bills).set({ detailHash: 'h0' }).where(eq(schema.bills.billId, 601))
+      return db
+    }
+    async function setBudget(limit: number, used: number) {
+      await env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('legiscan_monthly_limit', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(String(limit)).run()
+      const at = new Date().toISOString().slice(0, 19).replace('T', ' ')
+      for (let i = 0; i < used; i++) {
+        await drizzle(env.DB, { schema }).insert(schema.apiCallLog).values({ callType: 'getBill', params: `{"id":${i}}`, loggedAt: at })
+      }
+    }
+
+    it('is fetched from the provider rather than sent on with the texts central holds', async () => {
+      await seedMoved()
+      const { env2, sent } = ingestorEnv()
+      const res = await post(env2, [601])
+      expect((await res.json() as any).queued).toBe(1)
+      expect(sent).toEqual([{ billId: 601, queuedBy: 'legiscan' }])
+    })
+
+    it('is still held off for a day after its last fetch', async () => {
+      const db = await seedMoved()
+      await db.update(schema.bills).set({ textsFetchedAt: FRESH() }).where(eq(schema.bills.billId, 601))
+      const { env2, sent } = ingestorEnv()
+      await post(env2, [601])
+      expect(sent).toEqual([])
+      await db.update(schema.bills).set({ textsFetchedAt: STALE() }).where(eq(schema.bills.billId, 601))
+      await post(env2, [601])
+      expect(sent).toEqual([{ billId: 601, queuedBy: 'legiscan' }])
+    })
+
+    it('spends only the budget untracked bills share, sending the rest on with the texts central holds', async () => {
+      const db = await seedMoved()
+      await db.insert(schema.bills).values({ billId: 604, sessionId: 1, state: 'RI', stateId: 44, billNumber: 'H604', title: 'D', changeHash: 'h4', detailHash: 'h0', status: 1 })
+      await db.insert(schema.billTenants).values({ billId: 604, tenantId: 'ri', matchType: null })
+      await db.insert(schema.billTexts).values({ docId: 9004, billId: 604, date: '2026-01-01', type: 'Introduced' })
+      // A limit of 4 leaves a floor of 1 call, and a fetch spends 1, so at most 2 may be used: 2 are, so one more fetch fits.
+      // The first fetch queued counts against the budget until it lands, so the second finds none left.
+      await setBudget(4, 2)
+      const { env2, sent } = ingestorEnv()
+      await post(env2, [601, 604])
+      expect(sent).toEqual([{ billId: 601, queuedBy: 'legiscan' }, { billId: 604, skipFetch: true }])
+    })
+  })
+
+  it('records each ask on the asking instance\'s link, so the sync keeps the bill\'s texts current', async () => {
+    await seedLinked()
+    const db = drizzle(env.DB, { schema })
+    await db.insert(schema.billTenants).values({ billId: 601, tenantId: 'nj', matchType: null })
+    const { env2 } = ingestorEnv()
+    await post(env2, [601])
+    const links = await db.select({ tenantId: schema.billTenants.tenantId, at: schema.billTenants.fetchRequestedAt })
+      .from(schema.billTenants).where(eq(schema.billTenants.billId, 601)).all()
+    expect(Object.fromEntries(links.map(l => [l.tenantId, l.at !== null]))).toEqual({ ri: true, nj: false })
   })
 
   it('ends the cycle of two instances each tracking one bill of a pair, after one round', async () => {
@@ -674,6 +874,8 @@ describe('POST /tenants/fetch-bills/:tenantId — fetch bills without tracking t
   it('sends a bill whose texts central already holds on without a provider call', async () => {
     await seedLinked()
     const db = drizzle(env.DB, { schema })
+    // Its detail, texts included, was fetched at the change the bill is at.
+    await db.update(schema.bills).set({ detailHash: 'h1' }).where(eq(schema.bills.billId, 601))
     await db.insert(schema.billTexts).values({ docId: 9001, billId: 601, date: '2026-01-01', type: 'Introduced' })
     const { env2, sent } = ingestorEnv()
     await post(env2, [601, 602])

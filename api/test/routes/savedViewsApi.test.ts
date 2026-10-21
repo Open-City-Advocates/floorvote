@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { app } from '../../src/index'
-import { resetDb, applyMigrations, seedUser, seedSession } from '../helpers'
+import { clearDb, seedUser, seedSession } from '../helpers'
 
 describe('GET /api/views', () => {
   let adminCookie: string
@@ -9,8 +9,7 @@ describe('GET /api/views', () => {
   let adminId: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     adminId = await seedUser({ role: 'admin', email: 'admin@example.com', name: 'Admin' })
     adminCookie = `session=${await seedSession(adminId)}`
     const memberId = await seedUser({ role: 'member', email: 'member@example.com', name: 'Member' })
@@ -39,8 +38,8 @@ describe('GET /api/views', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       views: [
-        { id: 'v1', name: 'Clerk bills', query: 'subject=UT%3AElections', slug: 'clerk-bills', previousSlug: null },
-        { id: 'v2', name: 'Auditor bills', query: 'subject=UT%3AAudits', slug: 'auditor-bills', previousSlug: null },
+        { id: 'v1', name: 'Clerk bills', query: 'subject=UT%3AElections', slug: 'clerk-bills', previousSlug: null, subscribed: false },
+        { id: 'v2', name: 'Auditor bills', query: 'subject=UT%3AAudits', slug: 'auditor-bills', previousSlug: null, subscribed: false },
       ],
     })
   })
@@ -54,7 +53,7 @@ describe('GET /api/views', () => {
     const res = await app.request('/api/views', { headers: { Cookie: adminCookie } }, env)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      views: [{ id: 'v1', name: 'Clerk bills', query: 'subject=UT%3AElections', slug: 'clerk-bills', previousSlug: null }],
+      views: [{ id: 'v1', name: 'Clerk bills', query: 'subject=UT%3AElections', slug: 'clerk-bills', previousSlug: null, subscribed: false }],
     })
   })
 

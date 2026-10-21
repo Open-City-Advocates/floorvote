@@ -26,7 +26,7 @@ vi.mock('../../src/lib/queuesRest', () => ({
 import { runSync } from '../../src/cron/sync'
 import * as legiscan from '../../src/providers/legiscan/client'
 import * as queuesRest from '../../src/lib/queuesRest'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { clearDb } from '../helpers/migrations'
 import { limsSessionId } from '../../src/providers/lims/ids'
 
 function getCurrentEtHour(): number {
@@ -41,7 +41,7 @@ function getCurrentEtHour(): number {
 }
 
 beforeEach(async () => {
-  await setupLsDb()
+  await clearDb()
   vi.clearAllMocks()
   // Re-establish the default for getSessionList after clearAllMocks wipes implementations.
   vi.mocked(legiscan.getSessionList).mockResolvedValue([])
@@ -286,6 +286,35 @@ describe('runSync → runFullPass', () => {
     expect(messages[0].body).toEqual({ tenantId: 'test-mon', billId: 'legiscan:50', stubOnly: true })
   })
 
+  // Release 2 of the neutral handle rename (#305): the stub names the bill by
+  // its neutral handle to an instance whose binding reports neutral handles.
+  it('names a new stub by the neutral handle to an instance that reads neutral handles', async () => {
+    const db = drizzle(env.DB, { schema })
+    const etHour = getCurrentEtHour()
+    await db.insert(sessions).values({
+      sessionId: 9200, state: 'DC', stateId: 51, yearStart: 2025, yearEnd: 2026,
+      sessionTitle: 'T', sessionName: 'T',
+      fullSyncHoursEt: JSON.stringify([etHour]), rawSyncHoursEt: JSON.stringify([]),
+    })
+    await db.insert(tenants).values({ tenantId: 'test-mon', name: 'T', stateCoverage: JSON.stringify(['DC']), active: true })
+    vi.mocked(legiscan.getMasterListBySession).mockResolvedValue([
+      { bill_id: 50, number: 'B50', change_hash: 'h', title: 'Bridge Naming',
+        description: 'rename a bridge', status: 1, status_date: '2025-01-01',
+        last_action: 'introduced', last_action_date: '2025-01-01', url: 'https://x/50' },
+    ] as any)
+    const tenantSendBatch = vi.fn().mockResolvedValue(undefined)
+    const mockEnv = {
+      ...(env as any),
+      INGESTOR_QUEUE: { sendBatch: vi.fn(), send: vi.fn() },
+      TENANT_QUEUE_TEST_MON: { sendBatch: tenantSendBatch, send: vi.fn() },
+      TENANT_TEST_MON: { capabilities: async () => ({ neutralHandles: true }) },
+    }
+
+    await runSync(mockEnv, db)
+
+    expect(tenantSendBatch.mock.calls[0][0][0].body).toEqual({ tenantId: 'test-mon', billId: 'bill:50', stubOnly: true })
+  })
+
   it('does not deliver a stub for an existing null link that did not change', async () => {
     const db = drizzle(env.DB, { schema })
     const etHour = getCurrentEtHour()
@@ -317,6 +346,50 @@ describe('runSync → runFullPass', () => {
     }
     await runSync(mockEnv, db)
     expect(tenantSendBatch).not.toHaveBeenCalled()
+  })
+
+  it('stubs and does not queue changed unmatched bills, fully ingested or not (LegiScan declares no ingestAll)', async () => {
+    const db = drizzle(env.DB, { schema })
+    const etHour = getCurrentEtHour()
+    await db.insert(sessions).values({
+      sessionId: 9202, state: 'DC', stateId: 51, yearStart: 2025, yearEnd: 2026,
+      sessionTitle: 'T', sessionName: 'T',
+      fullSyncHoursEt: JSON.stringify([etHour]), rawSyncHoursEt: JSON.stringify([]),
+    })
+    await db.insert(tenants).values({
+      tenantId: 'test-mon3', name: 'T', stateCoverage: JSON.stringify(['DC']), active: true,
+    })
+    // 53 has had a full ingest, 54 never has, and 55 is new to central.
+    await db.insert(bills).values([
+      { billId: 53, changeHash: 'old', sessionId: 9202, state: 'DC', stateId: 51, billNumber: 'B53', title: 'Bridge Naming',
+        textsFetchedAt: '2026-01-01 00:00:00', detailHash: 'old' },
+      { billId: 54, changeHash: 'old', sessionId: 9202, state: 'DC', stateId: 51, billNumber: 'B54', title: 'Road Naming' },
+    ])
+    await db.insert(billTenants).values([
+      { billId: 53, tenantId: 'test-mon3', matchType: null },
+      { billId: 54, tenantId: 'test-mon3', matchType: null },
+    ])
+    const entry = (id: number, title: string) => ({ bill_id: id, number: `B${id}`, change_hash: 'new', title,
+      description: 'rename', status: 1, status_date: '2025-01-01',
+      last_action: 'reported', last_action_date: '2025-02-01', url: `https://x/${id}` })
+    vi.mocked(legiscan.getMasterListBySession).mockResolvedValue(
+      [entry(53, 'Bridge Naming'), entry(54, 'Road Naming'), entry(55, 'Tunnel Naming')] as any)
+
+    const ingestorSendBatch = vi.fn().mockResolvedValue(undefined)
+    const tenantSendBatch = vi.fn().mockResolvedValue(undefined)
+    const mockEnv = {
+      ...(env as any),
+      INGESTOR_QUEUE: { sendBatch: ingestorSendBatch, send: vi.fn() },
+      TENANT_QUEUE_TEST_MON3: { sendBatch: tenantSendBatch, send: vi.fn() },
+    }
+    await runSync(mockEnv, db)
+
+    const queued = ingestorSendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body))
+      .filter((b: any) => b.calendarRecheck === undefined)
+    expect(queued).toEqual([])
+    const stubs = tenantSendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body))
+    expect(stubs.map((m: any) => m.billId).sort()).toEqual(['legiscan:53', 'legiscan:54', 'legiscan:55'])
+    expect(stubs.every((m: any) => m.stubOnly)).toBe(true)
   })
 
   it('delivers stubs via HTTP for a tenant without a static binding (dynamic queueId)', async () => {
@@ -614,6 +687,26 @@ describe('runSync → wildcard stateCoverage', () => {
     const syncedSessionIds = logRows.map(r => r.sessionId)
     expect(syncedSessionIds).toContain(7001)
     expect(syncedSessionIds).toContain(7002)
+    // A LegiScan pass names no status, so its rows read ok (0045).
+    expect(logRows.every(r => r.status === 'ok' && r.error === null)).toBe(true)
+  })
+
+  it('still fails a LegiScan pass when its log row cannot be written (only snapshot passes tolerate that)', async () => {
+    const db = drizzle(env.DB, { schema })
+    await env.DB.exec(`CREATE TRIGGER no_log BEFORE INSERT ON session_sync_log BEGIN SELECT RAISE(ABORT, 'log refused'); END`)
+    try {
+      const { applyMasterList } = await import('../../src/cron/sync')
+      await expect(applyMasterList(
+        { sessionId: 7101, state: 'PA', sessionName: 'PA', provider: 'legiscan' }, [], [], env as any, db,
+      )).rejects.toThrow()
+      // And with the opt-in, the same write failing is noted and the pass returns.
+      await expect(applyMasterList(
+        { sessionId: 7101, state: 'PA', sessionName: 'PA', provider: 'legiscan' }, [], [], env as any, db, undefined, { tolerateLogFailure: true },
+      )).resolves.toEqual([])
+    } finally {
+      // clearDb() empties tables but keeps triggers; the next test must log freely.
+      await env.DB.exec('DROP TRIGGER IF EXISTS no_log')
+    }
   })
 
   it('does not sync sessions when no sessions exist in DB even with wildcard tenant', async () => {
@@ -655,5 +748,90 @@ describe('runSync: LIMS sessions', () => {
 
     const asked = vi.mocked(legiscan.getMasterListBySession).mock.calls.map(c => c[0])
     expect(asked).toEqual([9300])
+  })
+})
+
+// #637: a bill an instance didn't match, whose identical companion it tracks, is in a companion group
+// there, so its changes are a full ingest (changes and calendar), not a stub, which carries neither.
+describe('runSync → runFullPass: a companion of a tracked bill', () => {
+  const db = () => drizzle(env.DB, { schema })
+
+  async function setup(opts: { relation?: string; companionLink?: 'keyword' | null }) {
+    const etHour = getCurrentEtHour()
+    await db().insert(sessions).values({
+      sessionId: 9100, state: 'DC', stateId: 51, yearStart: 2025, yearEnd: 2026,
+      sessionTitle: 'Test', sessionName: 'Test',
+      fullSyncHoursEt: JSON.stringify([etHour]), rawSyncHoursEt: JSON.stringify([]),
+    })
+    await db().insert(tenants).values({ tenantId: 'test-comp', name: 'Test', stateCoverage: JSON.stringify(['DC']), active: true })
+    for (const [billId, hash] of [[60, 'old'], [61, 'old']] as const) {
+      await db().insert(bills).values({ billId, changeHash: hash, sessionId: 9100, state: 'DC', stateId: 51, billNumber: `B${billId}`, title: `Bill ${billId}` })
+    }
+    // Bill 60 is the tracked bill (or not, per the case); bill 61 is the companion the instance didn't match.
+    await db().insert(billTenants).values({ billId: 60, tenantId: 'test-comp', matchType: opts.companionLink === undefined ? 'keyword' : opts.companionLink })
+    await db().insert(billTenants).values({ billId: 61, tenantId: 'test-comp', matchType: null })
+    await db().insert(schema.billSasts).values({
+      id: crypto.randomUUID(), billId: 61, typeId: 1, type: opts.relation ?? 'Same As', sastBillNumber: 'B60', sastBillId: 60,
+    })
+  }
+  const entry = (billId: number, hash: string) => ({
+    bill_id: billId, number: `B${billId}`, change_hash: hash, title: `Bill ${billId}`, description: 'nothing relevant',
+    status: 1, status_date: '2026-05-20', last_action: 'Referred', last_action_date: '2026-05-20', url: 'https://example.com',
+  })
+  async function run(entries: ReturnType<typeof entry>[]) {
+    vi.mocked(legiscan.getMasterListBySession).mockResolvedValue(entries as any)
+    const ingestorSendBatch = vi.fn().mockResolvedValue(undefined)
+    const tenantSendBatch = vi.fn().mockResolvedValue(undefined)
+    await runSync({ ...(env as any), INGESTOR_QUEUE: { sendBatch: ingestorSendBatch, send: vi.fn() }, TENANT_QUEUE_TEST_COMP: { sendBatch: tenantSendBatch, send: vi.fn() } }, db())
+    return ingestorSendBatch.mock.calls.flatMap(c => c[0].map((m: any) => m.body.billId as number))
+  }
+
+  it('queues a changed companion for a full ingest, so it is delivered its changes and calendar', async () => {
+    await setup({})
+    expect(await run([entry(60, 'old'), entry(61, 'new')])).toEqual([61])
+  })
+
+  it('finds the tracked bill from either side of the relation', async () => {
+    await setup({})
+    // The relation is stored on the companion pointing at the tracked bill; here the tracked bill is the one that changes.
+    await db().update(billTenants).set({ matchType: 'keyword' }).where(eq(billTenants.billId, 61))
+    await db().update(billTenants).set({ matchType: null }).where(eq(billTenants.billId, 60))
+    expect(await run([entry(60, 'new'), entry(61, 'old')])).toEqual([60])
+  })
+
+  it('looks up no relations on a pass that changed no bill an instance doesn\'t hold by hand, and some on one that did', async () => {
+    await setup({})
+    const prepare = vi.spyOn(env.DB, 'prepare')
+    const lookups = () => prepare.mock.calls.filter(c => String(c[0]).includes('bill_sasts'))
+    // Bill 60 is held by hand and changed, bill 61 is unmatched and unchanged: nothing needs a companion check.
+    await db().update(billTenants).set({ matchType: 'manual' }).where(eq(billTenants.billId, 60))
+    await run([entry(60, 'new'), entry(61, 'old')])
+    expect(lookups()).toHaveLength(0)
+    // The unmatched bill changes: now it does.
+    await run([entry(60, 'new'), entry(61, 'new')])
+    expect(lookups().length).toBeGreaterThan(0)
+    prepare.mockRestore()
+  })
+
+  it('still queues a keyword-linked bill whose changed title drops its match, when the instance tracks its companion', async () => {
+    await setup({})
+    // Bill 61 matched before; the tenant has no keyword for its new title, so this pass drops the link to null.
+    await db().update(billTenants).set({ matchType: 'keyword' }).where(eq(billTenants.billId, 61))
+    expect(await run([entry(60, 'old'), entry(61, 'new')])).toEqual([61])
+  })
+
+  it('does not queue an unchanged companion', async () => {
+    await setup({})
+    expect(await run([entry(60, 'old'), entry(61, 'old')])).toEqual([])
+  })
+
+  it('does not queue a companion when the instance tracks neither bill', async () => {
+    await setup({ companionLink: null })
+    expect(await run([entry(60, 'old'), entry(61, 'new')])).toEqual([])
+  })
+
+  it('does not queue a bill whose relation is not an identical one', async () => {
+    await setup({ relation: 'Related' })
+    expect(await run([entry(60, 'old'), entry(61, 'new')])).toEqual([])
   })
 })

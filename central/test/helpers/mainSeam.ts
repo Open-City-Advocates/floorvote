@@ -7,7 +7,7 @@ import { runSnapshotSync } from '../../src/cron/sync-snapshots'
 import { processIngestorQueue } from '../../src/queue/processor'
 import { tenantQueueBindingName } from '../../src/lib/tenantQueue'
 import type { Provider } from '../../src/providers'
-import { setupLsDb } from './setupLsDb'
+import { clearDb } from './migrations'
 
 /**
  * The main seam for a provider's tests: its recorded feed in, central's bill
@@ -32,7 +32,8 @@ import { setupLsDb } from './setupLsDb'
  *     expect(seam.sentToTenant(run)).toContainEqual(expect.objectContaining({ ... }))
  *   })
  *
- * A snapshot provider syncs through `runSnapshotSync`, as its hourly job does.
+ * A snapshot provider syncs through `runSnapshotSync`, the sync its hourly job
+ * runs, which throws every failed session rather than waiting for a streak.
  * Every queue is a mock, so nothing is consumed until a test hands the queued
  * messages to the ingestor (`syncAndIngest`, `ingest`).
  */
@@ -80,7 +81,7 @@ export function mainSeam(provider: Provider, opts: {
 
   /** A request to central's API (`/api` is added), as an operator with the admin secret. */
   async function central(method: string, path: string, run = makeRun(), body?: unknown): Promise<Response> {
-    const { app } = await import('../../src/index-legiscan')
+    const { app } = await import('../../src/index')
     return app.fetch(new Request(`http://central/api${path}`, {
       method,
       headers: { 'x-admin-secret': ADMIN_SECRET, 'content-type': 'application/json' },
@@ -164,7 +165,7 @@ export const ADMIN_SECRET = 'test-secret'
 export async function resetCentral(at = '2026-09-28T09:00:00Z'): Promise<void> {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date(at))
-  await setupLsDb()
+  await clearDb()
   vi.clearAllMocks()
 }
 

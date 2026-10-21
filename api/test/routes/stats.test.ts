@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { SELF } from 'cloudflare:test'
-import { resetDb, applyMigrations, seedUser, seedSession, seedMagicLink, seedBill, seedCalendarEvent } from '../helpers'
+import { clearDb, seedUser, seedSession, seedMagicLink, seedBill, seedCalendarEvent } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { memberVotes, associationConfig, calendarEvents, users, bills } from '../../src/db/schema'
 import { eq, inArray } from 'drizzle-orm'
@@ -12,8 +12,7 @@ describe('GET /stats/sidebar', () => {
   let memberToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     memberId = await seedUser()
     memberToken = await seedSession(memberId)
   })
@@ -75,8 +74,7 @@ describe('GET /stats/sidebar — DEMO_MODE upcoming hearings', () => {
   const dateFromNow = (n: number) => new Date(Date.now() + n * 86400_000).toISOString().slice(0, 10)
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     memberId = await seedUser()
     memberToken = await seedSession(memberId)
 
@@ -137,8 +135,7 @@ describe('GET /stats/sidebar — upcoming hearings from central', () => {
   const dateFromNow = (n: number) => new Date(Date.now() + n * 86400_000).toISOString().slice(0, 10)
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     memberToken = await seedSession(await seedUser())
 
     const db = getDb(env.DB)
@@ -175,6 +172,34 @@ describe('GET /stats/sidebar — upcoming hearings from central', () => {
     expect(body.upcomingHearings[0].bills[0].billNumber).toBe('A1129')
   })
 
+  it.each(['legiscan:2099974', 'bill:2099974'])('lists the hearing of a priority bill stored as %s (#305)', async (stored) => {
+    await getDb(env.DB).update(bills).set({ externalId: stored }).where(eq(bills.billNumber, 'A1129'))
+    const central = {
+      fetch: async () => Response.json([{
+        eventHash: 'eh1', type: 'Hearing', kind: 'hearing', date: dateFromNow(3), time: '10:00:00', location: 'Room 11',
+        description: 'Committee hearing', billId: 2099974, billNumber: 'A1129', billTitle: 'Drop boxes', state: 'NJ', sessionName: null,
+      }]),
+    }
+    const res = await app.request('/api/stats/sidebar', { headers: { Cookie: `session=${memberToken}` } }, { ...env, CENTRAL: central } as never)
+    const body = await res.json() as { upcomingHearings: Array<{ bills: Array<{ billNumber: string }> }> }
+    expect(body.upcomingHearings.map(h => h.bills.map(b => b.billNumber))).toEqual([['A1129']])
+  })
+
+  it('lists the hearings of 60 distinct priority bills, past D1\'s 100-bind limit once each handle has two spellings (#305)', async () => {
+    const numbers = Array.from({ length: 60 }, (_, i) => 4000 + i)
+    for (const n of numbers) await seedBill({ externalId: n % 2 ? `bill:${n}` : `legiscan:${n}`, billNumber: `H${n}`, title: `Bill ${n}`, state: 'NJ', priority: 'high' })
+    const central = {
+      fetch: async () => Response.json(numbers.map(n => ({
+        eventHash: `eh${n}`, type: 'Hearing', kind: 'hearing', date: dateFromNow(3), time: '10:00:00', location: `Room ${n}`,
+        description: `Hearing ${n}`, billId: n, billNumber: `H${n}`, billTitle: `Bill ${n}`, state: 'NJ', sessionName: null,
+      }))),
+    }
+    const res = await app.request('/api/stats/sidebar', { headers: { Cookie: `session=${memberToken}` } }, { ...env, CENTRAL: central } as never)
+    expect(res.status).toBe(200)
+    const body = await res.json() as { upcomingHearings: Array<{ bills: Array<{ billNumber: string }> }> }
+    expect(body.upcomingHearings.flatMap(h => h.bills.map(b => b.billNumber)).sort()).toEqual(numbers.map(n => `H${n}`).sort())
+  })
+
   it('leaves out a deadline, which central sends with its own kind', async () => {
     const central = {
       fetch: async () => Response.json([
@@ -195,7 +220,7 @@ describe('GET /stats/sidebar — upcoming hearings from central', () => {
 describe('GET /api/stats memberCount', () => {
   let token: string
   beforeEach(async () => {
-    await resetDb(); await applyMigrations()
+    await clearDb()
     // Requester: accepted (used magic link) + a live session so they can authenticate.
     const me = await seedUser({ email: 'me@b.com' })
     await seedMagicLink(me, { used: true })
@@ -203,18 +228,27 @@ describe('GET /api/stats memberCount', () => {
   })
 
   it('counts accepted members regardless of a live session, and excludes invite-pending', async () => {
+    const inviter = await seedUser({ email: 'inviter@b.com' }); await seedMagicLink(inviter, { used: true })
     // Two accepted members with NO live session (the "logged out / session booted" case) — must still count.
-    const a = await seedUser({ email: 'a@b.com' }); await seedMagicLink(a, { used: true })
-    const b = await seedUser({ email: 'b@b.com' }); await seedMagicLink(b, { used: true })
+    const a = await seedUser({ email: 'a@b.com', invitedBy: inviter }); await seedMagicLink(a, { used: true })
+    const b = await seedUser({ email: 'b@b.com', invitedBy: inviter }); await seedMagicLink(b, { used: true })
     // Invite pending: link issued but never used — must NOT count.
-    const pending = await seedUser({ email: 'pending@b.com' }); await seedMagicLink(pending, { used: false })
-    // A session but no accepted invite (e.g. stale row) — must NOT count under the accepted definition.
-    const sessionOnly = await seedUser({ email: 'session@b.com' }); await seedSession(sessionOnly)
+    const pending = await seedUser({ email: 'pending@b.com', invitedBy: inviter }); await seedMagicLink(pending, { used: false })
 
     const r = await SELF.fetch('http://localhost/api/stats', { headers: { Cookie: `session=${token}` } })
     expect(r.status).toBe(200)
     const body = await r.json() as { memberCount: number }
-    expect(body.memberCount).toBe(3) // me + a + b
+    expect(body.memberCount).toBe(4) // me + inviter + a + b
+  })
+
+  it('counts a superadmin who signed in through central, who has no magic link and no inviter', async () => {
+    // Central SSO creates the user with no inviter and signs them in with a session only.
+    const superadmin = await seedUser({ email: 'super@central.com', role: 'admin', invitedBy: null })
+    await seedSession(superadmin)
+
+    const r = await SELF.fetch('http://localhost/api/stats', { headers: { Cookie: `session=${token}` } })
+    const body = await r.json() as { memberCount: number }
+    expect(body.memberCount).toBe(2) // me + superadmin
   })
 
   it('excludes deactivated members even when they have accepted', async () => {
@@ -232,7 +266,7 @@ describe('GET /api/stats memberCount', () => {
 describe('GET /api/stats newMatchesCount', () => {
   let token: string
   beforeEach(async () => {
-    await resetDb(); await applyMigrations()
+    await clearDb()
     token = await seedSession(await seedUser({ email: 'admin@b.com', role: 'admin' }))
   })
 
@@ -245,6 +279,29 @@ describe('GET /api/stats newMatchesCount', () => {
     const r = await SELF.fetch('http://localhost/api/stats', { headers: { Cookie: `session=${token}` } })
     expect((await r.json() as { newMatchesCount: number }).newMatchesCount).toBe(2)
   })
+
+  const chipAndList = async () => {
+    const headers = { Cookie: `session=${token}` }
+    const stats = await (await SELF.fetch('http://localhost/api/stats', { headers })).json() as { newMatchesCount: number }
+    const list = await (await SELF.fetch('http://localhost/api/bills?newMatches=1', { headers })).json() as { bills: { group?: unknown[] }[]; pagination: { total: number } }
+    return { chip: stats.newMatchesCount, total: list.pagination.total, rows: list.bills }
+  }
+
+  it('shows a group with two new-match members once in the new-matches view, as the chip counts it', async () => {
+    await seedBill({ id: 'a190', billNumber: 'A190', matchType: 'keyword', newMatchAt: '2026-03-01 00:00:00' })
+    await seedBill({ id: 'b1713', billNumber: 'S1713', matchType: 'keyword', newMatchAt: '2026-03-02 00:00:00' })
+    await getDb(env.DB).update(bills).set({ groupKey: 'a190' }).where(inArray(bills.id, ['a190', 'b1713']))
+    const { chip, total, rows } = await chipAndList()
+    expect([chip, total, rows.length]).toEqual([1, 1, 1])
+    expect(rows[0].group).toHaveLength(2)
+  })
+
+  it('counts ungrouped new matches one each, in the chip and the view', async () => {
+    await seedBill({ id: 'x1', billNumber: 'HB 1', matchType: 'keyword', newMatchAt: '2026-03-01 00:00:00' })
+    await seedBill({ id: 'x2', billNumber: 'HB 2', matchType: 'keyword', newMatchAt: '2026-03-02 00:00:00' })
+    const { chip, total, rows } = await chipAndList()
+    expect([chip, total, rows.length]).toEqual([2, 2, 2])
+  })
 })
 
 const isoDay = (offset: number) => new Date(Date.now() + offset * 86400_000).toISOString().slice(0, 10)
@@ -252,7 +309,7 @@ const isoDay = (offset: number) => new Date(Date.now() + offset * 86400_000).toI
 describe('GET /api/stats calendarUpcomingCount', () => {
   let token: string
   beforeEach(async () => {
-    await resetDb(); await applyMigrations()
+    await clearDb()
     const uid = await seedUser({ email: 'a@b.com' }); token = await seedSession(uid)
     const prio = await seedBill({ billNumber: 'H 1', state: 'RI', session: '2026', priority: 'high' })
     const plain = await seedBill({ billNumber: 'H 2', state: 'RI', session: '2026' })
@@ -296,8 +353,7 @@ describe('GET /stats/sidebar — priorityBills isDraft', () => {
   let memberToken: string
 
   beforeEach(async () => {
-    await resetDb()
-    await applyMigrations()
+    await clearDb()
     const memberId = await seedUser()
     memberToken = await seedSession(memberId)
   })

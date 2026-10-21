@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, within, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, within, waitFor, act, cleanup } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+import { color } from '../../styles/tokens'
+import { decodeStatus } from '../../lib/legislativeStatus'
 import type { Bill, GroupMember } from './types'
 
 // The pane is exercised on its own here (the App-level file covers its mount
@@ -181,18 +183,18 @@ describe('BillListPane: group rows', () => {
 describe('BillListPane: request params', () => {
   it('turns a custom-field slug in the URL into the field id, as the Bills page does', async () => {
     hoisted.defs = [{ id: 'cf-uuid-1', slug: 'tracked_by_team' }]
-    sessionStorage.setItem('lastBillsUrl', '/bills?cf_tracked_by_team=yes&sort=bill&dir=asc')
+    sessionStorage.setItem('lastBillsUrl', '/bills?field.tracked_by_team=yes&sort=bill&dir=asc')
     renderPane('/RI/2026/HB%201')
     await waitFor(() => expect(hoisted.calls.some(c => c.startsWith('/bills?'))).toBe(true))
     const q = new URLSearchParams(hoisted.calls.find(c => c.startsWith('/bills?'))!.slice('/bills?'.length))
-    expect(q.getAll('cf_cf-uuid-1')).toEqual(['yes'])
-    expect(q.has('cf_tracked_by_team')).toBe(false)
+    expect(q.getAll('field.cf-uuid-1')).toEqual(['yes'])
+    expect(q.has('field.tracked_by_team')).toBe(false)
   })
 
   it('paints from the Bills page’s warmed cache for a custom-field list, then refreshes', async () => {
     hoisted.defs = [{ id: 'cf-uuid-1', slug: 'tracked_by_team' }]
-    sessionStorage.setItem('lastBillsUrl', '/bills?cf_tracked_by_team=yes')
-    const cachedParams = new URLSearchParams([['page', '1'], ['pageSize', '100'], ['cf_cf-uuid-1', 'yes']])
+    sessionStorage.setItem('lastBillsUrl', '/bills?field.tracked_by_team=yes')
+    const cachedParams = new URLSearchParams([['page', '1'], ['pageSize', '100'], ['field.cf-uuid-1', 'yes']])
     hoisted.cache = { params: cachedParams.toString(), page: { bills: [bill('c1', 'HB 77')], total: 1, totalPages: 1 } }
     // The refresh never settles, so what shows is the cache's.
     hoisted.respond = () => new Promise(() => {})
@@ -220,7 +222,34 @@ describe('BillListPane: request params', () => {
   })
 })
 
-describe('BillListPane: load more', () => {
+// jsdom has no IntersectionObserver. This one records each observer so a test
+// can say the sentinel has scrolled into range.
+type FakeObserver = { cb: IntersectionObserverCallback; options?: IntersectionObserverInit; targets: Element[]; live: boolean }
+const observers: FakeObserver[] = []
+class FakeIntersectionObserver {
+  private rec: FakeObserver
+  constructor(cb: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+    this.rec = { cb, options, targets: [], live: true }
+    observers.push(this.rec)
+  }
+  observe(el: Element) { this.rec.targets.push(el) }
+  unobserve() {}
+  disconnect() { this.rec.live = false }
+}
+beforeEach(() => { observers.length = 0; vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver) })
+afterEach(() => { vi.unstubAllGlobals() })
+
+// Report the sentinel as intersecting to every observer still watching it.
+function intersect() {
+  act(() => {
+    for (const o of observers.filter(o => o.live && o.targets.length > 0)) {
+      o.cb([{ isIntersecting: true, target: o.targets[0] } as IntersectionObserverEntry], {} as IntersectionObserver)
+    }
+  })
+}
+const pageCalls = (n: number) => hoisted.calls.filter(c => c.startsWith('/bills?') && c.includes(`page=${n}`))
+
+describe('BillListPane: infinite scroll', () => {
   const firstPage = Array.from({ length: 3 }, (_, i) => bill(`a${i}`, `HB ${i + 1}`))
   const secondPage = [bill('a3', 'HB 4'), bill('a4', 'HB 5')]
 
@@ -233,32 +262,39 @@ describe('BillListPane: load more', () => {
     }
   })
 
-  it('offers "Show more" with the count, appends the next page, and then hides the button', async () => {
+  it('fetches and appends the next page when the sentinel intersects, with no button', async () => {
     renderPane('/RI/2026/HB%201')
     const pane = await screen.findByRole('navigation', { name: 'Bill list' })
-    const more = await within(pane).findByRole('button', { name: 'Show more (3 of 5)' })
+    await within(pane).findByText('Title of HB 3')
     expect(within(pane).getByText('5 bills')).toBeInTheDocument()
+    expect(within(pane).queryByRole('button', { name: /Show more/ })).toBeNull()
 
-    fireEvent.click(more)
+    intersect()
     await within(pane).findByText('Title of HB 5')
     expect(within(pane).getAllByRole('listitem')).toHaveLength(5)
-    expect(within(pane).queryByRole('button', { name: /Show more/ })).toBeNull()
-    const billCalls = hoisted.calls.filter(c => c.startsWith('/bills?'))
-    const q = new URLSearchParams(billCalls[billCalls.length - 1].slice(7))
-    expect(q.get('page')).toBe('2')
+    expect(pageCalls(2)).toHaveLength(1)
+  })
+
+  it('observes within the pane\'s own scroll container, prefetching before the end shows', async () => {
+    renderPane('/RI/2026/HB%201')
+    const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+    await within(pane).findByText('Title of HB 3')
+    const live = observers.find(o => o.live && o.targets.length > 0)
+    expect(live?.options?.root).toBe(pane.querySelector('ul'))
+    expect(live?.options?.rootMargin).toBe('1200px')
   })
 
   it('does not scroll the reader back to the current bill when more rows arrive', async () => {
     renderPane('/RI/2026/HB%201')
     const pane = await screen.findByRole('navigation', { name: 'Bill list' })
-    const more = await within(pane).findByRole('button', { name: /Show more/ })
+    await within(pane).findByText('Title of HB 3')
     await waitFor(() => expect(scrollSpy).toHaveBeenCalledTimes(1))
-    fireEvent.click(more)
+    intersect()
     await within(pane).findByText('Title of HB 5')
     expect(scrollSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('ignores a second click while the page is loading', async () => {
+  it('requests nothing while a page is loading, and shows a Loading row', async () => {
     let release: (v: unknown) => void = () => {}
     hoisted.respond = (path) => {
       if (!path.startsWith('/bills?')) return {}
@@ -267,13 +303,46 @@ describe('BillListPane: load more', () => {
     }
     renderPane('/RI/2026/HB%201')
     const pane = await screen.findByRole('navigation', { name: 'Bill list' })
-    fireEvent.click(await within(pane).findByRole('button', { name: /Show more/ }))
-    const busy = await within(pane).findByRole('button', { name: 'Loading…' })
-    expect(busy).toBeDisabled()
-    fireEvent.click(busy)
-    expect(hoisted.calls.filter(c => c.startsWith('/bills?') && c.includes('page=2'))).toHaveLength(1)
+    await within(pane).findByText('Title of HB 3')
+    intersect()
+    await within(pane).findByText('Loading…')
+    intersect()
+    intersect()
+    expect(pageCalls(2)).toHaveLength(1)
     await act(async () => { release(page(secondPage, { page: 2, total: 5, totalPages: 2 })) })
     await within(pane).findByText('Title of HB 5')
+    expect(within(pane).queryByText('Loading…')).toBeNull()
+  })
+
+  it('stops after a failed page, and Retry fetches it again', async () => {
+    let fail = true
+    hoisted.respond = (path) => {
+      if (!path.startsWith('/bills?')) return {}
+      if (new URLSearchParams(path.slice(7)).get('page') === '2') return fail ? new Error('boom') : page(secondPage, { page: 2, total: 5, totalPages: 2 })
+      return page(firstPage, { total: 5, totalPages: 2 })
+    }
+    renderPane('/RI/2026/HB%201')
+    const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+    await within(pane).findByText('Title of HB 3')
+    intersect()
+    await within(pane).findByText('Couldn’t load more')
+    intersect()
+    await act(async () => {})
+    expect(pageCalls(2)).toHaveLength(1)
+
+    fail = false
+    fireEvent.click(within(pane).getByRole('button', { name: 'Retry' }))
+    await within(pane).findByText('Title of HB 5')
+    expect(pageCalls(2)).toHaveLength(2)
+  })
+
+  it('requests nothing when there is no further page', async () => {
+    hoisted.respond = (path) => path.startsWith('/bills?') ? page(firstPage, { total: 3, totalPages: 1 }) : {}
+    renderPane('/RI/2026/HB%201')
+    const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+    await within(pane).findByText('Title of HB 3')
+    intersect()
+    expect(pageCalls(2)).toHaveLength(0)
   })
 })
 
@@ -305,5 +374,349 @@ describe('BillListPane: loading, error and empty states', () => {
     expect(await screen.findByText('No bills match this list’s filters.')).toBeInTheDocument()
     expect(screen.getByText('0 bills')).toBeInTheDocument()
     expect(screen.queryByRole('list')).toBeNull()
+  })
+})
+
+
+// The filters and sort the pane carries, said under the "Bills" header.
+describe('BillListPane: filter and sort summary', () => {
+  const VIEW = { id: 'v-1', name: 'Watch list', slug: 'watch-list', previousSlug: 'old-watch', query: 'status=2&status=3&sort=bill&dir=asc' }
+  function listAt(url: string, extra: Record<string, unknown> = {}) {
+    sessionStorage.setItem('lastBillsUrl', url)
+    hoisted.respond = (path) => {
+      if (path === '/views') return { views: [VIEW] }
+      if (path.startsWith('/bills?')) return page([PLAIN, GROUP3], { total: 2, ...extra })
+      return {}
+    }
+  }
+  async function paneReady(path = '/RI/2026/HB%201') {
+    renderPane(path)
+    const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+    await within(pane).findByText('Title of HB 1')
+    return pane
+  }
+  const hover = (el: HTMLElement) => fireEvent.pointerEnter(el, { pointerType: 'mouse' })
+
+  it('says "All bills" with the default sort named when the list has no filters', async () => {
+    const pane = await paneReady()
+    expect(within(pane).getByText('All bills · Sorted by default order')).toBeInTheDocument()
+  })
+
+  it('counts each selected value, and names the sort as its column header does', async () => {
+    listAt('/bills?status=2&status=3&priority=high&sort=lastAction&dir=desc')
+    const pane = await paneReady()
+    expect(within(pane).getByText('3 filters · Sorted by Last action')).toBeInTheDocument()
+  })
+
+  it('says "1 filter" for one value', async () => {
+    listAt('/bills?year=2026')
+    const pane = await paneReady()
+    expect(within(pane).getByText('1 filter · Sorted by default order')).toBeInTheDocument()
+  })
+
+  it('counts the New matches pill the sidebar links to, rather than saying "All bills"', async () => {
+    listAt('/bills?newMatches=1')
+    const pane = await paneReady()
+    expect(within(pane).getByText('1 filter · Sorted by default order')).toBeInTheDocument()
+    expect(within(pane).queryByText(/All bills/)).toBeNull()
+    hover(within(pane).getByRole('button', { name: /1 filter/ }))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('New matches')
+  })
+
+  it('counts the Not yet voted pill together with the priority tiers the unvoted widget links with', async () => {
+    listAt('/bills?priority=high&priority=medium&priority=low&unvoted=1')
+    const pane = await paneReady()
+    expect(within(pane).getByText('4 filters · Sorted by default order')).toBeInTheDocument()
+    expect(within(pane).getByRole('button', { name: /4 filters/ })).toHaveAccessibleDescription(/Not yet voted/)
+  })
+
+  it('counts a search term as one filter', async () => {
+    listAt('/bills?search=water')
+    const pane = await paneReady()
+    expect(within(pane).getByText('1 filter · Sorted by default order')).toBeInTheDocument()
+    // The same search narrows the pane's own list, so the line is not a lie.
+    expect(hoisted.calls.find(c => c.startsWith('/bills?'))).toContain('search=water')
+  })
+
+  it('draws the line under the header, between the title row and the list', async () => {
+    listAt('/bills?status=2')
+    const pane = await paneReady()
+    const summary = within(pane).getByText(/^1 filter · Sorted by/)
+    const heading = within(pane).getByRole('link', { name: 'Bills' })
+    const list = within(pane).getAllByRole('list')[0]
+    expect(heading.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(summary.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(pane).getByText('2 bills')).toBeInTheDocument()
+  })
+
+  it('shows the active filters on hover, labelled as the Bills page’s chips are', async () => {
+    hoisted.defs = [{ id: 'f1', slug: 'team', name: 'Team', type: 'dropdown' } as never]
+    listAt('/bills?priority=high&year=2026&minRelevance=5&field.team=Alpha')
+    const pane = await paneReady()
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    hover(within(pane).getByRole('button', { name: /4 filters · Sorted by/ }))
+    const tip = await screen.findByRole('tooltip')
+    for (const label of ['Year: 2026', 'Relevance 5+', 'Team: Alpha']) expect(tip).toHaveTextContent(label)
+    expect(tip).toHaveTextContent(/high/i)
+  })
+
+  it('names a picked committee in the active filters from the facets, and asks the facets only when one is picked', async () => {
+    hoisted.respond = (path) => {
+      if (path.startsWith('/bills/facets')) return { committee: { c1: 3 }, committeeInfo: { c1: { name: 'Judiciary', state: 'RI', chamber: 'S' } } }
+      return path.startsWith('/bills?') ? page([PLAIN, GROUP3], { total: 2 }) : {}
+    }
+    sessionStorage.setItem('lastBillsUrl', '/bills?year=2026')
+    await paneReady()
+    expect(hoisted.calls.some(c => c.startsWith('/bills/facets'))).toBe(false)
+    cleanup()
+    hoisted.calls = []
+    sessionStorage.setItem('lastBillsUrl', '/bills?committee=c1')
+    const pane = await paneReady()
+    await waitFor(() => expect(hoisted.calls.filter(c => c.startsWith('/bills/facets'))).toEqual(['/bills/facets?committee=c1']))
+    hover(within(pane).getByRole('button', { name: /1 filter · Sorted by/ }))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Referred to Judiciary (Senate)')
+  })
+
+  it('shows the same list on keyboard focus, and Escape closes it', async () => {
+    listAt('/bills?year=2026&year=2027')
+    const pane = await paneReady()
+    const trigger = within(pane).getByRole('button', { name: /2 filters/ })
+    act(() => trigger.focus())
+    const tip = await screen.findByRole('tooltip')
+    expect(tip).toHaveTextContent('Year: 2026')
+    expect(tip).toHaveTextContent('Year: 2027')
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('makes the filter list a screen reader reads without opening anything', async () => {
+    listAt('/bills?year=2026&year=2027&minRelevance=5')
+    const pane = await paneReady()
+    const trigger = within(pane).getByRole('button', { name: /3 filters/ })
+    expect(trigger).toHaveAccessibleDescription(/Year: 2026.*Year: 2027.*Relevance 5\+/)
+    expect(trigger.tabIndex).toBeGreaterThanOrEqual(0)
+  })
+
+  it('lists a search term in the hover list as a quoted search', async () => {
+    listAt('/bills?search=water&year=2026')
+    const pane = await paneReady()
+    hover(within(pane).getByRole('button', { name: /2 filters/ }))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Search: “water”')
+  })
+
+  it('has nothing to hover when there are no filters', async () => {
+    const pane = await paneReady()
+    expect(within(pane).getByText('All bills · Sorted by default order')).toBeInTheDocument()
+    expect(within(pane).queryByRole('button', { name: /All bills/ })).toBeNull()
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('caps a very long hover list and says how many more there are', async () => {
+    listAt(`/bills?${Array.from({ length: 30 }, (_, i) => `status=s${i}`).join('&')}`)
+    const pane = await paneReady()
+    expect(within(pane).getByText('30 filters · Sorted by default order')).toBeInTheDocument()
+    hover(within(pane).getByRole('button', { name: /30 filters/ }))
+    const tip = await screen.findByRole('tooltip')
+    expect(tip).toHaveTextContent('s0')
+    expect(tip).toHaveTextContent('and 15 more')
+    expect(tip).not.toHaveTextContent('s29')
+  })
+
+  it('links Edit filters to the same Bills URL as the "Bills" heading', async () => {
+    listAt('/bills?status=2&sort=bill&dir=asc')
+    const pane = await paneReady()
+    const edit = within(pane).getByRole('link', { name: 'Edit filters' })
+    expect(edit).toHaveAttribute('href', '/bills?status=2&sort=bill&dir=asc')
+    expect(edit).toHaveAttribute('href', within(pane).getByRole('link', { name: 'Bills' }).getAttribute('href')!)
+  })
+
+  it('links Edit filters to /bills when the Bills page was never visited', async () => {
+    const pane = await paneReady()
+    expect(within(pane).getByRole('link', { name: 'Edit filters' })).toHaveAttribute('href', '/bills')
+  })
+
+  it('has no control that changes or removes a filter', async () => {
+    listAt('/bills?status=2&status=3&search=water')
+    const pane = await paneReady()
+    const header = within(pane).getByRole('link', { name: 'Bills' }).parentElement!.parentElement!
+    // The one button is the summary's own hover trigger; the only links are "Bills" and "Edit filters".
+    expect(within(header).getAllByRole('button')).toHaveLength(1)
+    expect(within(header).getAllByRole('link').map(l => l.textContent)).toEqual(['Bills', 'Edit filters'])
+    expect(within(header).queryByText('×')).toBeNull()
+    expect(within(header).queryByRole('button', { name: /clear|remove|reset/i })).toBeNull()
+    // Nothing in the pane changes the list's URL or filters on click.
+    fireEvent.click(within(pane).getByRole('button', { name: /3 filters/ }))
+    expect(hoisted.calls.filter(c => c.startsWith('/bills?'))).toHaveLength(1)
+  })
+
+  describe('a saved view', () => {
+    it('shows the view’s name in place of the count', async () => {
+      listAt('/bills?view=watch-list')
+      const pane = await paneReady()
+      expect(within(pane).getByText('Watch list · Sorted by Bill')).toBeInTheDocument()
+      expect(within(pane).queryByText(/ filters · /)).toBeNull()
+    })
+
+    it('finds the view by its id or its previous slug, as the pane’s list does', async () => {
+      listAt('/bills?view=old-watch')
+      const pane = await paneReady()
+      expect(within(pane).getByText('Watch list · Sorted by Bill')).toBeInTheDocument()
+    })
+
+    it('still lists the view’s filters on hover', async () => {
+      listAt('/bills?view=watch-list')
+      const pane = await paneReady()
+      hover(within(pane).getByRole('button', { name: /Watch list · Sorted by Bill/ }))
+      const tip = await screen.findByRole('tooltip')
+      expect(Array.from(tip.querySelectorAll('[data-filter]')).map(n => n.textContent)).toEqual([decodeStatus('2'), decodeStatus('3')])
+    })
+
+    it('says the view’s sort, not the URL’s', async () => {
+      listAt('/bills?view=watch-list')
+      const pane = await paneReady()
+      expect(within(pane).getByText(/Sorted by Bill$/)).toBeInTheDocument()
+    })
+
+    it('still links Edit filters to the short view URL', async () => {
+      listAt('/bills?view=watch-list')
+      const pane = await paneReady()
+      expect(within(pane).getByRole('link', { name: 'Edit filters' })).toHaveAttribute('href', '/bills?view=watch-list')
+    })
+
+    it('falls back to the filter count when the slug is stale', async () => {
+      listAt('/bills?view=gone')
+      const pane = await paneReady()
+      expect(within(pane).getByText('All bills · Sorted by default order')).toBeInTheDocument()
+      expect(within(pane).queryByText(/Watch list/)).toBeNull()
+    })
+
+    it('falls back to the count when /views cannot be loaded', async () => {
+      sessionStorage.setItem('lastBillsUrl', '/bills?view=watch-list')
+      hoisted.respond = (path) => path === '/views' ? new Error('down') : path.startsWith('/bills?') ? page([PLAIN]) : {}
+      renderPane('/RI/2026/HB%201')
+      expect(await screen.findByText('All bills · Sorted by default order')).toBeInTheDocument()
+    })
+
+    it('shows the count, not the view, once the URL spells out filters of its own', async () => {
+      listAt('/bills?view=watch-list&status=9')
+      const pane = await paneReady()
+      expect(within(pane).getByText('1 filter · Sorted by default order')).toBeInTheDocument()
+      expect(hoisted.calls).not.toContain('/views')
+    })
+
+    it('uses a long view name without pushing Edit filters out of the pane', async () => {
+      const name = 'A very long saved view name that goes on and on and on and on'.repeat(3)
+      sessionStorage.setItem('lastBillsUrl', '/bills?view=watch-list')
+      hoisted.respond = (path) => path === '/views' ? { views: [{ ...VIEW, name }] } : path.startsWith('/bills?') ? page([PLAIN]) : {}
+      renderPane('/RI/2026/HB%201')
+      const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+      const line = await within(pane).findByText(`${name} · Sorted by Bill`)
+      const row = line.closest('[data-pane-summary]') as HTMLElement
+      // The row can shrink to the pane, the name wraps rather than overflowing, and Edit keeps its size.
+      expect(row.getAttribute('style')).toMatch(/min-width: 0/)
+      expect(row.style.display).toBe('flex')
+      expect(row.getAttribute('style')).not.toMatch(/white-space: nowrap/)
+      expect(line.closest('button')!.parentElement!.getAttribute('style')).toMatch(/min-width: 0/)
+      expect(line.style.overflowWrap).toBe('anywhere')
+      const edit = within(pane).getByRole('link', { name: 'Edit filters' })
+      expect(edit.style.flexShrink).toBe('0')
+      expect(edit.style.whiteSpace).toBe('nowrap')
+    })
+  })
+
+  describe('when it is drawn', () => {
+    it('is not drawn while the list is loading', async () => {
+      hoisted.respond = (path) => path.startsWith('/bills?') ? new Promise(() => {}) : {}
+      renderPane('/RI/2026/HB%201')
+      await screen.findByText('Loading bills…')
+      expect(screen.queryByText(/Sorted by/)).toBeNull()
+      expect(screen.queryByRole('link', { name: 'Edit filters' })).toBeNull()
+    })
+
+    it('is not drawn after an error', async () => {
+      hoisted.respond = (path) => path.startsWith('/bills?') ? new Error('boom') : {}
+      renderPane('/RI/2026/HB%201')
+      await screen.findByText('Couldn’t load bills.')
+      expect(screen.queryByText(/Sorted by/)).toBeNull()
+      expect(screen.queryByRole('link', { name: 'Edit filters' })).toBeNull()
+    })
+
+    it('is drawn when the filters leave no bills, so the reader can see why', async () => {
+      listAt('/bills?status=2')
+      hoisted.respond = (path) => path.startsWith('/bills?') ? page([], { total: 0 }) : {}
+      renderPane('/RI/2026/HB%201')
+      expect(await screen.findByText('1 filter · Sorted by default order')).toBeInTheDocument()
+      expect(screen.getByText('No bills match this list’s filters.')).toBeInTheDocument()
+    })
+
+    it('is drawn from the Bills page’s warmed cache, before the refresh returns', async () => {
+      listAt('/bills?status=2')
+      hoisted.cache = { params: 'page=1&pageSize=100&status=2', page: { bills: [bill('c1', 'HB 77')], total: 1, totalPages: 1 } }
+      hoisted.respond = () => new Promise(() => {})
+      renderPane('/RI/2026/HB%2077')
+      expect(await screen.findByText('1 filter · Sorted by default order')).toBeInTheDocument()
+    })
+
+    it('keeps the header’s title and count as they were', async () => {
+      listAt('/bills?status=2')
+      const pane = await paneReady()
+      expect(within(pane).getByRole('link', { name: 'Bills' })).toHaveAttribute('href', '/bills?status=2')
+      expect(within(pane).getByText('2 bills')).toBeInTheDocument()
+    })
+  })
+
+  it('reads the list it is mounted with, so a changed filter shows on the next mount', async () => {
+    listAt('/bills?status=2')
+    const first = renderPane('/RI/2026/HB%201')
+    await screen.findByText('1 filter · Sorted by default order')
+    first.unmount()
+    listAt('/bills?status=2&status=3&priority=high&sort=status')
+    renderPane('/RI/2026/HB%201')
+    expect(await screen.findByText('3 filters · Sorted by Status')).toBeInTheDocument()
+    expect(screen.queryByText('1 filter · Sorted by default order')).toBeNull()
+  })
+})
+
+describe('BillListPane: the open bill’s row', () => {
+  it('has the blue highlight and no left border', async () => {
+    renderPane('/RI/2026/HB%201')
+    const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+    await within(pane).findByText('Title of S 5')
+    const current = within(pane).getByRole('link', { current: 'page' })
+    expect(current.style.background).toBe(color.bgBlueChip)
+    expect(current.style.borderLeftStyle).toBe('')
+    expect(current.style.borderLeftWidth).toBe('')
+    expect(current.style.borderLeft).toBe('')
+  })
+
+  it('draws no left border on any row, so the blue is the only mark', async () => {
+    renderPane('/RI/2026/HB%201')
+    const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+    await within(pane).findByText('Title of S 5')
+    for (const row of within(pane).getAllByRole('link', { name: /Title of/ })) {
+      expect(row.style.borderLeft).toBe('')
+      expect(row.style.borderLeftWidth).toBe('')
+    }
+  })
+
+  it('keeps its text where the other rows’ text is', async () => {
+    renderPane('/RI/2026/HB%201')
+    const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+    await within(pane).findByText('Title of S 5')
+    const current = within(pane).getByRole('link', { current: 'page' })
+    const other = within(pane).getByRole('link', { name: /Title of S 5/ })
+    expect(current).not.toBe(other)
+    // The 3px border's room was 12px + 3px of left space on every row; padding now holds all 15.
+    expect(current.style.paddingLeft).toBe('15px')
+    expect(other.style.paddingLeft).toBe('15px')
+    expect(current.style.paddingRight).toBe(other.style.paddingRight)
+  })
+
+  it('keeps the same text position when the open bill is a different row', async () => {
+    renderPane('/RI/2026/S%209')
+    const pane = await screen.findByRole('navigation', { name: 'Bill list' })
+    await within(pane).findByText('Title of HB 1')
+    const lefts = within(pane).getAllByRole('link', { name: /Title of/ }).map(r => r.style.paddingLeft)
+    expect(new Set(lefts)).toEqual(new Set(['15px']))
   })
 })

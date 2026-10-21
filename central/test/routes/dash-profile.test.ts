@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { env } from 'cloudflare:test'
 import { drizzle } from 'drizzle-orm/d1'
 import * as schema from '../../src/db/schema'
-import { app } from '../../src/index-legiscan'
-import { setupLsDb } from '../helpers/setupLsDb'
+import { app } from '../../src/index'
+import { clearDb } from '../helpers/migrations'
 import { createAdminSession, hashToken } from '../../src/lib/adminAuth'
 import { verifySuperadminJwt } from '../../src/lib/superadminJwt'
 
@@ -68,7 +68,7 @@ async function signInToken(email: string): Promise<Awaited<ReturnType<typeof ver
 }
 
 beforeEach(async () => {
-  await setupLsDb()
+  await clearDb()
 })
 
 describe('GET /admin/dash/profile', () => {

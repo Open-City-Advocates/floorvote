@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { normalizeHandle } from '../../../shared/billHandle'
 import { env, applyD1Migrations } from 'cloudflare:test'
 import { resetDb, migrationsFromFiles } from '../helpers'
 import { getDb } from '../../src/db/client'
@@ -103,7 +104,7 @@ async function buildForkInstance() {
   insert(`INSERT INTO crm_contacts (id, person_key, contact_date, kind, summary, bill_id) VALUES ('cc-1', 'cm:Zachary Parker', '2026-09-20', 'meeting', 'Talked through the stadium bill.', ?)`, B0769)
   insert(`INSERT INTO crm_followups (id, person_key, due_date, text) VALUES ('cf-1', 'staff:staffer@example.org', '2026-10-01', 'Send our testimony.')`)
   // What the team itself holds, which upstream's code must leave alone.
-  // The fork's members carry the line under their name as `subtitle`. Migration 0105 copies it into a new `title` and keeps `subtitle`.
+  // The fork's members carry the line under their name as `subtitle`. Migration 0105 copies it into a new `title` and keeps `subtitle`, and 0120 backfills any `title` still null.
   insert(`INSERT INTO users (id, email, name, role, subtitle) VALUES ('u-1', 'member@example.org', 'A Member', 'admin', 'Policy Lead'), ('u-2', 'other@example.org', 'Another Member', 'member', NULL)`)
   insert(`INSERT INTO member_votes (id, user_id, bill_id, position) VALUES ('mv-1', 'u-1', ?, 'support'), ('mv-2', 'u-2', ?, 'oppose')`, B0769, B0769)
   insert(`INSERT INTO official_positions (id, bill_id, position, notes, set_by) VALUES ('op-1', ?, 'Support', 'Testified in favor.', 'u-1')`, B0769)
@@ -167,7 +168,7 @@ describe('a fork\'s instance, moved onto upstream', () => {
       { id: 'cm-1', recipient_id: 'u-1', kind: 'mention', comment_id: 'c-1', actor_id: 'u-2' },
     ])
     expect(await teamState()).toEqual(team)
-    // 0105 copies each member's subtitle into the new title and keeps the subtitle.
+    // 0105 copies each member's subtitle into the new title and keeps the subtitle, and 0120 backfills any title still null (none here), so the fork's subtitle is untouched until a later migration drops it.
     expect(await rows(`SELECT id, title, subtitle FROM users ORDER BY id`)).toEqual([
       { id: 'u-1', title: 'Policy Lead', subtitle: 'Policy Lead' },
       { id: 'u-2', title: null, subtitle: null },
@@ -177,7 +178,10 @@ describe('a fork\'s instance, moved onto upstream', () => {
     expect(applied.slice(0, forkManifest.files.length)).toEqual(forkManifest.files.map(f => f.replace(/\.sql$/, '')))
     expect(applied.slice(forkManifest.files.length)).toEqual(expect.arrayContaining(['0075_auth_events_email_changed', '0079_calendar_event_kind', '0082_calendar_event_covered_by']))
     expect(await forkTables()).toEqual(before)
-    expect(await rows('SELECT id, external_id FROM bills ORDER BY id')).toEqual(billIds)
+    // 0119 moves each handle to the neutral prefix (#305) and keeps every bill id.
+    expect(await rows('SELECT id, external_id FROM bills ORDER BY id'))
+      .toEqual(billIds.map(b => ({ ...b, external_id: normalizeHandle(b.external_id as string | null) })))
+    expect((await rows('SELECT external_id FROM bills')).every(b => String(b.external_id).startsWith('bill:'))).toBe(true)
     expect(await calendarIds()).toEqual(calendar)
     // The fork's deadline row is a bill entry of kind deadline now (0079), and its Council rows wait for the mirror.
     expect(await rows(`SELECT source, kind, COUNT(*) AS n FROM calendar_events GROUP BY source, kind ORDER BY source, kind`)).toEqual([
