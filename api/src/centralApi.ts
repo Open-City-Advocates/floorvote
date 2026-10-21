@@ -46,6 +46,16 @@ export class CentralApi extends WorkerEntrypoint<Env> {
     return sendSampleEmail(this.env, getDb(this.env.DB), to, type)
   }
 
+  /**
+   * What this instance can read, for central to check before it sends. Central
+   * names bills to an instance by the neutral handle `bill:<n>` only when this
+   * says `neutralHandles` (#305, central lib/tenantHandles.ts). An older
+   * instance has no such method, and gets `legiscan:<n>`.
+   */
+  async capabilities(): Promise<{ neutralHandles: true }> {
+    return { neutralHandles: true }
+  }
+
   async deliveryProbe(): Promise<{ probe: DeliveryProbeRecord | null }> {
     return { probe: await readDeliveryProbe(getDb(this.env.DB)) }
   }
