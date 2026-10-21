@@ -9,7 +9,7 @@ import { parseHandle } from '../../../shared/billHandle'
 import type { GroupBillTexts } from '../../../shared/companionGroups'
 import { orderGroupTexts } from '../lib/groupTexts'
 import { claimGlow, CLAIM_GLOW_FLASH } from '../lib/claimGlow'
-import { focusPassage, markPassage, PASSAGE_ID, type ClaimDocument, type PageQuote, type Passage, type Span } from '../lib/claimLinks'
+import { focusPassage, markPassage, scrollToPassage, type ClaimDocument, type PageQuote, type Passage, type Span } from '../lib/claimLinks'
 import { describePageTarget, looksLikePdf, pdfPageTarget } from '../lib/pdfPages'
 import { color, radius, fontSize, fontWeight } from '../styles/tokens'
 
@@ -222,25 +222,21 @@ export function BillTextPanel({ billId, texts, externalOpen, requestedDocId, req
   }, [passage?.key])
 
   // The highlighted document, for a frame that keeps `sandbox=""`: the mark is
-  // put in before it renders, and the frame loads at the mark's fragment so the
-  // browser scrolls to it (lib/claimLinks.ts). A blob URL, unlike srcdoc, can
-  // carry the fragment. Null when the passage isn't in the document.
+  // put in before it renders, and the frame goes to the mark's fragment once it
+  // loads so the browser scrolls to it (scrollToPassage and focusPassage in lib/claimLinks.ts, per frame below).
+  // Null when the passage isn't in the document.
   const requestShown = activePassage && activePassage.document.docId === selectedDocId ? activePassage : null
   const passageShown = requestShown && !isPdfRequest(requestShown) ? requestShown : null
   const marked = useMemo(() => (passageShown && content !== null ? markPassage(content, [passageShown, ...(passageShown.rest ?? [])]) : null), [passageShown, content])
   const passageMissing = passageShown !== null && content !== null && marked === null
-  const [passageUrl, setPassageUrl] = useState<string | null>(null)
-  useEffect(() => {
-    if (marked === null) {
-      setPassageUrl(null)
-      return
-    }
-    const url = URL.createObjectURL(new Blob([marked], { type: 'text/html;charset=utf-8' }))
-    setPassageUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [marked, passageShown?.key])
-  // Focus moves to the passage's frame once per request, when it loads.
-  const focusedUrlRef = useRef<string | null>(null)
+  // Each passage frame goes to the passage on its first load, since going there
+  // loads it again. Focus moves to it once per request, so a frame shown again
+  // (Bill texts closed and opened) scrolls without taking focus.
+  const sentToPassage = useRef(new WeakSet<HTMLIFrameElement>())
+  const focusedKeyRef = useRef<number | null>(null)
+  // Where focus was when a frame shown again went to the passage. Chromium
+  // focuses a frame that loads at a fragment, so the load that follows puts it back.
+  const focusBefore = useRef(new WeakMap<HTMLIFrameElement, Element | null>())
 
   // A PDF claim (#572): the PDF opens at the cited page, and its quote shows
   // beside it, since the page can't highlight a PDF. Focus moves to the quote,
@@ -615,18 +611,39 @@ export function BillTextPanel({ billId, texts, externalOpen, requestedDocId, req
                       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         <p style={{ fontSize: fontSize.sm, color: color.textMuted, margin: 0 }}>Loading…</p>
                       </div>
-                    ) : passageUrl && passageShown ? (
+                    ) : marked !== null && passageShown ? (
                       // The same sandbox as the plain text: no permissions at all.
+                      // A new frame for each request, so each one's load moves focus.
                       <iframe
-                        key={passageUrl}
-                        src={`${passageUrl}#${PASSAGE_ID}`}
+                        key={`passage:${passageShown.key}`}
+                        srcDoc={marked}
                         sandbox=""
                         style={{ width: '100%', height: '100%', border: 'none', display: 'block', background: color.white }}
                         title="Bill text, with the claim's passage highlighted"
                         onLoad={e => {
-                          if (focusedUrlRef.current === passageUrl) return
-                          focusedUrlRef.current = passageUrl
-                          focusPassage(e.currentTarget, passageUrl)
+                          const frame = e.currentTarget
+                          if (sentToPassage.current.has(frame)) {
+                            const before = focusBefore.current.get(frame)
+                            focusBefore.current.delete(frame)
+                            if (before instanceof HTMLElement && document.activeElement === frame) before.focus({ preventScroll: true })
+                            return
+                          }
+                          sentToPassage.current.add(frame)
+                          const key = passageShown.key
+                          // Desktop Safari paints nothing in a frame sent to the
+                          // passage before it has painted once, until the reader
+                          // scrolls it. Two animation frames let it paint first.
+                          // A frame gone by then leaves its request unfocused.
+                          requestAnimationFrame(() => requestAnimationFrame(() => {
+                            if (!frame.isConnected) return
+                            if (focusedKeyRef.current !== key) {
+                              focusedKeyRef.current = key
+                              focusPassage(frame)
+                            } else {
+                              focusBefore.current.set(frame, document.activeElement)
+                              scrollToPassage(frame)
+                            }
+                          }))
                         }}
                       />
                     ) : (

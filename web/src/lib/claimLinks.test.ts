@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { billHtmlToText } from '../../../shared/billHtmlToText'
-import { focusPassage, linkableClaims, linkClaimsInHtml, markPassage, PASSAGE_ID, type ClaimSourcesDetail, type ClaimSourceItem } from './claimLinks'
+import { focusPassage, linkableClaims, scrollToPassage, linkClaimsInHtml, markPassage, PASSAGE_ID, type ClaimSourcesDetail, type ClaimSourceItem } from './claimLinks'
 
 // Claim links on HTML bills (#571). Fixtures are invented text, not bill text.
 
@@ -198,7 +198,7 @@ describe('markPassage', () => {
     expect(css).toMatch(/mark\[data-fv-passage\]\{background:[^;]*!important/)
   })
 
-  // The frame is a `sandbox=""` blob: the app's CSS variables aren't defined in
+  // The frame is a `sandbox=""` srcdoc: the app's CSS variables aren't defined in
   // it, so a `var(--fv-...)` color there computes to nothing. And a bill's page
   // renders light there in both of the app's modes (an opaque white canvas with
   // black text, since the frame's color-scheme isn't the app's). So the style
@@ -353,24 +353,39 @@ describe('markPassage', () => {
 })
 
 describe('focusPassage', () => {
-  // Chromium doesn't focus a fragment's target on a document's first load, only
-  // on a fragment navigation within it. So the page focuses the frame, then
-  // goes to the passage's fragment in the document it already has.
-  it('focuses the frame, then goes to the passage\'s fragment in the same document', () => {
+  // The frame's srcdoc loads with no fragment. Going to the passage's fragment of
+  // it loads the srcdoc again at the mark, which scrolls there and, the frame
+  // being focused, focuses the mark.
+  it('focuses the frame, then goes to the passage\'s fragment of its srcdoc', () => {
     const calls: string[] = []
     const frame = {
       focus: vi.fn(() => { calls.push('focus') }),
       contentWindow: { location: { replace: vi.fn((u: string) => { calls.push(`replace ${u}`) }) } },
     }
-    focusPassage(frame as unknown as HTMLIFrameElement, 'blob:https://app.example/abc')
-    expect(calls).toEqual(['focus', `replace blob:https://app.example/abc#${PASSAGE_ID}`])
+    focusPassage(frame as unknown as HTMLIFrameElement)
+    expect(calls).toEqual(['focus', `replace about:srcdoc#${PASSAGE_ID}`])
   })
 
   it('still focuses the frame when the frame can\'t be navigated', () => {
     const frame = { focus: vi.fn(), contentWindow: { location: { replace: () => { throw new Error('blocked') } } } }
-    expect(() => focusPassage(frame as unknown as HTMLIFrameElement, 'blob:x')).not.toThrow()
+    expect(() => focusPassage(frame as unknown as HTMLIFrameElement)).not.toThrow()
     expect(frame.focus).toHaveBeenCalled()
     const detached = { focus: vi.fn(), contentWindow: null }
-    expect(() => focusPassage(detached as unknown as HTMLIFrameElement, 'blob:x')).not.toThrow()
+    expect(() => focusPassage(detached as unknown as HTMLIFrameElement)).not.toThrow()
+  })
+})
+
+describe('scrollToPassage', () => {
+  it('goes to the passage\'s fragment of the srcdoc without focusing the frame', () => {
+    const frame = { focus: vi.fn(), contentWindow: { location: { replace: vi.fn() } } }
+    scrollToPassage(frame as unknown as HTMLIFrameElement)
+    expect(frame.contentWindow.location.replace).toHaveBeenCalledWith(`about:srcdoc#${PASSAGE_ID}`)
+    expect(frame.focus).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when the frame can\'t be navigated', () => {
+    const blocked = { contentWindow: { location: { replace: () => { throw new Error('blocked') } } } }
+    expect(() => scrollToPassage(blocked as unknown as HTMLIFrameElement)).not.toThrow()
+    expect(() => scrollToPassage({ contentWindow: null } as unknown as HTMLIFrameElement)).not.toThrow()
   })
 })
