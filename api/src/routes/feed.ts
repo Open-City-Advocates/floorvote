@@ -9,6 +9,7 @@ import { nowDb } from '../lib/dbTime'
 import { activeUser } from '../lib/accountDeletion'
 import type { AppDb, AppEnv } from '../types'
 import { groupHasPriority, loadGroupPriorities, priorityWorn } from '../lib/teamFields'
+import { loadUntriagedNewMatchGroups } from '../lib/newMatch'
 
 export const feedRouter = new Hono<AppEnv>()
 
@@ -103,6 +104,8 @@ feedRouter.get('/', async (c) => {
         billSessionSlug: bills.sessionSlug,
         billState: bills.state,
         billMatchType: bills.matchType,
+        billNewMatchAt: bills.newMatchAt,
+        billTriagedAt: bills.triagedAt,
         billIsDraft: bills.isDraft,
         userId: feedEvents.userId,
         userName: users.name,
@@ -152,6 +155,14 @@ feedRouter.get('/', async (c) => {
   // A companion group's events wear the group's priority, whichever member holds it.
   const groupPriorities = await loadGroupPriorities(db, rows.map((r) => r.billGroupKey))
 
+  // Whether a card is an untriaged new match, which an admin's card shows as the
+  // amber "New · Set priority" dropdown. A group is triaged as one (see
+  // loadUntriagedNewMatchGroups); a bill in no group reads its own columns.
+  const newMatchGroups = await loadUntriagedNewMatchGroups(db, rows.map((r) => r.billGroupKey))
+  const isNewMatch = (r: (typeof rows)[number]) => r.billGroupKey
+    ? newMatchGroups.has(r.billGroupKey)
+    : r.billMatchType === 'keyword' && r.billNewMatchAt != null && r.billPriority == null && r.billTriagedAt == null
+
   // The day's new-matches row names every matched bill, but a companion group is
   // one policy (#638), so it counts once: the row's `count` is its distinct cards.
   const matchCounts = await newMatchCounts(db, rows.filter((r) => r.type === 'new_matches'))
@@ -169,6 +180,7 @@ feedRouter.get('/', async (c) => {
       billPriority: priorityWorn({ priority: r.billPriority ?? null, groupKey: r.billGroupKey ?? null }, groupPriorities),
       billGroupKey: r.billGroupKey ?? null,
       billMatchType: r.billMatchType ?? null,
+      billNewMatch: isNewMatch(r),
       billSessionSlug: filedSlug({ session: r.billSession, sessionSlug: r.billSessionSlug }),
       billState: r.billState ?? null,
       billIsDraft: r.billIsDraft ?? false,

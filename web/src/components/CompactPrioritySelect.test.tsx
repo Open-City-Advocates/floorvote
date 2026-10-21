@@ -32,15 +32,57 @@ describe('CompactPrioritySelect', () => {
   })
 
   describe('an empty priority', () => {
-    it('reads "Set priority", not "Not set"', () => {
+    it('reads "Set priority", not "Not set", when closed', () => {
       render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} />)
       expect(screen.getByRole('combobox')).toHaveDisplayValue('Set priority')
       expect(screen.queryByText('Not set')).toBeNull()
     })
 
-    it('lists the three priorities after the placeholder, with no Dismiss', () => {
+    it('lists "No priority" first, then the three priorities, with no "Set priority" entry and no Dismiss', () => {
       render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} />)
-      expect(optionLabels()).toEqual(['Set priority', 'High Priority', 'Medium Priority', 'Low Priority'])
+      expect(optionLabels()).toEqual(['No priority', 'High Priority', 'Medium Priority', 'Low Priority'])
+      expect(optionLabels()).not.toContain('Set priority')
+    })
+
+    it('keeps the closed label out of the menu: it is a hidden, disabled option the user cannot choose', () => {
+      render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} />)
+      const select = screen.getByRole('combobox')
+      // Testing Library drops hidden options from the role query by default; ask for them to find the placeholder.
+      const all = within(select).getAllByRole('option', { hidden: true }) as HTMLOptionElement[]
+      expect(all.map(o => o.textContent)).toEqual(['Set priority', 'No priority', 'High Priority', 'Medium Priority', 'Low Priority'])
+      const placeholder = all[0]
+      expect(placeholder).toHaveAttribute('hidden')
+      expect(placeholder.disabled).toBe(true)
+      expect(placeholder.selected).toBe(true)
+      // None of the choices the menu offers is disabled or hidden.
+      for (const o of all.slice(1)) { expect(o.disabled).toBe(false); expect(o).not.toHaveAttribute('hidden') }
+    })
+
+    it('announces "Set priority" as its value when closed, and "No priority" is a separate, unselected choice', () => {
+      render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} />)
+      const select = screen.getByRole('combobox', { name: 'Priority' }) as HTMLSelectElement
+      expect(select.selectedOptions).toHaveLength(1)
+      expect(select.selectedOptions[0].textContent).toBe('Set priority')
+      expect((screen.getByRole('option', { name: 'No priority' }) as HTMLOptionElement).selected).toBe(false)
+    })
+
+    it('choosing "No priority" when there is no priority makes no request and calls nothing', async () => {
+      const onChange = vi.fn()
+      render(<CompactPrioritySelect billId="b1" current={null} onChange={onChange} />)
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: '__none__' } })
+      await Promise.resolve()
+      expect(apiFetchMock).not.toHaveBeenCalled()
+      expect(onChange).not.toHaveBeenCalled()
+      expect(screen.getByRole('combobox')).toHaveDisplayValue('Set priority')
+      expect(screen.queryByRole('alert')).toBeNull()
+    })
+
+    it('picking "No priority" by name on an empty priority also makes no request', async () => {
+      const user = userEvent.setup()
+      render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} />)
+      await user.selectOptions(screen.getByRole('combobox'), 'No priority')
+      expect(apiFetchMock).not.toHaveBeenCalled()
+      expect(screen.getByRole('combobox')).toHaveDisplayValue('Set priority')
     })
 
     it('stays white with a default border, not amber', () => {
@@ -48,9 +90,16 @@ describe('CompactPrioritySelect', () => {
       expectPlainEmpty(screen.getByRole('combobox'))
     })
 
-    it('still honors a caller-supplied placeholder', () => {
+    it('still honors a caller-supplied closed label, and the menu still says "No priority"', () => {
       render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} placeholder="Pick one" />)
       expect(screen.getByRole('combobox')).toHaveDisplayValue('Pick one')
+      expect(optionLabels()).toEqual(['No priority', 'High Priority', 'Medium Priority', 'Low Priority'])
+    })
+
+    it('in the mini size reads "Set priority" closed and lists "No priority" in the menu', () => {
+      render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} mini />)
+      expect(screen.getByRole('combobox')).toHaveDisplayValue('Set priority')
+      expect(optionLabels()).toEqual(['No priority', 'High Priority', 'Medium Priority', 'Low Priority'])
     })
   })
 
@@ -58,16 +107,35 @@ describe('CompactPrioritySelect', () => {
     it('shows the priority and has no Dismiss option', () => {
       render(<CompactPrioritySelect billId="b1" current="medium" onChange={vi.fn()} />)
       expect(screen.getByRole('combobox')).toHaveDisplayValue('Medium Priority')
-      expect(optionLabels()).toEqual(['Set priority', 'High Priority', 'Medium Priority', 'Low Priority'])
+      expect(optionLabels()).toEqual(['No priority', 'High Priority', 'Medium Priority', 'Low Priority'])
     })
 
-    it('choosing "Set priority" clears the priority with a null PATCH', async () => {
+    it('choosing "No priority" clears the priority with a null PATCH, and the closed control then reads "Set priority"', async () => {
       apiFetchMock.mockResolvedValue({ priority: null })
       const onChange = vi.fn()
-      render(<CompactPrioritySelect billId="b1" current="high" onChange={onChange} />)
-      fireEvent.change(screen.getByRole('combobox'), { target: { value: '' } })
+      const { rerender } = render(<CompactPrioritySelect billId="b1" current="high" onChange={onChange} />)
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: '__none__' } })
       await waitFor(() => expect(onChange).toHaveBeenCalledWith(null, expect.anything()))
+      expect(apiFetchMock).toHaveBeenCalledTimes(1)
       expect(apiFetchMock).toHaveBeenCalledWith('/bills/b1/priority', { method: 'PATCH', body: JSON.stringify({ priority: null }) })
+      rerender(<CompactPrioritySelect billId="b1" current={null} onChange={onChange} />)
+      expect(screen.getByRole('combobox')).toHaveDisplayValue('Set priority')
+    })
+
+    it('picking "No priority" by name clears it the same way', async () => {
+      apiFetchMock.mockResolvedValue({ priority: null })
+      const onChange = vi.fn()
+      const user = userEvent.setup()
+      render(<CompactPrioritySelect billId="b1" current="low" onChange={onChange} />)
+      await user.selectOptions(screen.getByRole('combobox'), 'No priority')
+      await waitFor(() => expect(onChange).toHaveBeenCalledWith(null, expect.anything()))
+    })
+
+    it('shows the priority, not the closed label, while one is set', () => {
+      render(<CompactPrioritySelect billId="b1" current="high" onChange={vi.fn()} />)
+      const select = screen.getByRole('combobox') as HTMLSelectElement
+      expect(select.selectedOptions[0].textContent).toBe('High Priority')
+      expect(optionLabels()).not.toContain('Set priority')
     })
   })
 
@@ -92,8 +160,28 @@ describe('CompactPrioritySelect', () => {
     it('lists the priorities, then Dismiss as the last option', () => {
       renderNew()
       expect(optionLabels()).toEqual([
-        'New · Set priority', 'High Priority', 'Medium Priority', 'Low Priority', 'Dismiss (reviewed, no priority)',
+        'No priority', 'High Priority', 'Medium Priority', 'Low Priority', 'Dismiss (reviewed, no priority)',
       ])
+      expect(optionLabels()).not.toContain('New · Set priority')
+    })
+
+    it('hides the amber closed label from the menu, as a disabled option', () => {
+      renderNew()
+      const [placeholder] = within(screen.getByRole('combobox')).getAllByRole('option', { hidden: true }) as HTMLOptionElement[]
+      expect(placeholder.textContent).toBe('New · Set priority')
+      expect(placeholder).toHaveAttribute('hidden')
+      expect(placeholder.disabled).toBe(true)
+    })
+
+    it('choosing "No priority" on a new match makes no request and stays a new match', async () => {
+      const { onChange, onDismiss } = renderNew()
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: '__none__' } })
+      await Promise.resolve()
+      expect(apiFetchMock).not.toHaveBeenCalled()
+      expect(onChange).not.toHaveBeenCalled()
+      expect(onDismiss).not.toHaveBeenCalled()
+      expect(screen.getByRole('combobox')).toHaveDisplayValue('New · Set priority')
+      expectAmber(screen.getByRole('combobox'))
     })
 
     it('says in its accessible name that it is a new match', () => {
@@ -214,6 +302,12 @@ describe('CompactPrioritySelect', () => {
       expectAmber(screen.getByRole('combobox'))
       expect(fontSizeOf(screen.getByRole('combobox'))).toBe('10px')
     })
+
+    it('reads "New · Set priority" closed and lists "No priority" first in the mini size', () => {
+      render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} newMatch onDismiss={vi.fn()} mini />)
+      expect(screen.getByRole('combobox')).toHaveDisplayValue('New · Set priority')
+      expect(optionLabels()).toEqual(['No priority', 'High Priority', 'Medium Priority', 'Low Priority', 'Dismiss (reviewed, no priority)'])
+    })
   })
 
   // The native <select> is as wide as its widest option, so "Dismiss (reviewed, no priority)" stretched the closed
@@ -263,6 +357,15 @@ describe('CompactPrioritySelect', () => {
       expect(sizer()).toHaveTextContent(/^New · Set priority$/)
     })
 
+    it('sizes by the closed label, never by the menu-only "No priority"', () => {
+      const { rerender } = render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} />)
+      expect(sizer()).toHaveTextContent(/^Set priority$/)
+      expect(sizer().textContent).not.toMatch(/No priority/)
+      expect(sizer().textContent).toBe((selectEl() as HTMLSelectElement).selectedOptions[0].textContent)
+      rerender(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} mini />)
+      expect(sizer().textContent).toBe((selectEl() as HTMLSelectElement).selectedOptions[0].textContent)
+    })
+
     it('keeps the sizer out of the accessibility tree, and the select\'s accessible name and options intact', () => {
       render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} newMatch onDismiss={vi.fn()} />)
       expect(sizer()).toHaveAttribute('aria-hidden', 'true')
@@ -275,6 +378,144 @@ describe('CompactPrioritySelect', () => {
       render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} newMatch onDismiss={vi.fn()} />)
       expect(sizer().style.pointerEvents).toBe('none')
       expect(sizer().style.visibility).toBe('hidden')
+    })
+  })
+})
+
+describe('CompactPrioritySelect: a failed priority save', () => {
+  beforeEach(() => { apiFetchMock.mockReset() })
+  const select = () => screen.getByRole('combobox')
+
+  it('says so in an alert, does not call onChange, and stays on the saved priority', async () => {
+    apiFetchMock.mockRejectedValue(new Error('boom'))
+    const onChange = vi.fn()
+    render(<CompactPrioritySelect billId="b1" current="low" onChange={onChange} />)
+    fireEvent.change(select(), { target: { value: 'high' } })
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't save priority. Try again.")
+    expect(onChange).not.toHaveBeenCalled()
+    expect(select()).toHaveValue('low')
+  })
+
+  it('says so for a failed clear, too', async () => {
+    apiFetchMock.mockRejectedValue(new Error('boom'))
+    const onChange = vi.fn()
+    render(<CompactPrioritySelect billId="b1" current="low" onChange={onChange} />)
+    fireEvent.change(select(), { target: { value: '__none__' } })
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't save priority. Try again.")
+    expect(onChange).not.toHaveBeenCalled()
+    expect(select()).toHaveValue('low')
+  })
+
+  it('says so in the mini variant', async () => {
+    apiFetchMock.mockRejectedValue(new Error('boom'))
+    render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} mini />)
+    fireEvent.change(select(), { target: { value: 'medium' } })
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't save priority. Try again.")
+  })
+
+  it('clears the message when the next save succeeds', async () => {
+    apiFetchMock.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce({ priority: 'high' })
+    const onChange = vi.fn()
+    render(<CompactPrioritySelect billId="b1" current={null} onChange={onChange} />)
+    fireEvent.change(select(), { target: { value: 'high' } })
+    await screen.findByRole('alert')
+    fireEvent.change(select(), { target: { value: 'high' } })
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('clears the message as soon as the next change starts', async () => {
+    apiFetchMock.mockRejectedValueOnce(new Error('boom')).mockReturnValueOnce(new Promise(() => {}))
+    render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} />)
+    fireEvent.change(select(), { target: { value: 'high' } })
+    await screen.findByRole('alert')
+    fireEvent.change(select(), { target: { value: 'low' } })
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('shows one message at a time: a failed Dismiss then a failed save reads as the save', async () => {
+    apiFetchMock.mockRejectedValue(new Error('boom'))
+    render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} newMatch onDismiss={vi.fn()} />)
+    fireEvent.change(select(), { target: { value: 'dismiss' } })
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't dismiss. Try again.")
+    fireEvent.change(select(), { target: { value: 'high' } })
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent("Couldn't save priority. Try again."))
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+  })
+
+  // The alert is wider than the control, which sits at the right edge of a card or the sidebar, so
+  // it can grow leftward there instead of running past an overflow-hidden edge.
+  it('hangs the alert from the control\'s left edge by default', async () => {
+    apiFetchMock.mockRejectedValue(new Error('boom'))
+    render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} />)
+    fireEvent.change(select(), { target: { value: 'high' } })
+    const alert = await screen.findByRole('alert')
+    expect(alert.style.left).toBe('0px')
+    expect(alert.style.right).toBe('')
+  })
+
+  it('hangs the alert from the control\'s right edge when asked, for a control at a container\'s right edge', async () => {
+    apiFetchMock.mockRejectedValue(new Error('boom'))
+    render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} errorAlign="right" />)
+    fireEvent.change(select(), { target: { value: 'high' } })
+    const alert = await screen.findByRole('alert')
+    expect(alert.style.right).toBe('0px')
+    expect(alert.style.left).toBe('')
+  })
+
+  it('aligns a failed Dismiss the same way', async () => {
+    apiFetchMock.mockRejectedValue(new Error('boom'))
+    render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} newMatch onDismiss={vi.fn()} errorAlign="right" />)
+    fireEvent.change(select(), { target: { value: 'dismiss' } })
+    expect((await screen.findByRole('alert')).style.right).toBe('0px')
+  })
+
+  describe('a slow earlier save that settles after a later one', () => {
+    const deferred = () => {
+      let resolve!: (v: unknown) => void
+      let reject!: (e: unknown) => void
+      const promise = new Promise((res, rej) => { resolve = res; reject = rej })
+      return { promise, resolve, reject }
+    }
+
+    it('shows no error when the earlier save fails after the later one succeeded, and keeps the later value', async () => {
+      const a = deferred()
+      apiFetchMock.mockReturnValueOnce(a.promise).mockResolvedValueOnce({ priority: 'low' })
+      const onChange = vi.fn()
+      const { rerender } = render(<CompactPrioritySelect billId="b1" current={null} onChange={onChange} />)
+      fireEvent.change(select(), { target: { value: 'high' } })   // A, slow
+      fireEvent.change(select(), { target: { value: 'low' } })    // B
+      await waitFor(() => expect(onChange).toHaveBeenCalledWith('low', { priority: 'low' }))
+      rerender(<CompactPrioritySelect billId="b1" current="low" onChange={onChange} />)
+      a.reject(new Error('timeout'))
+      await new Promise(r => setTimeout(r, 20))
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(select()).toHaveValue('low')
+      expect(onChange).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not report the earlier save when it succeeds after the later one did', async () => {
+      const a = deferred()
+      apiFetchMock.mockReturnValueOnce(a.promise).mockResolvedValueOnce({ priority: 'low' })
+      const onChange = vi.fn()
+      render(<CompactPrioritySelect billId="b1" current={null} onChange={onChange} />)
+      fireEvent.change(select(), { target: { value: 'high' } })
+      fireEvent.change(select(), { target: { value: 'low' } })
+      await waitFor(() => expect(onChange).toHaveBeenCalledWith('low', { priority: 'low' }))
+      a.resolve({ priority: 'high' })
+      await new Promise(r => setTimeout(r, 20))
+      expect(onChange).toHaveBeenCalledTimes(1)
+    })
+
+    it('still shows the error when the latest save is the one that fails', async () => {
+      const a = deferred()
+      const b = deferred()
+      apiFetchMock.mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise)
+      render(<CompactPrioritySelect billId="b1" current={null} onChange={vi.fn()} />)
+      fireEvent.change(select(), { target: { value: 'high' } })
+      fireEvent.change(select(), { target: { value: 'low' } })
+      b.reject(new Error('boom'))
+      expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't save priority. Try again.")
     })
   })
 })

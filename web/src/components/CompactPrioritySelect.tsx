@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { apiFetch } from '../lib/api'
 import { PRIORITY_COLORS } from '../lib/chipStyles'
 import { color, radius as radiusTokens, fontWeight, fontSize } from '../styles/tokens'
@@ -7,6 +7,9 @@ const NO_PRIORITY = { fill: color.white, text: color.textMuted, dot: color.borde
 // An untriaged new match: the same control in amber.
 const NEW_MATCH = { fill: color.bgAmberPriority, text: color.textAmberDark }
 const DISMISS = 'dismiss'
+// The menu's "No priority" choice. Its value is a sentinel, because the select's empty value ('') belongs to the hidden
+// closed-label option below; two options can't both be the empty value and be told apart.
+const CLEAR = '__none__'
 const PRIORITY_LABELS = { high: 'High Priority', medium: 'Medium Priority', low: 'Low Priority' } as const
 
 function ChevronDown({ size = 10, color }: { size?: number; color: string }) {
@@ -33,10 +36,19 @@ interface CompactPrioritySelectProps {
   newMatch?: boolean
   /** Called after Dismiss has triaged the bill. Only reachable on a new match. */
   onDismiss?: () => void
+  /**
+   * Which edge of the control the failure message ("Couldn't save priority...") hangs from. The message is wider
+   * than the control, so a control at the right edge of a card or the sidebar sets 'right' to keep it inside.
+   */
+  errorAlign?: 'left' | 'right'
 }
 
-export function CompactPrioritySelect({ billId, current, onChange, isFiltered, mini, placeholder = 'Set priority', newMatch, onDismiss }: CompactPrioritySelectProps) {
-  const [dismissError, setDismissError] = useState(false)
+export function CompactPrioritySelect({ billId, current, onChange, isFiltered, mini, placeholder = 'Set priority', newMatch, onDismiss, errorAlign = 'left' }: CompactPrioritySelectProps) {
+  // The message for the last failed request (a save or a Dismiss), shown until the next change.
+  const [error, setError] = useState<string | null>(null)
+  // The id of the latest priority save. Only the latest one may report: a slow earlier save that settles after a later one
+  // must not call onChange with the older value or show an error about a value the later save replaced.
+  const latestSave = useRef(0)
   const amber = !!newMatch && !current
   const c = current ? PRIORITY_COLORS[current] : amber ? NEW_MATCH : NO_PRIORITY
   const borderColor = current ? 'transparent' : amber ? color.borderAmber : color.borderDefault
@@ -69,16 +81,24 @@ export function CompactPrioritySelect({ billId, current, onChange, isFiltered, m
         onMouseDown={(e) => e.stopPropagation()}
         onChange={(e) => {
           e.stopPropagation()
+          setError(null)
           if (e.target.value === DISMISS) {
             // Triage with no priority. A failed request leaves the control as it
             // was, still a new match, so the admin can try again.
-            setDismissError(false)
-            apiFetch(`/bills/${billId}/triage-dismiss`, { method: 'PATCH' }).then(() => onDismiss?.()).catch(() => setDismissError(true))
+            apiFetch(`/bills/${billId}/triage-dismiss`, { method: 'PATCH' }).then(() => onDismiss?.()).catch(() => setError("Couldn't dismiss. Try again."))
             return
           }
-          const p = e.target.value === '' ? null : e.target.value as 'high' | 'medium' | 'low'
+          const p = e.target.value === CLEAR ? null : e.target.value as 'high' | 'medium' | 'low'
+          // "No priority" on a bill that has none changes nothing: no request, no refetch.
+          if (p === null && !current) return
+          const id = ++latestSave.current
           apiFetch<{ priority: 'high' | 'medium' | 'low' | null; promoted?: boolean }>(`/bills/${billId}/priority`, { method: 'PATCH', body: JSON.stringify({ priority: p }) })
-            .then((result) => onChange(p, result))
+            // A failed save leaves the control on the saved priority (the select is controlled) and says so.
+            // The rejection handler is the second argument, not a catch, so an error thrown by onChange is not swallowed.
+            .then(
+              (result) => { if (id === latestSave.current) onChange(p, result) },
+              () => { if (id === latestSave.current) setError("Couldn't save priority. Try again.") },
+            )
         }}
         style={{
           WebkitAppearance: 'none', appearance: 'none',
@@ -91,7 +111,11 @@ export function CompactPrioritySelect({ billId, current, onChange, isFiltered, m
           outlineOffset: 2,
         }}
       >
-        <option value="">{amber ? 'New · Set priority' : placeholder}</option>
+        {/* The closed label ("Set priority", or the amber "New · Set priority"). A native select shows its selected
+            option's text when closed, so this option carries it, but hidden and disabled so the open menu doesn't list it:
+            the menu's empty choice is "No priority" below. */}
+        <option value="" hidden disabled>{selectedLabel}</option>
+        <option value={CLEAR}>No priority</option>
         <option value="high">{PRIORITY_LABELS.high}</option>
         <option value="medium">{PRIORITY_LABELS.medium}</option>
         <option value="low">{PRIORITY_LABELS.low}</option>
@@ -103,12 +127,12 @@ export function CompactPrioritySelect({ billId, current, onChange, isFiltered, m
       }}>
         <ChevronDown size={mini ? 8 : 10} color={c.text} />
       </span>
-      {dismissError && (
+      {error && (
         <span role="alert" style={{
-          position: 'absolute', top: '100%', left: 0, marginTop: 2, whiteSpace: 'nowrap', zIndex: 1,
+          position: 'absolute', top: '100%', ...(errorAlign === 'right' ? { right: 0 } : { left: 0 }), marginTop: 2, whiteSpace: 'nowrap', zIndex: 1,
           fontSize: fontSize.xs, color: color.textErrorRed,
         }}>
-          Couldn&apos;t dismiss. Try again.
+          {error}
         </span>
       )}
     </div>
