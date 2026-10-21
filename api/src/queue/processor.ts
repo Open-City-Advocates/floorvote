@@ -17,6 +17,7 @@ import { syncIdenticalCompanions } from '../lib/companionGroups'
 import { pullCompanions } from '../lib/companionAnalysis'
 import { nowDb } from '../lib/dbTime'
 import { addToNewMatchesRow } from '../lib/newMatch'
+import { noteLegislativeEvent } from '../lib/noPriorityRow'
 import { LEGACY_STATUS_ORDER, LEGISCAN_CODE_WORDS } from '../../../shared/legacyStatusOrder'
 import { httpUrl } from '../../../shared/httpUrl'
 import { handleForms, legacyHandle } from '../../../shared/billHandle'
@@ -870,13 +871,22 @@ async function applyCentralBill(
   // detected changes from central.
   // F5+B5: switched gate from `!existing.isStub` to `existing.matchType !== null` (canonical field).
   if (!isNew && existing?.aiProcessedAt && (existing.matchType !== null || existing.groupKey !== null) && queueChanges.length > 0) {
-    await db.insert(feedEvents).values({
-      id:       crypto.randomUUID(),
-      type:     'bill_updated',
-      billId:   billInternalId,
-      userId:   'system',
-      metadata: JSON.stringify({ changes: queueChanges }),
-    })
+    // With the day's no-priority updates row, which stands for this update while the bill has no
+    // priority: in one batch at one time, so the two share a day and land or fail together. The
+    // time is read now, not at the message's start (`now`, before the AI call): a digest or a
+    // seen mark between the two would otherwise sit after an update dated before it, and miss it.
+    const writtenAt = nowDb()
+    await db.batch([
+      db.insert(feedEvents).values({
+        id:        crypto.randomUUID(),
+        type:      'bill_updated',
+        billId:    billInternalId,
+        userId:    'system',
+        metadata:  JSON.stringify({ changes: queueChanges }),
+        createdAt: writtenAt,
+      }),
+      noteLegislativeEvent(db, billInternalId, writtenAt),
+    ])
   }
 
   // New keyword-match feed event: passive, system actor, written once per bill. Shows
@@ -1006,13 +1016,20 @@ async function reconcileCalendar(
       console.log('[calendar-reconcile] feed event', JSON.stringify({
         billId: msg.billId, tenantId: msg.tenantId, uid, changeType: ch.changeType,
       }))
-      await db.insert(feedEvents).values({
-        id: crypto.randomUUID(),
-        type: ch.changeType,
-        billId: billInternalId,
-        userId: 'system',
-        metadata: JSON.stringify({ date: ch.date, time: ch.time, location: ch.location, description: ch.description }),
-      })
+      // With the day's no-priority updates row, in one batch at one time read just now (as for
+      // bill_updated above, and for the same reason: never the message's start).
+      const writtenAt = nowDb()
+      await db.batch([
+        db.insert(feedEvents).values({
+          id: crypto.randomUUID(),
+          type: ch.changeType,
+          billId: billInternalId,
+          userId: 'system',
+          metadata: JSON.stringify({ date: ch.date, time: ch.time, location: ch.location, description: ch.description }),
+          createdAt: writtenAt,
+        }),
+        noteLegislativeEvent(db, billInternalId, writtenAt),
+      ])
     }
   }
 }
