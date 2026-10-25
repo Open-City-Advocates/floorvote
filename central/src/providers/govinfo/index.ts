@@ -120,6 +120,18 @@ export const govinfo: Provider<'CONGRESS_API_KEY'> = {
     return Promise.all(meetings.map(m => meetingBodyEvent(m, code => ids.get(code))))
   },
 
+  /**
+   * Before GovInfo owns `US`: read the Congress's meetings into the cache, as
+   * `listBodyEvents` would, and show them nowhere, so the first read (a day or
+   * two) is done, and `warm/<congress>` written, before the switch (#913).
+   * Mints no committee id and lists no session. Without a key, asks nothing.
+   */
+  async warmBodyEvents(_state, ctx) {
+    const key = ctx.env.CONGRESS_API_KEY
+    if (!key) return
+    await readMeetings(ctx, key, congressOn(ctx.today).congress)
+  },
+
   async toEntry(record) {
     return toGovInfoEntry(record.raw as GovInfoRecord, record.billId, record.hash)
   },

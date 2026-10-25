@@ -159,6 +159,18 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
   listBodyEvents?(state: string, range: { from: string; to: string }, ctx: ProviderContext<K>): Promise<BodyEvent[]>
 
   /**
+   * Fill what the provider keeps between runs (`ctx.cache`) for a state it
+   * serves but doesn't own yet, so its calendar is ready the moment it does.
+   * Core calls it from the hourly body-event job for each such state an
+   * instance covers, in place of `listBodyEvents`, and logs a throw without
+   * alerting. Write nothing but the cache and the call log: no ids, no
+   * sessions, and nothing a calendar shows. Only a provider with
+   * `listBodyEvents` and a calendar that takes a long first read (GovInfo's
+   * committee meetings) needs one.
+   */
+  warmBodyEvents?(state: string, ctx: ProviderContext<K>): Promise<void>
+
+  /**
    * The calendar UID instances give one of the provider's body events. Only
    * a provider whose events already have UIDs in someone's calendars sets
    * this: LIMS keeps the UIDs the contributor's fork issued for Council

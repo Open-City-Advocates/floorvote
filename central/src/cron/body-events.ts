@@ -15,19 +15,24 @@ import type { Env, Db } from '../types'
  * calendar outage never stops bills from syncing, or the other way round.
  * Hourly because an event missing from two pulls in a row is cancelled: a
  * hearing the legislature drops leaves calendars within about two hours.
+ *
+ * A provider with `warmBodyEvents` also warms its cache for each state it
+ * serves but doesn't own yet that an instance covers (#913), writing nothing
+ * a calendar shows. A failure there is logged, never thrown, so it neither
+ * stops the owned states' sync nor alerts.
  */
 export async function runBodyEventSync(provider: Provider, env: Env, db: Db): Promise<BodyEventSyncReport[]> {
   if (!provider.listBodyEvents) return []
-  const owned = statesOwnedBy(await loadStateOwners(db), provider.id)
   // The snapshot sync warns about an owner that isn't configured.
-  if (owned.length === 0 || !providerConfigured(provider, env)) return []
+  if (!providerConfigured(provider, env)) return []
+  const owned = statesOwnedBy(await loadStateOwners(db), provider.id)
+  const unowned = provider.warmBodyEvents ? (provider.states ?? []).filter(state => !owned.includes(state)) : []
+  if (owned.length === 0 && unowned.length === 0) return []
 
-  const coverage = (await db.select({ stateCoverage: tenants.stateCoverage }).from(tenants).where(eq(tenants.active, true)).all())
-    .map(t => {
-      try { return JSON.parse(t.stateCoverage) as string[] } catch { return [] }
-    })
-  const covered = owned.filter(state => coverage.some(cov => cov.includes('*') || cov.includes(state)))
-  if (covered.length === 0) return []
+  const isCovered = await coveredBy(db)
+  const covered = owned.filter(isCovered)
+  const warming = unowned.filter(isCovered)
+  if (covered.length === 0 && warming.length === 0) return []
 
   const ctx = providerContext(provider, env, db)
   const reports: BodyEventSyncReport[] = []
@@ -36,5 +41,22 @@ export async function runBodyEventSync(provider: Provider, env: Env, db: Db): Pr
     console.log(`[body-events] ${provider.id} ${state}: ${report.events} events over ${report.months} months (${report.failed} failed), ${report.written} written`)
     reports.push(report)
   }
+  for (const state of warming) {
+    try {
+      await provider.warmBodyEvents!(state, ctx)
+      console.log(`[body-events] ${provider.id} ${state}: warmed the cache before owning the state`)
+    } catch (err) {
+      console.error(`[body-events] ${provider.id} ${state}: warming the cache failed, and the next pass tries again:`, err)
+    }
+  }
   return reports
+}
+
+/** Whether an active instance covers a state, by name or with `*`. */
+async function coveredBy(db: Db): Promise<(state: string) => boolean> {
+  const coverage = (await db.select({ stateCoverage: tenants.stateCoverage }).from(tenants).where(eq(tenants.active, true)).all())
+    .map(t => {
+      try { return JSON.parse(t.stateCoverage) as string[] } catch { return [] }
+    })
+  return state => coverage.some(cov => cov.includes('*') || cov.includes(state))
 }
