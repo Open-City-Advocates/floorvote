@@ -219,6 +219,17 @@ export interface Provider<K extends ProviderEnvKey = ProviderEnvKey> {
   listPeople?(sessions: StoredSession[], ctx: ProviderContext<K>): Promise<ProviderPerson[]>
 
   /**
+   * The person id the provider gives each of these Bioguide ids wherever it
+   * names that member (as a sponsor or a voter), for a provider that mints its
+   * person ids from Bioguide ids (GovInfo). A cutover's plan uses it to match
+   * every legislator the losing provider holds a Bioguide id for, not only the
+   * sponsors of the measures it reads. It asks nothing of the network: ids
+   * come from `ctx.ids`, which a plan answers without writing. An id the
+   * provider could never name is left out of the answer.
+   */
+  personIdsForBioguide?(bioguideIds: string[], ctx: ProviderContext<K>): Promise<Map<string, number>>
+
+  /**
    * Specific measures by number, from any session, for an operator importing
    * measures the scheduled sync doesn't cover. Core creates each session that
    * is missing, stores the records, and tracks the measures for the instance.
