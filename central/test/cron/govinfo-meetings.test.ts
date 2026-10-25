@@ -33,7 +33,7 @@ vi.stubGlobal('fetch', fetchMock)
 import { govinfo } from '../../src/providers/govinfo'
 import { clearRollCallCaches } from '../../src/providers/govinfo/client'
 import { clearMeetingCaches, DETAILS_PER_PASS, earlierCongressStillNeeded, LIST_PAGE_SIZE, QUARANTINE_AFTER } from '../../src/providers/govinfo/meetings'
-import { runBodyEventSync } from '../../src/cron/body-events'
+import { runBodyEventJob, runBodyEventSync } from '../../src/cron/body-events'
 import { bodyEventMonths } from '../../src/lib/bodyEvents'
 import { toLegacyHandle } from '../../src/lib/billHandle'
 import { providerContext } from '../../src/lib/providerContext'
@@ -1867,11 +1867,37 @@ describe('before GovInfo owns US (#913)', () => {
     expect((await logged()).length).toBeGreaterThan(0)
   })
 
-  it('reads no meeting without a key', async () => {
+  it('reads no meeting without a key, and neither logs nor reports a warm', async () => {
     await seedLegiscanUs()
-    await runBodyEventSync(govinfo, keyless.makeRun().env as any, db())
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(await runBodyEventJob(govinfo, keyless.makeRun().env as any, db())).toEqual({ synced: [], warmed: [] })
+    expect(consoleText([log])).not.toMatch(/warmed/)
+    const res = await seam.central('POST', '/admin/providers/govinfo/sync', keyless.makeRun())
+    expect(res.status).toBe(200)
+    expect(await res.json()).not.toHaveProperty('warmed')
     expect(congressCalls()).toEqual([])
     expect(await isWarm()).toBe(false)
+  })
+
+  it('shows the operator\'s sync what warming came to: a revoked key\'s 403, then a cache that is ready', async () => {
+    await seedLegiscanUs()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    feed.override.list = () => json({ error: { code: 'API_KEY_INVALID', message: 'An invalid api_key was supplied.' } }, 403)
+    clearMeetingCaches()
+    let res = await seam.central('POST', '/admin/providers/govinfo/sync', makeRun())
+    expect(res.status).toBe(200)
+    const failed = await res.json() as any
+    expect(failed).toMatchObject({ ok: true, bodyEvents: [] })
+    expect(failed.warmed).toEqual([{ state: 'US', ok: false, error: expect.stringMatching(/HTTP 403/) }])
+    expect(JSON.stringify(failed)).not.toContain(CONGRESS_KEY)
+    expect(mail.sent).toEqual([])
+
+    feed.override = {}
+    clearMeetingCaches()
+    res = await seam.central('POST', '/admin/providers/govinfo/sync', makeRun())
+    // The recorded meetings are fewer than a pass reads, so one pass warms the cache.
+    expect(((await res.json()) as any).warmed).toEqual([{ state: 'US', ok: true, warm: true }])
+    expect(await isWarm()).toBe(true)
   })
 
   it('reads no meeting when no active instance covers US', async () => {
@@ -1891,7 +1917,9 @@ describe('before GovInfo owns US (#913)', () => {
     const { runJob } = await import('../../src/lib/jobAlert')
     const run = makeRun()
     clearMeetingCaches()
-    await runJob(run.env as any, 'govinfo-body-events', () => runBodyEventSync(govinfo, run.env as any, db()))
+    let job: Awaited<ReturnType<typeof runBodyEventJob>> | undefined
+    await runJob(run.env as any, 'govinfo-body-events', async () => { job = await runBodyEventJob(govinfo, run.env as any, db()) })
+    expect(job?.warmed).toEqual([{ state: 'US', ok: false, error: expect.stringMatching(/HTTP 500/) }])
     expect(congressCalls().length).toBeGreaterThan(0)
     expect(mail.sent).toEqual([])
     expect(consoleText([err])).toMatch(/\[body-events\] govinfo US/)
