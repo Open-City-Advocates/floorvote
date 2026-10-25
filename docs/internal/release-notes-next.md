@@ -124,7 +124,8 @@ The line under a member's name is called "Title" everywhere now, on the Profile 
 Central can now sync Congress (`US`) from GovInfo's public Bill Status data, with roll calls from the House Clerk and the Senate, in place of LegiScan. Nothing changes until an operator claims or cuts over `US`. Bills and votes need no key. An optional Congress.gov API key, `CONGRESS_API_KEY`, adds committee meetings. The steps are on the new operator page, **Congress from GovInfo** (`docs/content/self-hosting/congress.md`).
 
 - **Cut over before January 3, 2027,** if you track Congress through LegiScan now. After that date, a cutover matches only the 120th Congress's bills, and GovInfo's 120th session loses the plain slug.
-- **Wait for the follow-ups before confirming a cutover.** A cutover today leaves a second legislator row for anyone who sponsors none of the bills it reads (#912), and it can't fill the committee-meeting cache before the switch (#913). The dry run (`POST /api/admin/state-providers/US/cutover`, without `confirm`) is safe to run now.
+- **Wait for the follow-up before confirming a cutover.** A cutover today can't fill the committee-meeting cache before the switch (#913). The dry run (`POST /api/admin/state-providers/US/cutover`, without `confirm`) is safe to run now.
+- **Every legislator with a Bioguide id keeps one row.** A cutover matches each LegiScan US legislator that has a Bioguide id on it, whether or not they sponsor a bill the plan reads, so none gets a second `people` row when GovInfo first names them. Members of earlier Congresses move to GovInfo too, and their names on LegiScan's frozen bills lose the LegiScan profile link, as every matched legislator's do.
 
 ## One feed, with a daily row for bills with no priority
 
