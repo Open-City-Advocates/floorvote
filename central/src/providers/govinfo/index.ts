@@ -124,6 +124,12 @@ export const govinfo: Provider<'CONGRESS_API_KEY'> = {
     return toGovInfoEntry(record.raw as GovInfoRecord, record.billId, record.hash)
   },
 
+  /** A member's person id is minted from their Bioguide id (detail.ts, votes.ts), so a cutover can match members no bill it reads names. */
+  async personIdsForBioguide(bioguideIds, ctx) {
+    const wanted = [...new Set(bioguideIds.filter(id => /^[A-Z]\d{6}$/.test(id)))]
+    return wanted.length > 0 ? ctx.ids('person', wanted) : new Map<string, number>()
+  },
+
   /**
    * A tracked bill's full record: its bill-level fields from the compact record
    * the full read stored, and the rest from its own file, downloaded again.
