@@ -512,22 +512,22 @@ describe('the no-priority updates row', () => {
       expect(body.total).toBe(2)
     })
 
-    it('gives a lone companion group\'s card only its qualifying members\' updates, not a member below the minimum relevance or one with no match type', async () => {
+    it('gives a lone companion group\'s card every member\'s updates once one member qualifies, a member below the minimum relevance or with no match type too (#945)', async () => {
       await db().insert(associationConfig).values({ key: 'new_match_min_relevance', value: '5' })
       const qualifying = await analyzed('HB 1', 6)
       const low = await analyzed('SB 1', 2)
       const unmatched = await analyzed('HB 2', 9, { matchType: null })
       await group(qualifying, low, unmatched)
       const update = await moved(qualifying, at('09:00:00'))
-      await moved(low, at('10:00:00'))
-      await moved(unmatched, at('11:00:00'))
+      const lowUpdate = await moved(low, at('10:00:00'))
+      const unmatchedUpdate = await moved(unmatched, at('11:00:00'))
       const id = await seedRow()
 
       const body = await feed()
       expect(rowOf(body, id)).toBeUndefined()
-      expect(body.events.map((e) => e.id)).toEqual([update])
-      expect(cardsOf(body)).toEqual([update])
-      expect(body.total).toBe(1)
+      expect(body.events.map((e) => e.id)).toEqual([unmatchedUpdate, lowUpdate, update])
+      expect(cardsOf(body)).toEqual([unmatchedUpdate, lowUpdate, update])
+      expect(body.total).toBe(3)
     })
 
     it('leaves a lone bill\'s card beside a prioritized bill\'s card, each its own', async () => {
@@ -935,6 +935,132 @@ describe('the no-priority updates row', () => {
       await db().insert(feedEvents).values({ id: 'bulk', type: 'priority_set', billId: null, userId: adminId, metadata: JSON.stringify({ priority: 'high', count: 1, billIds: [a] }), createdAt: at('12:00:00') })
       const body = await get<{ bills: Array<{ id: string }> }>('/feed/events/bulk/bills')
       expect(body.bills.map((x) => x.id)).toEqual([a])
+    })
+  })
+
+  // #945: a companion group is one policy, so its movement reaches the row when
+  // any member qualifies (a match type, at or above the minimum relevance), not
+  // only when the member that moved does. The issue's example: SB 100 is a
+  // keyword match at relevance 7, and its identical companion HB 200, with no
+  // match type, is the one that moved.
+  describe('a companion group that qualifies through a member that didn\'t move (#945)', () => {
+    const cardsOf = (body: FeedBody) => body.events.filter((e) => e.noPriorityCard === true).map((e) => e.id)
+    let sb100: string
+    let hb200: string
+    beforeEach(async () => {
+      await db().insert(associationConfig).values({ key: 'new_match_min_relevance', value: '5' })
+      sb100 = await analyzed('SB 100', 7)
+      hb200 = await analyzed('HB 200', 2, { matchType: null })
+      await group(sb100, hb200)
+    })
+    const groupKey = () => `group:${[sb100, hb200].sort()[0]}`
+
+    it('counts the group as one entry in the day\'s row, and lists the moved member\'s changes under it', async () => {
+      const update = await moved(hb200, at('10:00:00'), 'Committee vote: do pass')
+      await moved(await analyzed('HB 3', 6), at('09:00:00'))
+      const id = await seedRow()
+
+      const body = await feed()
+      expect(metaOf(body, id).count).toBe(2)
+      expect(cardsOf(body)).toEqual([])
+      expect(body.events.map((e) => e.id)).not.toContain(update)
+
+      const listed = await list(id)
+      expect(listed.total).toBe(2)
+      const entry = listed.entries.find((e) => e.key === groupKey())!
+      expect(entry).toBeDefined()
+      expect(entry.bills.map((x) => x.billNumber)).toEqual(['HB 200'])
+      expect(entry.events.map((e) => e.id)).toEqual([update])
+    })
+
+    it('shows the group alone on its day as the lone-entry card, not a row', async () => {
+      const update = await moved(hb200)
+      const id = await seedRow()
+
+      const body = await feed()
+      expect(rowOf(body, id)).toBeUndefined()
+      expect(body.events.map((e) => e.id)).toEqual([update])
+      expect(cardsOf(body)).toEqual([update])
+      expect(body.events[0].billGroupKey).toBe([sb100, hb200].sort()[0])
+      expect(body.total).toBe(1)
+    })
+
+    it('ranks the group by its most relevant qualifying member, which need not have moved', async () => {
+      await moved(hb200, at('10:00:00'))
+      await moved(await analyzed('HB 3', 6), at('09:00:00'))
+      const id = await seedRow()
+
+      expect(metaOf(await feed(), id).firstBills.map((x) => x.billNumber)).toEqual(['HB 200', 'HB 3'])
+      expect((await list(id)).entries.map((e) => e.bills[0].billNumber)).toEqual(['HB 200', 'HB 3'])
+    })
+
+    it('ranks the group by a qualifying member, never by a more relevant member that doesn\'t qualify', async () => {
+      // HB 200 scores 9 but has no match type: the group ranks at SB 100's 7.
+      await db().update(bills).set({ relevanceScore: 9 }).where(eq(bills.id, hb200))
+      await moved(hb200, at('10:00:00'))
+      await moved(await analyzed('HB 3', 6), at('09:00:00'))
+      await moved(await analyzed('HB 4', 8), at('09:30:00'))
+      const id = await seedRow()
+
+      expect((await list(id)).entries.map((e) => e.bills[0].billNumber)).toEqual(['HB 4', 'HB 200', 'HB 3'])
+    })
+
+    it('leaves out a group where no member qualifies, in a row and alone', async () => {
+      await db().update(bills).set({ relevanceScore: 4 }).where(eq(bills.id, sb100))
+      const update = await moved(hb200, at('10:00:00'))
+      const id = await seedRow()
+
+      let body = await feed()
+      expect(rowOf(body, id)).toBeUndefined()
+      expect(body.events.map((e) => e.id)).toEqual([])
+      expect(body.total).toBe(0)
+
+      await moved(await analyzed('HB 3', 6), at('09:00:00'))
+      await moved(await analyzed('HB 4', 5), at('09:30:00'))
+      body = await feed()
+      expect(metaOf(body, id).count).toBe(2)
+      expect(body.events.map((e) => e.id)).not.toContain(update)
+      expect((await list(id)).entries.map((e) => e.key)).not.toContain(groupKey())
+    })
+
+    it('keeps a group with a priority on a member out of the row, its update on its card', async () => {
+      await db().update(bills).set({ priority: 'high' }).where(eq(bills.id, sb100))
+      const update = await moved(hb200, at('10:00:00'))
+      await moved(await analyzed('HB 3', 6), at('09:00:00'))
+      await moved(await analyzed('HB 4', 5), at('09:30:00'))
+      const id = await seedRow()
+
+      const body = await feed()
+      expect(metaOf(body, id).count).toBe(2)
+      expect(body.events.map((e) => e.id)).toContain(update)
+      expect(cardsOf(body)).toEqual([])
+      expect((await list(id)).entries.map((e) => e.key)).not.toContain(groupKey())
+    })
+
+    it('keeps a group the team engaged with that day out of the row, its update on its card', async () => {
+      const update = await moved(hb200, at('10:00:00'))
+      const comment = await event(sb100, 'comment_added', at('11:00:00'), { preview: 'On the companion.' }, adminId)
+      await moved(await analyzed('HB 3', 6), at('09:00:00'))
+      await moved(await analyzed('HB 4', 5), at('09:30:00'))
+      const id = await seedRow()
+
+      const body = await feed()
+      expect(metaOf(body, id).count).toBe(2)
+      expect(body.events.map((e) => e.id)).toEqual(expect.arrayContaining([update, comment]))
+      expect(cardsOf(body)).toEqual([])
+    })
+
+    it('keeps the per-bill rule for a bill in no group', async () => {
+      await moved(await analyzed('HB 3', 6), at('09:00:00'))
+      await moved(await analyzed('HB 4', 5), at('09:30:00'))
+      const unmatched = await moved(await analyzed('HB 5', 9, { matchType: null }), at('10:00:00'))
+      const low = await moved(await analyzed('HB 6', 4), at('10:30:00'))
+      const id = await seedRow()
+
+      const body = await feed()
+      expect(metaOf(body, id).count).toBe(2)
+      expect(body.events.map((e) => e.id)).not.toEqual(expect.arrayContaining([unmatched]))
+      expect(body.events.map((e) => e.id)).not.toEqual(expect.arrayContaining([low]))
     })
   })
 })
