@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { env, SELF } from 'cloudflare:test'
 import { eq, inArray } from 'drizzle-orm'
-import { clearDb, seedUser, seedSession, seedBill } from '../helpers'
+import { appFetch, clearDb, seedUser, seedSession, seedBill, stubFetch } from '../helpers'
 import { getDb } from '../../src/db/client'
 import { associationConfig, bills, feedEvents } from '../../src/db/schema'
 
@@ -983,6 +983,27 @@ describe('the no-priority updates row', () => {
       expect(cardsOf(body)).toEqual([update])
       expect(body.events[0].billGroupKey).toBe([sb100, hb200].sort()[0])
       expect(body.total).toBe(1)
+    })
+
+    it('sets a priority from the lone card on the moved member without promoting it, and the group leaves the row for its card', async () => {
+      await db().update(bills).set({ externalId: 'legiscan:200' }).where(eq(bills.id, hb200))
+      await moved(hb200)
+      await seedRow()
+      const [card] = (await feed()).events
+      expect(card.billId).toBe(hb200)
+
+      const central = stubFetch()
+      const res = await appFetch(`http://localhost/api/bills/${card.billId}/priority`, {
+        method: 'PATCH',
+        headers: { Cookie: `session=${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority: 'medium' }),
+      })
+      expect(await res.json()).toEqual({ priority: 'medium', promoted: false })
+      expect(central.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('/promote-bill/'))).toEqual([])
+      // The group's card now: the update and the priority_set, both wearing the priority, neither a lone card.
+      const after = (await feed()).events.filter((e) => e.billId === hb200)
+      expect(after.map((e) => e.type).sort()).toEqual(['bill_updated', 'priority_set'])
+      expect(after.every((e) => e.noPriorityCard === false && e.billPriority === 'medium')).toBe(true)
     })
 
     it('ranks the group by its most relevant qualifying member, which need not have moved', async () => {
