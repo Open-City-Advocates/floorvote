@@ -14,7 +14,11 @@ export const users = sqliteTable('users', {
   deactivatedAt: text('deactivated_at'),
   canVote: integer('can_vote').notNull().default(1),
   emailDigestEnabled: integer('email_digest_enabled').notNull().default(1),
+  // The "New bills" part of the digest, for every role.
   emailDigestMatchesEnabled: integer('email_digest_matches_enabled').notNull().default(1),
+  // How often the person gets the email digest: null every morning, else the weekday of a weekly one (0 Sunday to 6
+  // Saturday, UTC). Migration 0127.
+  emailDigestWeeklyDay: integer('email_digest_weekly_day'),
   emailWeekAheadEnabled: integer('email_week_ahead_enabled').notNull().default(1),
   emailRepliesEnabled: integer('email_replies_enabled').notNull().default(1),
   lastSeenFeed: text('last_seen_feed'),
@@ -121,6 +125,15 @@ export const emailAlertState = sqliteTable('email_alert_state', {
   failingSince: text('failing_since'),
   lastAlertedAt: text('last_alerted_at'),
   recoveredAt: text('recovered_at'),
+})
+
+// One row per job: the email conversation its failure alerts share, from when
+// it started and its latest alert (lib/alertThread.ts). A missing row means no
+// conversation is open.
+export const jobAlertThreads = sqliteTable('job_alert_threads', {
+  job: text('job').primaryKey(),
+  startedAt: text('started_at').notNull(),
+  lastAlertedAt: text('last_alerted_at').notNull(),
 })
 
 export const bills = sqliteTable('bills', {
@@ -322,6 +335,20 @@ export const billSubjects = sqliteTable('bill_subjects', {
 }, (t) => [
   primaryKey({ columns: [t.billId, t.subjectName] }),
   index('idx_bill_subjects_name').on(t.state, t.subjectName),
+])
+
+/**
+ * The subjects two or more bills of a companion group hold, with how many do (migration 0126, #1030). Only shared pairs
+ * have a row, so a tenant whose groups share nothing has none. Kept by triggers on bill_subjects and bills, never written
+ * by code: the subject facet reads it to count a group once under a subject.
+ */
+export const groupSubjects = sqliteTable('group_subjects', {
+  groupKey:    text('group_key').notNull(),
+  state:       text('state').notNull(),
+  subjectName: text('subject_name').notNull(),
+  n:           integer('n').notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.groupKey, t.state, t.subjectName] }),
 ])
 
 /** The committees a bill was referred to, from central (#471, migration 0116). `isCurrent` marks the one it is pending in. */

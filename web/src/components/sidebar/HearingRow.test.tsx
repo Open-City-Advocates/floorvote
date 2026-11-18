@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { HearingRow } from './HearingRow'
 import { color, fontWeight } from '../../styles/tokens'
@@ -50,5 +50,88 @@ describe('HearingRow date/time format', () => {
     renderRow({ ...hearing, date: todayIso })
     const el = screen.getByText(/TODAY,/) // formatTodayHeader → "TODAY, JUN N"
     expect(el.style.color).toBe(color.accentAmber)
+  })
+})
+
+// The bill chips fold behind the shared count toggle: a "+N more" link, no chevron.
+describe('HearingRow bill chips fold', () => {
+  const bill = (n: number) => ({
+    id: `b${n}`, billNumber: `H ${100 + n}`, title: `Act ${n}`, summary: null, priority: 'high' as const,
+    state: 'RI', sessionSlug: null, myVote: null, isDraft: false,
+  })
+  const withBills = (n: number): HearingGroup => ({ ...hearing, bills: Array.from({ length: n }, (_, i) => bill(i)) })
+  const chipLinks = () => screen.getAllByRole('link').filter(a => a.getAttribute('href')?.includes('#section-hearings'))
+
+  it('shows six chips and a "+N more" toggle with the right N, with no chevron', () => {
+    renderRow(withBills(9))
+    expect(chipLinks()).toHaveLength(6)
+    const btn = screen.getByRole('button', { name: '+3 more' })
+    expect(btn).toHaveAttribute('aria-expanded', 'false')
+    expect(btn.querySelector('[data-fold-chevron]')).toBeNull()
+  })
+
+  it('rides the chip row with no gap above it, and leaves the row\'s 8px bottom padding after it', () => {
+    renderRow(withBills(9))
+    const btn = screen.getByRole('button', { name: '+3 more' })
+    expect(btn.style.marginTop).toBe('0px')
+    // The row is the toggle's and the chips' common ancestor, and its padding is the gap after.
+    const row = chipLinks()[0].closest('div[style*="padding"]') as HTMLElement
+    expect(row.contains(btn)).toBe(true)
+    expect(row.style.padding).toBe('8px 10px')
+  })
+
+  it('opens every chip on click and relabels the toggle "Show less"; a second click folds back', () => {
+    renderRow(withBills(9))
+    fireEvent.click(screen.getByRole('button', { name: '+3 more' }))
+    expect(chipLinks()).toHaveLength(9)
+    expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Show less' }))
+    expect(chipLinks()).toHaveLength(6)
+    expect(screen.getByRole('button', { name: '+3 more' })).toBeInTheDocument()
+  })
+
+  it('renders no toggle when the chips fit under the cap', () => {
+    renderRow(withBills(6))
+    expect(chipLinks()).toHaveLength(6)
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('styles the toggle as the link, not as a gray chip', () => {
+    renderRow(withBills(8))
+    const btn = screen.getByRole('button', { name: '+2 more' })
+    expect(btn.style.color).toBe(color.linkBlue)
+    expect(btn.style.fontSize).toBe('12px')
+    expect(btn.style.background === '' || btn.style.background === 'none').toBe(true)
+  })
+
+  it('puts the toggle inside the chip row, after the last visible chip, centered with the badges', () => {
+    renderRow(withBills(8))
+    const btn = screen.getByRole('button', { name: '+2 more' })
+    const links = chipLinks()
+    const row = links[0].parentElement as HTMLElement
+    expect(row.contains(btn)).toBe(true)
+    expect(btn.parentElement).toBe(row)
+    expect(row.lastElementChild).toBe(btn)
+    expect(links[links.length - 1].compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(row.style.alignItems).toBe('center')
+    expect(btn.style.marginTop).toBe('0px')
+    expect(btn.querySelector('[data-fold-chevron]')).toBeNull()
+  })
+
+  it('keeps "Show less" at the end of the expanded chip row', () => {
+    renderRow(withBills(8))
+    fireEvent.click(screen.getByRole('button', { name: '+2 more' }))
+    const btn = screen.getByRole('button', { name: 'Show less' })
+    const links = chipLinks()
+    expect(links).toHaveLength(8)
+    const row = links[0].parentElement as HTMLElement
+    expect(row.lastElementChild).toBe(btn)
+    expect(btn.querySelector('[data-fold-chevron]')).toBeNull()
+  })
+
+  it('does not open the agenda when the toggle is clicked', () => {
+    renderRow(withBills(8))
+    const notPrevented = fireEvent.click(screen.getByRole('button', { name: '+2 more' }))
+    expect(notPrevented).toBe(false)
   })
 })

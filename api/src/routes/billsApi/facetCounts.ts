@@ -18,7 +18,8 @@ import { billsAs, type BillsFilter } from './query'
  *   counted as before groups, then corrected for the grouped bills: the
  *   whole-population count less the grouped bills plus their distinct groups,
  *   which the group key index (0102) answers without reading the table
- *   (`countBy`). Tags count this way too: every bill stores its group's
+ *   (`countBy`). The five bill columns are counted that way from one cube a
+ *   request rather than a statement each (`countCube`). Tags count this way too: every bill stores its group's
  *   current tags as its group tags (migration 0103), so all bills of a group
  *   have the same ones.
  * - A team field (priority, position, custom fields): the group has one
@@ -40,6 +41,59 @@ export type Counting = {
   where: BillsFilter
   /** Under OR: the groups to count are those with no bill in the current result. */
   fresh: Fresh | undefined
+  /**
+   * Under OR, when the current result is small: the freshness test built from the keys of the result, read once a
+   * request (`freshOfKeys`), which a statement uses in place of `fresh` so that none tests every bill against the
+   * filter again. Undefined once the result is too big to hold, and then `fresh` is the test.
+   */
+  freshKeys?: () => Promise<Fresh | undefined>
+  /** Whether the bills `where` meets are most of the table, so that counting the ones it leaves out reads fewer rows. */
+  broad?: () => Promise<boolean>
+  /**
+   * Whether any group has two bills holding one subject (a row in `group_subjects`, migration 0126), asked once a request.
+   * When none does, the subject count needs no correction for groups, whatever the filter.
+   */
+  groupsShareSubjects?: () => Promise<boolean>
+  /**
+   * The facet's filter cannot split a group: every bill of a group meets it or none does (a team field, a tag, a vote scope).
+   * The correction is then read from `group_subjects`, where a filter on a bill's own columns, which can leave out one
+   * bill of a group, keeps the statement over the bills' own subject rows.
+   */
+  groupsWhole?: true
+}
+
+/**
+ * How a count reads a broad filter, and how large a result it holds as keys. Tests set them to run each form.
+ * - `complement`: `auto` counts the rows of the bills a filter leaves out when most bills meet it, and subtracts them from
+ *   the rows of the table, which the subject and committee indexes answer whole. `always` and `never` force a form.
+ * - `keysMax`: the most keys (bills in no group, and groups) of the current result a request holds under match=any, bound
+ *   to a statement as JSON. 0 turns the form off. 5,000 keys of UUIDs are about 190 KB, under D1's limit on a bound value.
+ */
+export const countStrategy: { complement: 'auto' | 'always' | 'never'; keysMax: number } = { complement: 'auto', keysMax: 5000 }
+
+/** The current result under match=any, as the bills in no group it holds and the groups it holds, each once. */
+export type CurrentKeys = { ids: string[]; groups: string[] }
+
+/**
+ * The bills of the current result as keys, read once a request: its ungrouped bills' ids and its groups' keys. Undefined
+ * when there are more than `countStrategy.keysMax`, and the counts test each bill against the filter instead.
+ */
+export async function loadCurrentKeys(db: AppDb, current: SQL | undefined): Promise<CurrentKeys | undefined> {
+  const max = countStrategy.keysMax
+  if (max <= 0 || !current) return undefined
+  const rows = await db.all(sql`SELECT m.id AS id, m.group_key AS gk FROM bills m WHERE ${current} LIMIT ${max + 1}`) as Array<{ id: string; gk: string | null }>
+  if (rows.length > max) return undefined
+  return { ids: rows.filter(r => r.gk === null).map(r => r.id), groups: [...new Set(rows.filter(r => r.gk !== null).map(r => r.gk as string))] }
+}
+
+/** True of a bill in no group of the result keys (`CurrentKeys`), as `freshOf`'s is of the filter, built from them. */
+export function freshOfKeys(keys: CurrentKeys): Fresh {
+  const ids = JSON.stringify(keys.ids)
+  const groups = JSON.stringify(keys.groups)
+  return {
+    test: t => sql`CASE WHEN ${t.groupKey} IS NULL THEN ${t.id} NOT IN (SELECT value FROM json_each(${ids}))
+      ELSE ${t.groupKey} NOT IN (SELECT value FROM json_each(${groups})) END`,
+  }
 }
 
 /**
@@ -49,7 +103,7 @@ export type Counting = {
 export type Fresh = { cte?: SQL; test: (t: BillsTable) => SQL }
 
 /** A group's bills' values of the columns counted, and the number of groups. */
-export type CountRow = { values: unknown[]; n: number }
+export type CountRow = { values: unknown[]; n: number; /** The `extras` of the read, when the whole count read them (`countBy`). */ extra?: unknown[] }
 
 /**
  * The most values the current filter may bind for a statement to hold it twice (`freshOf`). The per-bill form
@@ -98,30 +152,93 @@ const keyOf = (row: Record<string, unknown>, n: number) => JSON.stringify(Array.
 const valuesOf = (row: Record<string, unknown>, n: number) => Array.from({ length: n }, (_, i) => row[`v${i}`])
 
 /**
+ * The grouped correction of the subject count, read from the subjects the groups share (`group_subjects`, 0126) in place
+ * of the subject rows of every grouped bill. A group counts once under a subject however many of its bills hold it, so
+ * the correction to a subject's count of bills is, for each kept group, the number of its bills holding the subject, less
+ * one: the `n` of its row, less one. The rows come back as `bills` (that sum) and `groups` of 0, which the count takes
+ * from the whole count as it takes the statement it replaces.
+ *
+ * Only for a filter that cannot split a group (`Counting.groupsWhole`): every bill of a kept group
+ * meets it, so the table's count is the count of the bills that qualify. A filter on a bill's own columns can leave out one
+ * bill of a group, and that is counted by the statement over the bills' own rows (`everyRow`) instead.
+ */
+function sharedSubjectCorrection(db: AppDb, freshCte: SQL | undefined, w: SQL | undefined, fresh: SQL | undefined): Promise<Record<string, unknown>[]> {
+  const conditions = [sql`${m.groupKey} IS NOT NULL`, w, fresh ? sql`(${fresh})` : undefined].filter((c): c is SQL => c !== undefined)
+  const ctes = withCtes([
+    freshCte,
+    sql`kept AS MATERIALIZED (SELECT ${m.groupKey} AS gk FROM bills m WHERE ${sql.join(conditions, sql` AND `)} GROUP BY ${m.groupKey})`,
+  ])
+  return db.all(sql`${ctes}SELECT gs.state AS v0, gs.subject_name AS v1, COALESCE(SUM(gs.n - 1), 0) AS bills, 0 AS groups
+    FROM kept k CROSS JOIN group_subjects gs ON gs.group_key = k.gk GROUP BY gs.state, gs.subject_name`) as Promise<Record<string, unknown>[]>
+}
+
+/**
  * Groups by the values of `values` over `from` (which names the bill `m`), each
  * counted once: the bills as before groups, less the grouped bills, plus their
  * groups. The grouped bills are read through the group key index, in its order
  * (the group key first), so a group's bills are met together and no group is
  * counted by a set of its own. With no values, one row counts all groups.
- * `where`, when given, is a further condition on `m`, of the facet rather than
- * of the filter (the tag facets count only bills with group tags).
+ * `where`, when given, is a further condition of the facet rather than of the
+ * filter, on `m` (the tag facets count only bills with group tags) or on the
+ * rows (the committee facet's current scope).
+ *
+ * A `from` that joins the bill to rows of its own is written from the bill
+ * (`bills m CROSS JOIN … bs ON …`, which fixes the join order), so whatever
+ * tests the bill starts the count and each bill's rows are reached by key.
+ * Left to choose under a tag filter or a search, the planner read every row
+ * and looked its bill up by key: on an instance of 100,000 bills and 170,000
+ * subject rows, 1.4 s and 340,000 rows read, where starting from the few
+ * bills the tag names cost 77 ms and 40,000. `alone`, when given, is those
+ * rows without the bill: rows that always have one (ON DELETE CASCADE), which
+ * the whole count reads instead when nothing tests the bill, since reaching
+ * each row's bill by key costs a lookup a row. A `where` given with `alone`
+ * must test the rows only, never `m`.
  */
-export async function countBy(db: AppDb, c: Counting, source: { values: SQL[]; from: SQL; where?: SQL }): Promise<CountRow[]> {
+export async function countBy(db: AppDb, c: Counting, source: { values: SQL[]; from: SQL; where?: SQL; alone?: SQL; extras?: SQL[]; noComplement?: true; groupSubjects?: true }): Promise<CountRow[]> {
   const { values, from } = source
   const filter = c.where(m)
   const w = filter && source.where ? and(source.where, filter) : (source.where ?? filter)
-  const fresh = c.fresh?.test(m)
-  const cte = withCtes([c.fresh?.cte])
-  const [whole, grouped] = await Promise.all([
-    db.all(sql`${cte}SELECT ${sql.join([...valueColumns(values), sql`${countOf(fresh)} AS n`], sql`, `)} FROM ${from}${w ? sql` WHERE ${w}` : sql``}${groupBy(values)}`) as Promise<Record<string, unknown>[]>,
-    db.all(sql`${cte}SELECT ${sql.join([...valueNames(values), sql`COALESCE(SUM(n), 0) AS bills`, sql`${fresh ? sql`COALESCE(SUM(CASE WHEN n > 0 THEN 1 ELSE 0 END), 0)` : sql`COUNT(*)`} AS groups`], sql`, `)}
-      FROM (SELECT ${sql.join([...valueColumns(values), sql`${countOf(fresh)} AS n`], sql`, `)} FROM ${from} WHERE ${m.groupKey} IS NOT NULL${w ? sql` AND ${w}` : sql``}
-        GROUP BY ${sql.join([sql`${m.groupKey}`, ...values], sql`, `)})${groupBy(valueNames(values))}`) as Promise<Record<string, unknown>[]>,
-  ])
+  const keyed = await c.freshKeys?.()
+  const freshTest = keyed ?? c.fresh
+  const fresh = freshTest?.test(m)
+  const cte = withCtes([keyed ? undefined : c.fresh?.cte])
+  const select = (n: SQL) => sql.join([...valueColumns(values), n], sql`, `)
+  // Counting what the filter leaves out and taking it from every row reads fewer rows than joining every bill to its rows
+  // when most bills meet the filter, or, under OR, when most are fresh (the current result is held as keys, a small part).
+  // It needs the rows alone (`alone`) and, under OR, no filter of the facet's own, so that every value has its rows counted.
+  const complement = source.alone !== undefined && !source.noComplement && countStrategy.complement !== 'never' && (
+    fresh ? !filter && keyed !== undefined : filter ? (countStrategy.complement === 'always' || await c.broad?.() === true) : false)
+  // Further columns of the rows the whole count reads (the committee names), only when it reads them from the bills' rows.
+  const extraCols = (source.extras ?? []).map((e, i) => sql`${e} AS ${sql.raw(`x${i}`)}`)
+  const wholeFrom = !filter && !fresh && source.alone ? source.alone : from
+  const wholeRows = complement
+    ? Promise.all([
+      db.all(sql`SELECT ${select(sql`COUNT(*) AS n`)} FROM ${source.alone!}${source.where ? sql` WHERE ${source.where}` : sql``}${groupBy(values)}`) as Promise<Record<string, unknown>[]>,
+      db.all(sql`SELECT ${select(sql`COUNT(*) AS n`)} FROM ${from} WHERE ${source.where ? sql`${source.where} AND ` : sql``}COALESCE((${fresh ?? filter!}), 0) = 0${groupBy(values)}`) as Promise<Record<string, unknown>[]>,
+    ]).then(([all, left]) => {
+      const out = new Map(left.map(r => [keyOf(r, values.length), Number(r.n)]))
+      // A value no kept row has is no value of the filter's bills: dropped, as the count over the kept rows never has it.
+      return all.map(r => ({ ...r, n: Number(r.n) - (out.get(keyOf(r, values.length)) ?? 0) })).filter(r => fresh !== undefined || r.n > 0)
+    })
+    : db.all(sql`${cte}SELECT ${select(sql.join([sql`${countOf(fresh)} AS n`, ...extraCols], sql`, `))} FROM ${wholeFrom}${w ? sql` WHERE ${w}` : sql``}${groupBy(values)}`) as Promise<Record<string, unknown>[]>
+  const everyRow = () => db.all(sql`${cte}SELECT ${sql.join([...valueNames(values), sql`COALESCE(SUM(n), 0) AS bills`, sql`${fresh ? sql`COALESCE(SUM(CASE WHEN n > 0 THEN 1 ELSE 0 END), 0)` : sql`COUNT(*)`} AS groups`], sql`, `)}
+      FROM (SELECT ${select(sql`${countOf(fresh)} AS n`)} FROM ${from} WHERE ${m.groupKey} IS NOT NULL${w ? sql` AND ${w}` : sql``}
+        GROUP BY ${sql.join([sql`${m.groupKey}`, ...values], sql`, `)})${groupBy(valueNames(values))}`) as Promise<Record<string, unknown>[]>
+  // The subject count reads no correction at all when no group shares a subject, since every group then counts once under each
+  // subject by the whole count's own rows, and reads it from the subjects the groups share (`sharedSubjectCorrection`) when the
+  // filter cannot split a group.
+  const sharing = source.groupSubjects && !source.where && c.groupsShareSubjects
+  const groupedRows = sharing
+    ? c.groupsShareSubjects!().then(shared => (!shared ? [] : c.groupsWhole ? sharedSubjectCorrection(db, keyed ? undefined : c.fresh?.cte, w, fresh) : everyRow()))
+    : everyRow()
+  const [whole, grouped] = await Promise.all([wholeRows, groupedRows])
   const byValue = new Map(grouped.map(r => [keyOf(r, values.length), r]))
   return whole.map(r => {
     const g = byValue.get(keyOf(r, values.length))
-    return { values: valuesOf(r, values.length), n: Number(r.n) - Number(g?.bills ?? 0) + Number(g?.groups ?? 0) }
+    return {
+      values: valuesOf(r, values.length), n: Number(r.n) - Number(g?.bills ?? 0) + Number(g?.groups ?? 0),
+      extra: extraCols.length > 0 && wholeFrom === from && !complement ? extraCols.map((_, i) => (r as Record<string, unknown>)[`x${i}`]) : undefined,
+    }
   })
 }
 
@@ -135,11 +252,103 @@ export async function countBy(db: AppDb, c: Counting, source: { values: SQL[]; f
  */
 export async function countHolders(db: AppDb, c: Counting, source: { values: SQL[]; from: SQL; holds: SQL }): Promise<CountRow[]> {
   const { values, from, holds } = source
-  const select = sql`SELECT ${sql.join([...valueColumns(values), sql`${countOf(c.fresh?.test(me))} AS n`], sql`, `)} FROM ${from}`
+  const keyed = await c.freshKeys?.()
+  const freshTest = keyed ?? c.fresh
+  const select = sql`SELECT ${sql.join([...valueColumns(values), sql`${countOf(freshTest?.test(me))} AS n`], sql`, `)} FROM ${from}`
   const w = c.where(m)
   const qualifies = w
     ? sql` AND EXISTS (SELECT 1 FROM bills m WHERE (${m.id} = ${me.id} OR ${m.groupKey} = ${me.groupKey}) AND ${w})`
     : sql``
-  const rows = await db.all(sql`${withCtes([c.fresh?.cte])}${select} WHERE ${holds}${qualifies}${groupBy(values)}`) as Record<string, unknown>[]
+  const rows = await db.all(sql`${withCtes([keyed ? undefined : c.fresh?.cte])}${select} WHERE ${holds}${qualifies}${groupBy(values)}`) as Record<string, unknown>[]
   return rows.map(r => ({ values: valuesOf(r, values.length), n: Number(r.n) }))
+}
+
+/**
+ * The cube: the five bill-column facets (status, stage, state, session, year) and the status groups, counted from two
+ * statements a request instead of two a facet. One reads the bills meeting the filter through the facets index (0124)
+ * grouped by the five columns, the other the grouped bills through the group key index grouped by the group key and
+ * the five, and every count is a sum over their rows (`cubeCounts`). On the largest instance the first has about 130
+ * rows and the second about 9,000.
+ *
+ * The facts on the five columns (`facts`, each a condition on `m` that reads only those columns) are not in the WHERE:
+ * each row says whether its five values meet each one, so a facet can leave its own fact out of the sum where its
+ * statement of its own left it out of the WHERE. Under match=any no fact is passed and nothing is applied, and the rows
+ * carry the fresh bills instead (`Counting.fresh`), each tested once in the scan.
+ */
+export const CUBE_COLUMNS: SQL[] = [sql`${m.status}`, sql`${m.statusStage}`, sql`${m.state}`, sql`${m.session}`, sql`${m.yearStart}`]
+
+/** One row of a cube: the five values, the bills, the fresh bills (under match=any), the highest status rank, whether the values meet each fact, and the group of a grouped row. */
+export type CubeRow = { values: unknown[]; bills: number; fresh: number; rank: number; meets: boolean[]; group?: string }
+
+/** The two statements' rows, with the keys of the facts each row says it meets, in the order of `CubeRow.meets`. */
+export type Cube = { facts: string[]; fresh: boolean; whole: CubeRow[]; grouped: CubeRow[] }
+
+/** Counts the cube under `c`, `c.where` holding every condition but the facts on the five columns, which are `facts`. */
+export async function countCube(db: AppDb, c: Counting, facts: Array<{ key: string; condition: SQL }>): Promise<Cube> {
+  const w = c.where(m)
+  const keyed = await c.freshKeys?.()
+  const fresh = (keyed ?? c.fresh)?.test(m)
+  const cte = withCtes([keyed ? undefined : c.fresh?.cte])
+  const columns = [
+    ...valueColumns(CUBE_COLUMNS),
+    sql`COUNT(*) AS n`,
+    ...(fresh ? [sql`${countOf(fresh)} AS f`] : []),
+    ...facts.map((f, i) => sql`COALESCE((${f.condition}), 0) AS ${sql.raw(`c${i}`)}`),
+  ]
+  const [whole, grouped] = await Promise.all([
+    db.all(sql`${cte}SELECT ${sql.join([...columns, sql`MAX(${m.statusRank}) AS rank`], sql`, `)} FROM bills m${w ? sql` WHERE ${w}` : sql``} GROUP BY ${sql.join(CUBE_COLUMNS, sql`, `)}`) as Promise<Record<string, unknown>[]>,
+    db.all(sql`${cte}SELECT ${sql.join([sql`${m.groupKey} AS gk`, ...columns], sql`, `)} FROM bills m WHERE ${m.groupKey} IS NOT NULL${w ? sql` AND ${w}` : sql``} GROUP BY ${sql.join([sql`${m.groupKey}`, ...CUBE_COLUMNS], sql`, `)}`) as Promise<Record<string, unknown>[]>,
+  ])
+  const row = (r: Record<string, unknown>): CubeRow => ({
+    values: valuesOf(r, CUBE_COLUMNS.length),
+    bills: Number(r.n),
+    fresh: fresh ? Number(r.f) : Number(r.n),
+    rank: Number(r.rank ?? 0),
+    meets: facts.map((_, i) => Number(r[`c${i}`]) !== 0),
+    group: r.gk === undefined ? undefined : String(r.gk),
+  })
+  return { facts: facts.map(f => f.key), fresh: fresh !== undefined, whole: whole.map(row), grouped: grouped.map(row) }
+}
+
+/** The whole cube's rows whose values meet every fact but `omit` (a facet's own, which it leaves out). */
+export const cubeRows = (cube: Cube, omit?: string) => cube.whole.filter(r => r.meets.every((ok, i) => ok || cube.facts[i] === omit))
+
+/**
+ * Each value of the cube's column `column` (one row with no values, when it is undefined) counted as `countBy` counts
+ * it, from the rows whose values meet every fact but `omit`: the bills (under match=any the fresh ones), less the
+ * grouped bills, plus their groups, each group once however many of its rows have the value.
+ */
+export function cubeCounts(cube: Cube, column: number | undefined, omit?: string): CountRow[] {
+  const valueOf = (r: CubeRow) => (column === undefined ? undefined : r.values[column])
+  const kept = (r: CubeRow) => r.meets.every((ok, i) => ok || cube.facts[i] === omit)
+  const counts = new Map<unknown, number>()
+  if (column === undefined) counts.set(undefined, 0)
+  for (const r of cube.whole) if (kept(r)) counts.set(valueOf(r), (counts.get(valueOf(r)) ?? 0) + r.fresh)
+  // Each value's grouped bills, by group: a group counts once under a value, if some of its bills there count.
+  const groups = new Map<unknown, Map<string, number>>()
+  for (const r of cube.grouped) {
+    if (!kept(r)) continue
+    const byGroup = groups.get(valueOf(r)) ?? new Map<string, number>()
+    byGroup.set(r.group!, (byGroup.get(r.group!) ?? 0) + r.fresh)
+    groups.set(valueOf(r), byGroup)
+  }
+  for (const [value, byGroup] of groups) {
+    let n = counts.get(value) ?? 0
+    for (const bills of byGroup.values()) n += (bills > 0 || !cube.fresh ? 1 : 0) - bills
+    counts.set(value, n)
+  }
+  return [...counts].map(([value, n]) => ({ values: column === undefined ? [] : [value], n }))
+}
+
+/**
+ * The groups of the current result, from a cube counted under match=any (over the scopes alone, with the fresh bills):
+ * a bill in no group is in it when it is not fresh, and a group when none of its bills is fresh, since a group's bills
+ * are all fresh or none are. It is the list's total, `countGroups` of the current filter.
+ */
+export function currentOfCube(cube: Cube): number {
+  const sum = (rows: CubeRow[], of: (r: CubeRow) => number) => rows.reduce((a, r) => a + of(r), 0)
+  const alone = (sum(cube.whole, r => r.bills) - sum(cube.grouped, r => r.bills)) - (sum(cube.whole, r => r.fresh) - sum(cube.grouped, r => r.fresh))
+  const freshByGroup = new Map<string, number>()
+  for (const r of cube.grouped) freshByGroup.set(r.group!, (freshByGroup.get(r.group!) ?? 0) + r.fresh)
+  return alone + [...freshByGroup.values()].filter(f => f === 0).length
 }

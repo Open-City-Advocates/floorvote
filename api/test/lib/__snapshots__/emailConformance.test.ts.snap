@@ -54,7 +54,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/HB 1234" style="color:inherit;text-decoration:none;">Voter ID Act</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/HB 1234" style="color:inherit;text-decoration:none;">Requires photo identification to vote in person and by mail, with free IDs issued by the state.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0 0 6px 0;">Requires photo identification to vote in person and by mail, with free IDs issued by the state.</p><ul style="margin:0 0 0 18px;padding:0;"><li style="margin:2px 0;"><strong style="font-weight:700;">Accepted IDs</strong>: Lists the driver licenses, passports, student cards, and tribal IDs a voter may show at the polls or attach to a mail ballot application.</li><li style="margin:2px 0;"><strong style="font-weight:700;">Free state ID</strong>: Directs the motor vehicle office to issue a free voter ID to anyone who signs a sworn…</li></ul><p style="margin:6px 0 0 0;font-family:system-ui,sans-serif;font-size:12px;"><a href="https://sample.test/RI/2026/HB 1234" style="color:#2563eb;text-decoration:none;font-weight:600;">Full summary on FloorVote →</a></p></td></tr>
     <tr style="background:#fff;">
       <td width="30" style="padding:9px 0 8px 14px;vertical-align:top;border-top:1px solid #e2e8f0;"><span title="High priority" style="display:inline-block;width:11px;height:11px;border-radius:2px;background:#850028;vertical-align:middle;"></span></td>
       <td style="width:100%;padding:8px 8px 8px 6px;font-size:12px;color:#475569;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.4;border-top:1px solid #e2e8f0;"><a href="https://sample.test/RI/2026/HB 1234" style="color:inherit;text-decoration:none;">Marked high priority by Dana Reed</a></td>
@@ -91,7 +91,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/S 0456" style="color:inherit;text-decoration:none;">Mail Ballot Drop Boxes</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/S 0456" style="color:inherit;text-decoration:none;">Authorizes secure 24-hour drop boxes in every municipality and sets chain-of-custody rules.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0 0 6px 0;">Authorizes secure 24-hour drop boxes in every municipality.</p><ul style="margin:0 0 0 18px;padding:0;"><li style="margin:2px 0;"><strong style="font-weight:700;">Placement</strong>: Puts at least one box at each town hall.</li><li style="margin:2px 0;"><strong style="font-weight:700;">Custody</strong>: Sets chain-of-custody rules for collecting ballots.</li></ul></td></tr>
     <tr style="background:#fff;">
       <td width="30" style="padding:9px 0 8px 14px;vertical-align:top;border-top:1px solid #e2e8f0;"><img src="https://sample.test/email-icons/thumbs_up_down__dc2626-fill.png" width="14" height="14" alt="" style="display:block;border:0;"></td>
       <td style="width:100%;padding:8px 8px 8px 6px;font-size:12px;color:#475569;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.4;border-top:1px solid #e2e8f0;"><a href="https://sample.test/RI/2026/S 0456" style="color:inherit;text-decoration:none;">Position set to Oppose by Dana Reed</a></td>
@@ -113,7 +113,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/S 0733" style="color:inherit;text-decoration:none;">Early Voting Site Requirements</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/S 0733" style="color:inherit;text-decoration:none;">Sets minimum hours and staffing for early voting sites in every county.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0;">Sets minimum hours and staffing for early voting sites in every county.</p></td></tr>
     <tr style="background:#f8fafc;">
       <td width="30" style="padding:9px 0 8px 14px;vertical-align:top;border-top:1px solid #e2e8f0;"><img src="https://sample.test/email-icons/arrow_forward__5e697d.png" width="14" height="14" alt="" style="display:block;border:0;"></td>
       <td style="width:100%;padding:8px 8px 8px 6px;font-size:12px;color:#475569;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.4;border-top:1px solid #e2e8f0;"><a href="https://sample.test/RI/2026/HB 1240#section-actions" style="color:inherit;text-decoration:none;">HB 1240: Action: Passed House committee</a></td>
@@ -147,7 +147,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/HB 1602" style="color:inherit;text-decoration:none;">Automatic voter registration at the DMV</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/HB 1602" style="color:inherit;text-decoration:none;">Registers eligible residents to vote automatically when they get or renew a license, unless they opt out.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0;">Registers eligible residents to vote automatically when they get or renew a license, unless they opt out.</p></td></tr>
   </tbody>
 </table>
 
@@ -164,7 +164,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/S 0712" style="color:inherit;text-decoration:none;">Ranked-choice voting for municipal elections</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/S 0712" style="color:inherit;text-decoration:none;">Lets cities and towns adopt ranked-choice voting for local races, with state-funded voter education.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0;">Lets cities and towns adopt ranked-choice voting for local races by a vote of the governing body or a ballot question, with the state paying for voter education and for new tabulation software. The bill sets a schedule for pilot elections, requires clear ballot instructions in every language the municipality already…</p><p style="margin:6px 0 0 0;font-family:system-ui,sans-serif;font-size:12px;"><a href="https://sample.test/RI/2026/S 0712" style="color:#2563eb;text-decoration:none;font-weight:600;">Full summary on FloorVote →</a></p></td></tr>
   </tbody>
 </table>
 
@@ -187,7 +187,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
             <div style="margin-top:18px;"><a href="https://sample.test/bills" style="display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 24px;border-radius:6px;">View bill updates</a></div>
           </td></tr>
           <tr><td style="padding:22px 20px 4px;border-top:1px solid #e2e8f0;text-align:center;">
-            <a href="https://sample.test/account#setting-email-digest" style="font-size:12px;color:#667386;text-decoration:underline;">Manage email settings</a>
+            <a href="https://sample.test/notifications#setting-email-digest" style="font-size:12px;color:#667386;text-decoration:underline;">Manage email settings</a>
           </td></tr>
         </tbody>
       </table>
@@ -239,7 +239,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/HB 1602" style="color:inherit;text-decoration:none;">Automatic voter registration at the DMV</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/HB 1602" style="color:inherit;text-decoration:none;">Registers eligible residents to vote automatically when they get or renew a license, unless they opt out.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0;">Registers eligible residents to vote automatically when they get or renew a license, unless they opt out.</p></td></tr>
   </tbody>
 </table>
 
@@ -290,7 +290,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/S 0712" style="color:inherit;text-decoration:none;">Ranked-choice voting for municipal elections</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/S 0712" style="color:inherit;text-decoration:none;">Lets cities and towns adopt ranked-choice voting for local races, with state-funded voter education.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0;">Lets cities and towns adopt ranked-choice voting for local races by a vote of the governing body or a ballot question, with the state paying for voter education and for new tabulation software. The bill sets a schedule for pilot elections, requires clear ballot instructions in every language the municipality already…</p><p style="margin:6px 0 0 0;font-family:system-ui,sans-serif;font-size:12px;"><a href="https://sample.test/RI/2026/S 0712" style="color:#2563eb;text-decoration:none;font-weight:600;">Full summary on FloorVote →</a></p></td></tr>
   </tbody>
 </table>
 
@@ -401,7 +401,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
             <div style="margin-top:18px;"><a href="https://sample.test/bills?newMatches=1" style="display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 24px;border-radius:6px;">View newly matched bills</a></div>
           </td></tr>
           <tr><td style="padding:22px 20px 4px;border-top:1px solid #e2e8f0;text-align:center;">
-            <a href="https://sample.test/account#setting-email-digest" style="font-size:12px;color:#667386;text-decoration:underline;">Manage email settings</a>
+            <a href="https://sample.test/notifications#setting-email-digest" style="font-size:12px;color:#667386;text-decoration:underline;">Manage email settings</a>
           </td></tr>
         </tbody>
       </table>
@@ -465,7 +465,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/HB 1234" style="color:inherit;text-decoration:none;">Voter ID Act</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/HB 1234" style="color:inherit;text-decoration:none;">Requires photo identification to vote in person and by mail, with free IDs issued by the state.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0 0 6px 0;">Requires photo identification to vote in person and by mail, with free IDs issued by the state.</p><ul style="margin:0 0 0 18px;padding:0;"><li style="margin:2px 0;"><strong style="font-weight:700;">Accepted IDs</strong>: Lists the driver licenses, passports, student cards, and tribal IDs a voter may show at the polls or attach to a mail ballot application.</li><li style="margin:2px 0;"><strong style="font-weight:700;">Free state ID</strong>: Directs the motor vehicle office to issue a free voter ID to anyone who signs a sworn…</li></ul><p style="margin:6px 0 0 0;font-family:system-ui,sans-serif;font-size:12px;"><a href="https://sample.test/RI/2026/HB 1234" style="color:#2563eb;text-decoration:none;font-weight:600;">Full summary on FloorVote →</a></p></td></tr>
     <tr style="background:#fff;">
       <td width="30" style="padding:9px 0 8px 14px;vertical-align:top;border-top:1px solid #e2e8f0;"><span title="High priority" style="display:inline-block;width:11px;height:11px;border-radius:2px;background:#850028;vertical-align:middle;"></span></td>
       <td style="width:100%;padding:8px 8px 8px 6px;font-size:12px;color:#475569;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.4;border-top:1px solid #e2e8f0;"><a href="https://sample.test/RI/2026/HB 1234" style="color:inherit;text-decoration:none;">Marked high priority by Dana Reed</a></td>
@@ -502,7 +502,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/S 0456" style="color:inherit;text-decoration:none;">Mail Ballot Drop Boxes</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/S 0456" style="color:inherit;text-decoration:none;">Authorizes secure 24-hour drop boxes in every municipality and sets chain-of-custody rules.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0 0 6px 0;">Authorizes secure 24-hour drop boxes in every municipality.</p><ul style="margin:0 0 0 18px;padding:0;"><li style="margin:2px 0;"><strong style="font-weight:700;">Placement</strong>: Puts at least one box at each town hall.</li><li style="margin:2px 0;"><strong style="font-weight:700;">Custody</strong>: Sets chain-of-custody rules for collecting ballots.</li></ul></td></tr>
     <tr style="background:#fff;">
       <td width="30" style="padding:9px 0 8px 14px;vertical-align:top;border-top:1px solid #e2e8f0;"><img src="https://sample.test/email-icons/thumbs_up_down__dc2626-fill.png" width="14" height="14" alt="" style="display:block;border:0;"></td>
       <td style="width:100%;padding:8px 8px 8px 6px;font-size:12px;color:#475569;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.4;border-top:1px solid #e2e8f0;"><a href="https://sample.test/RI/2026/S 0456" style="color:inherit;text-decoration:none;">Position set to Oppose by Dana Reed</a></td>
@@ -524,7 +524,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/S 0733" style="color:inherit;text-decoration:none;">Early Voting Site Requirements</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/S 0733" style="color:inherit;text-decoration:none;">Sets minimum hours and staffing for early voting sites in every county.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0;">Sets minimum hours and staffing for early voting sites in every county.</p></td></tr>
     <tr style="background:#f8fafc;">
       <td width="30" style="padding:9px 0 8px 14px;vertical-align:top;border-top:1px solid #e2e8f0;"><img src="https://sample.test/email-icons/arrow_forward__5e697d.png" width="14" height="14" alt="" style="display:block;border:0;"></td>
       <td style="width:100%;padding:8px 8px 8px 6px;font-size:12px;color:#475569;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.4;border-top:1px solid #e2e8f0;"><a href="https://sample.test/RI/2026/HB 1240#section-actions" style="color:inherit;text-decoration:none;">HB 1240: Action: Passed House committee</a></td>
@@ -558,7 +558,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/HB 1602" style="color:inherit;text-decoration:none;">Automatic voter registration at the DMV</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/HB 1602" style="color:inherit;text-decoration:none;">Registers eligible residents to vote automatically when they get or renew a license, unless they opt out.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0;">Registers eligible residents to vote automatically when they get or renew a license, unless they opt out.</p></td></tr>
   </tbody>
 </table>
 
@@ -575,7 +575,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/S 0712" style="color:inherit;text-decoration:none;">Ranked-choice voting for municipal elections</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/S 0712" style="color:inherit;text-decoration:none;">Lets cities and towns adopt ranked-choice voting for local races, with state-funded voter education.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0;">Lets cities and towns adopt ranked-choice voting for local races by a vote of the governing body or a ballot question, with the state paying for voter education and for new tabulation software. The bill sets a schedule for pilot elections, requires clear ballot instructions in every language the municipality already…</p><p style="margin:6px 0 0 0;font-family:system-ui,sans-serif;font-size:12px;"><a href="https://sample.test/RI/2026/S 0712" style="color:#2563eb;text-decoration:none;font-weight:600;">Full summary on FloorVote →</a></p></td></tr>
   </tbody>
 </table>
 
@@ -598,7 +598,7 @@ exports[`email conformance — every sample type shares the shell contract > dig
             <div style="margin-top:18px;"><a href="https://sample.test/bills" style="display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 24px;border-radius:6px;">View bill updates</a></div>
           </td></tr>
           <tr><td style="padding:22px 20px 4px;border-top:1px solid #e2e8f0;text-align:center;">
-            <a href="https://sample.test/account#setting-email-digest" style="font-size:12px;color:#667386;text-decoration:underline;">Manage email settings</a>
+            <a href="https://sample.test/notifications#setting-email-digest" style="font-size:12px;color:#667386;text-decoration:underline;">Manage email settings</a>
           </td></tr>
         </tbody>
       </table>
@@ -900,7 +900,7 @@ exports[`email conformance — every sample type shares the shell contract > men
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/HB 1234" style="color:inherit;text-decoration:none;">Voter ID Act</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/HB 1234" style="color:inherit;text-decoration:none;">Requires photo identification to vote in person and by mail, with free IDs issued by the state.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0 0 6px 0;">Requires photo identification to vote in person and by mail, with free IDs issued by the state.</p><ul style="margin:0 0 0 18px;padding:0;"><li style="margin:2px 0;"><strong style="font-weight:700;">Accepted IDs</strong>: Lists the driver licenses, passports, student cards, and tribal IDs a voter may show at the polls or attach to a mail ballot application.</li><li style="margin:2px 0;"><strong style="font-weight:700;">Free state ID</strong>: Directs the motor vehicle office to issue a free voter ID to anyone who signs a sworn…</li></ul><p style="margin:6px 0 0 0;font-family:system-ui,sans-serif;font-size:12px;"><a href="https://sample.test/RI/2026/HB 1234" style="color:#2563eb;text-decoration:none;font-weight:600;">Full summary on FloorVote →</a></p></td></tr>
     <tr style="background:#fff;">
       <td width="30" style="padding:11px 0 0 14px;vertical-align:top;border-top:1px solid #e2e8f0;"><img src="https://sample.test/email-icons/chat__7c3aed.png" width="14" height="14" alt="" style="display:block;border:0;"></td>
       <td style="width:100%;padding:10px 8px 0 6px;vertical-align:top;border-top:1px solid #e2e8f0;"><span style="font-size:12px;font-weight:600;color:#0f172a;">Sam Ortiz</span><span style="font-size:12px;font-weight:400;color:#667386;margin-left:4px;">Town Clerk, Cranston</span></td>
@@ -956,7 +956,7 @@ exports[`email conformance — every sample type shares the shell contract > rep
     <tr style="background:#f8fafc;">
       <td colspan="3" style="padding:2px 14px 4px 14px;font-family:'Source Serif 4', Georgia, serif;font-size:14px;color:#0f172a;font-weight:700;line-height:1.35;"><a href="https://sample.test/RI/2026/HB 1234" style="color:inherit;text-decoration:none;">Voter ID Act</a></td>
     </tr>
-    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><a href="https://sample.test/RI/2026/HB 1234" style="color:inherit;text-decoration:none;">Requires photo identification to vote in person and by mail, with free IDs issued by the state.</a></td></tr>
+    <tr style="background:#f8fafc;"><td colspan="3" style="padding:0 14px 10px 14px;font-size:12px;color:#5e697d;font-family:'Source Serif 4', Georgia, serif;line-height:1.45;"><p style="margin:0 0 6px 0;">Requires photo identification to vote in person and by mail.</p><ul style="margin:0 0 0 18px;padding:0;"><li style="margin:2px 0;"><strong style="font-weight:700;">Accepted IDs</strong>: Lists the IDs a voter may show.</li><li style="margin:2px 0;"><strong style="font-weight:700;">Free state ID</strong>: Issues a free voter ID on request.</li></ul></td></tr>
     <tr style="background:#fff;">
       <td width="30" style="padding:11px 0 0 14px;vertical-align:top;border-top:1px solid #e2e8f0;"><img src="https://sample.test/email-icons/chat__7c3aed.png" width="14" height="14" alt="" style="display:block;border:0;"></td>
       <td style="width:100%;padding:10px 8px 0 6px;vertical-align:top;border-top:1px solid #e2e8f0;"><span style="font-size:12px;font-weight:600;color:#0f172a;">Sam Ortiz</span><span style="font-size:12px;font-weight:400;color:#667386;margin-left:4px;">Town Clerk, Cranston</span></td>
@@ -968,7 +968,7 @@ exports[`email conformance — every sample type shares the shell contract > rep
             <div style="margin-top:18px;"><a href="https://sample.test/RI/2026/HB 1234#comment-sample-comment" style="display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 24px;border-radius:6px;">View comment</a></div>
           </td></tr>
           <tr><td style="padding:22px 20px 4px;border-top:1px solid #e2e8f0;text-align:center;">
-            <a href="https://sample.test/mute-bill?token=sample" style="font-size:12px;color:#667386;text-decoration:underline;">Mute this bill</a> &nbsp;·&nbsp; <a href="https://sample.test/account#setting-email-replies" style="font-size:12px;color:#667386;text-decoration:underline;">Turn off reply notifications</a> &nbsp;·&nbsp; <a href="https://sample.test" style="font-size:12px;color:#667386;text-decoration:underline;">FloorVote</a>
+            <a href="https://sample.test/mute-bill?token=sample" style="font-size:12px;color:#667386;text-decoration:underline;">Mute this bill</a> &nbsp;·&nbsp; <a href="https://sample.test/notifications#setting-email-replies" style="font-size:12px;color:#667386;text-decoration:underline;">Turn off reply notifications</a> &nbsp;·&nbsp; <a href="https://sample.test" style="font-size:12px;color:#667386;text-decoration:underline;">FloorVote</a>
           </td></tr>
         </tbody>
       </table>
@@ -1028,7 +1028,7 @@ exports[`email conformance — every sample type shares the shell contract > wee
             <div style="margin-top:18px;"><a href="https://sample.test/calendar" style="display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 24px;border-radius:6px;">View calendar</a></div>
           </td></tr>
           <tr><td style="padding:22px 20px 4px;border-top:1px solid #e2e8f0;text-align:center;">
-            <a href="https://sample.test/calendar#subscribe" style="font-size:12px;color:#667386;text-decoration:underline;">Subscribe to your calendar</a> &nbsp;·&nbsp; <a href="https://sample.test/account#setting-week-ahead" style="font-size:12px;color:#667386;text-decoration:underline;">Manage email settings</a>
+            <a href="https://sample.test/calendar#subscribe" style="font-size:12px;color:#667386;text-decoration:underline;">Subscribe to your calendar</a> &nbsp;·&nbsp; <a href="https://sample.test/notifications#setting-week-ahead" style="font-size:12px;color:#667386;text-decoration:underline;">Manage email settings</a>
           </td></tr>
         </tbody>
       </table>

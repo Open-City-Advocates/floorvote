@@ -3,7 +3,8 @@ import { env } from 'cloudflare:test'
 import { clearDb, seedUser, seedSession, seedBill } from '../helpers'
 import { app } from '../../src/index'
 import { BILL_FILTER_DEFS } from '../../../shared/billFilter'
-import { FILTER_TABLE, emptyFacets } from '../../src/routes/billsApi/filterTable'
+import { eq } from 'drizzle-orm'
+import { FILTER_TABLE, checkCubeFact, checkCubeFacts, emptyFacets } from '../../src/routes/billsApi/filterTable'
 
 // The API's table of filters (filterTable.ts): one entry per shared filter name, holding the filter's SQL
 // condition and its facet count. The compiler checks that no filter is missing a part (the table is typed against
@@ -58,16 +59,32 @@ describe('the facets response built for a list with nothing in it', () => {
 
   it('has every key the real response has, and no other', async () => {
     const real = await realFacets()
-    const tenant = { subjectStates: real.subjectStates as string[], billStates: real.billStates as string[] | undefined, hasDrafts: real.hasDrafts as boolean }
+    const tenant = { subjectStates: real.subjectStates as string[], billStates: real.billStates as string[] | undefined, hasDrafts: real.hasDrafts as boolean, hasCommittees: real.hasCommittees as boolean }
     expect(Object.keys(JSON.parse(JSON.stringify(emptyFacets(tenant)))).sort()).toEqual(Object.keys(real).sort())
   })
 
   it('counts nothing, and keeps the tenant-wide values it is given', () => {
-    const empty = JSON.parse(JSON.stringify(emptyFacets({ subjectStates: ['NJ'], billStates: ['NJ', 'TX'], hasDrafts: true })))
+    const empty = JSON.parse(JSON.stringify(emptyFacets({ subjectStates: ['NJ'], billStates: ['NJ', 'TX'], hasDrafts: true, hasCommittees: false })))
     expect(empty).toEqual({
       status: {}, stage: {}, statusGroups: {}, priority: { none: 0, __any__: 0 }, year: {}, sessionName: {}, state: {},
       position: { none: 0, __any__: 0 }, tag: { __any__: 0 }, subject: {}, committee: {}, committeeInfo: {}, subjectStates: ['NJ'], billStates: ['NJ', 'TX'],
-      field: {}, myBillsCount: 0, newMatchesCount: 0, unvotedCount: 0, draftCount: 0, hasDrafts: true,
+      field: {}, myBillsCount: 0, newMatchesCount: 0, unvotedCount: 0, draftCount: 0, hasDrafts: true, hasCommittees: false,
     })
+  })
+})
+
+// A fact marked `cube` is selected as a bare column of the cube's rows, grouped by the five bill columns (#1022), so it
+// is right only while its condition reads those columns alone. The module refuses any other when it loads.
+describe('the facts the cube applies to its rows', () => {
+  it('refuses a cube fact that reads a column the cube does not group by', () => {
+    expect(() => checkCubeFact('drafts', t => eq(t.isDraft, true))).toThrow(/drafts.*is_draft/)
+  })
+
+  it('accepts a cube fact that reads the five columns and binds its values', () => {
+    expect(() => checkCubeFact('status', t => eq(t.status, 'Passed'))).not.toThrow()
+  })
+
+  it('checks every filter the table marks as a cube fact, and each passes', () => {
+    expect(checkCubeFacts().sort()).toEqual(['sessionName', 'stage', 'state', 'status', 'year'])
   })
 })
