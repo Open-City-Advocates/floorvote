@@ -1,4 +1,5 @@
 import { rateLimitedFetch } from '../lib/rateLimitedFetch'
+import { errorText } from '../../../shared/errorText'
 
 /**
  * The Council's committees and staff, from dccouncil.gov.
@@ -203,7 +204,7 @@ export async function fetchCommittees(onRequest?: () => void): Promise<{ committ
       const c = parseCommitteePage(await get(url, onRequest), url)
       if (c && (c.chair || c.members.length > 0)) committees.push(c)
     } catch (err) {
-      console.warn(`[dccouncil] committee page skipped: ${url}`, err)
+      console.warn(`[dccouncil] committee page skipped: ${url}`, errorText(err), err)
     }
   }
   return { committees, currentSlugs: urls.map(committeeSlug) }

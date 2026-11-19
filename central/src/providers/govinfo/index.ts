@@ -8,7 +8,7 @@ import {
 } from './map'
 import { entriesByBill, holdingCommittees, isWarm, keptMeetings, meetingBodyEvent, readMeetings } from './meetings'
 import { vocabulary } from './vocabulary'
-import { sha256Hex, type MeasureCalendarEntry, type Provider, type ProviderContext, type ProviderRecord, type ProviderSnapshot, type SyncSession } from '../sdk'
+import { errorText, sha256Hex, type MeasureCalendarEntry, type Provider, type ProviderContext, type ProviderRecord, type ProviderSnapshot, type SyncSession } from '../sdk'
 
 /**
  * Congress from GovInfo's Bill Status bulk data (client.ts, map.ts): one zip of
@@ -120,8 +120,34 @@ export const govinfo: Provider<'CONGRESS_API_KEY'> = {
     return Promise.all(meetings.map(m => meetingBodyEvent(m, code => ids.get(code))))
   },
 
+  /**
+   * Before GovInfo owns `US`: read the Congress's meetings into the cache, as
+   * `listBodyEvents` would, and show them nowhere, so the first read (a day or
+   * two) is done, and `warm/<congress>` written, before the switch (#913).
+   * Mints no committee id and lists no session. A meeting quarantined meanwhile
+   * still emails the operators once. Without a key, asks nothing and says so.
+   */
+  async warmBodyEvents(_state, ctx) {
+    const key = ctx.env.CONGRESS_API_KEY
+    if (!key) return null
+    const { congress } = congressOn(ctx.today)
+    try {
+      await readMeetings(ctx, key, congress)
+    } catch (err) {
+      // Named for the Congress, so the operators' alert says which cache isn't warming (#979).
+      throw new Error(`the ${congressName(congress)}'s committee meetings: ${err instanceof Error ? err.message : String(err)}`, { cause: err })
+    }
+    return { warm: await isWarm(ctx, congress) }
+  },
+
   async toEntry(record) {
     return toGovInfoEntry(record.raw as GovInfoRecord, record.billId, record.hash)
+  },
+
+  /** A member's person id is minted from their Bioguide id (detail.ts, votes.ts), so a cutover can match members no bill it reads names. */
+  async personIdsForBioguide(bioguideIds, ctx) {
+    const wanted = [...new Set(bioguideIds.filter(id => /^[A-Z]\d{6}$/.test(id)))]
+    return wanted.length > 0 ? ctx.ids('person', wanted) : new Map<string, number>()
   },
 
   /**
@@ -300,7 +326,7 @@ async function alertVanished(congress: number, answered: GovInfoType[], missing:
       await ctx.cache.put({ [keyOf(type)]: new Date().toISOString() }) // ts-write-ok: a marker value in provider_cache, never read as a time
     }
   } catch (err) {
-    console.error(`[sync-govinfo] Congress ${congress}: the vanished-type check failed, and the pass carries on:`, err)
+    console.error(`[sync-govinfo] Congress ${congress}: the vanished-type check failed, and the pass carries on:`, errorText(err), err)
   }
 }
 

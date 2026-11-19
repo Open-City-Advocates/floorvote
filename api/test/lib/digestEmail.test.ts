@@ -25,7 +25,12 @@ describe('renderDigestEmail', () => {
     expect(html).toContain('H 5174')
     expect(html).toContain('Status:')                  // formatBillUpdateDetail output
     expect(html).toContain('Manage email settings')
-    expect(html).toContain('https://staging.example.com/account#setting-email-digest')
+    expect(html).toContain('https://staging.example.com/notifications#setting-email-digest')
+  })
+  it('links its footer to the settings anchor it is given, so the header and the footer come from one decision', () => {
+    const html = renderDigestEmail({ events: [ev()], assocName: 'X', appUrl: 'https://x', settingsAnchor: 'setting-saved-views' })
+    expect(html).toContain('https://x/notifications#setting-saved-views')
+    expect(html).not.toContain('#setting-email-digest')
   })
   it('uses real PRIORITY_COLORS (drift guard)', () => {
     const html = renderDigestEmail({ events: [ev({ priority: 'high' })], assocName: 'X', appUrl: 'https://x' })
@@ -96,7 +101,7 @@ describe('renderDigestEmail', () => {
   })
   it('points the manage-settings footer link at the email-digest setting anchor', () => {
     const html = renderDigestEmail({ events: [ev()], assocName: 'X', appUrl: 'https://x' })
-    expect(html).toContain('/account#setting-email-digest')
+    expect(html).toContain('/notifications#setting-email-digest')
   })
   it('drops the priority-colored left edge (matches Pulse bill card)', () => {
     const html = renderDigestEmail({ events: [ev({ priority: 'high' })], assocName: 'X', appUrl: 'https://x' })
@@ -167,7 +172,7 @@ describe('renderDigestEmail', () => {
     expect(html).toContain(model.rows[0].text)
   })
 
-  it('renders the sample digest unchanged (extraction regression guard)', () => {
+  it('matches the sample digest snapshot, covering a cut list, a cut prose summary, and whole short ones', () => {
     // Fixed period so the date-range header is deterministic (otherwise it
     // falls back to Date.now() and the snapshot drifts daily).
     const html = renderDigestEmail({ events: SAMPLE_DIGEST_EVENTS, assocName: SAMPLE_ASSOC_NAME, appUrl: 'https://x.test', newMatches: SAMPLE_NEW_MATCHES, periodStart: '2026-06-22T00:00:00Z', periodEnd: '2026-06-23T00:00:00Z' })

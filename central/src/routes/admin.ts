@@ -12,7 +12,7 @@ import { revokeSuperadminJti } from '../lib/superadminRevocation'
 import { SUPERADMIN_TOKEN_TTL_SEC } from '../lib/superadminJwt'
 import { runSync } from '../cron/sync'
 import { importProviderMeasures, isSnapshotProvider, runSnapshotSync } from '../cron/sync-snapshots'
-import { runBodyEventSync } from '../cron/body-events'
+import { runBodyEventJob } from '../cron/body-events'
 import { groupByIngestQueue, ingestQueueForBill, ingestQueueForId, providerConfigured } from '../lib/providerRouting'
 import { claimState, listStateOwnership, loadStateOwners, ownerOf } from '../lib/stateProviders'
 import { applyCutover, applyUndo, CutoverError, cutoverReport, planCutover, planUndo, undoReport } from '../lib/cutover'
@@ -25,6 +25,7 @@ import { deliverBatchToTenant } from '../lib/tenantDelivery'
 import { queuesRestEnabled } from '../lib/queuesRest'
 import { guardCallerTenantParam } from '../lib/callerTenant'
 import { parseHandle, toHandle } from '../lib/billHandle'
+import { errorText } from '../../../shared/errorText'
 
 // Per-tenant cooldown for sync-keywords. Module-scoped Map is intentional —
 // Worker instances are isolated, so this is effectively a per-instance cooldown.
@@ -58,9 +59,10 @@ async function runSnapshotNow(c: Context<{ Bindings: Env }>, id: string) {
   if (!providerConfigured(provider, c.env)) return c.json({ error: `provider "${id}" is not configured on this central` }, 400)
   const db = drizzle(c.env.DB, { schema })
   const passes = await runSnapshotSync(provider, c.env, db, { force: true })
-  // The provider's own calendar too, when it publishes one.
-  const bodyEvents = provider.listBodyEvents ? await runBodyEventSync(provider, c.env, db) : undefined
-  return c.json({ ok: true, passes, ...(bodyEvents ? { bodyEvents } : {}) })
+  // The provider's own calendar too, when it publishes one, and for a state it doesn't own yet, its warmed cache
+  // (`warmed`, listed only when it warmed or tried to): a failure there is the operator's to see, not an error.
+  const job = provider.listBodyEvents ? await runBodyEventJob(provider, c.env, db) : undefined
+  return c.json({ ok: true, passes, ...(job ? { bodyEvents: job.synced, ...(job.warmed.length > 0 ? { warmed: job.warmed } : {}) } : {}) })
 }
 adminRoutes.post('/providers/:id/sync', c => runSnapshotNow(c, c.req.param('id')))
 adminRoutes.post('/lims-sync', c => runSnapshotNow(c, 'lims'))
@@ -132,7 +134,7 @@ adminRoutes.post('/state-providers/:state/cutover', async (c) => {
     try {
       sync = { passes: await runSnapshotSync(plan.to, c.env, db, { force: true }) }
     } catch (err) {
-      console.error(`[cutover] ${plan.to.id}'s first sync of ${state} failed; the hourly sync will retry:`, err)
+      console.error(`[cutover] ${plan.to.id}'s first sync of ${state} failed; the hourly sync will retry:`, errorText(err), err)
       sync = { error: err instanceof Error ? err.message : String(err) }
     }
     const report = cutoverReport(plan)
@@ -146,7 +148,7 @@ adminRoutes.post('/state-providers/:state/cutover', async (c) => {
   } catch (err) {
     if (err instanceof CutoverError) return c.json({ error: err.message }, err.status)
     // A provider's feed failing closed, or the batch failing: nothing was written.
-    console.error(`[cutover] ${state} stopped:`, err)
+    console.error(`[cutover] ${state} stopped:`, errorText(err), err)
     return c.json({ error: `the cutover stopped, and nothing changed: ${err instanceof Error ? err.message : String(err)}` }, 502)
   }
 })
@@ -174,7 +176,7 @@ adminRoutes.post('/state-providers/:state/undo-cutover', async (c) => {
     return c.json({ ok: true, ...undoReport(plan), ...(sync ? { sync } : {}) })
   } catch (err) {
     if (err instanceof CutoverError) return c.json({ error: err.message }, err.status)
-    console.error(`[cutover] undo of ${state} stopped:`, err)
+    console.error(`[cutover] undo of ${state} stopped:`, errorText(err), err)
     return c.json({ error: `the undo stopped, and nothing changed: ${err instanceof Error ? err.message : String(err)}` }, 502)
   }
 })
@@ -711,7 +713,7 @@ adminRoutes.post('/backfill-stub-actions/:tenantId', async (c) => {
     try {
       list = await provider.listMeasures(session, ctx)
     } catch (err) {
-      console.error('[backfill-stub-actions] master list fetch failed for session', sessionId, err)
+      console.error('[backfill-stub-actions] master list fetch failed for session', sessionId, errorText(err), err)
       return c.json({ ok: false, error: 'masterlist_fetch_failed', sessionId }, 500)
     }
     if (list.length === 0) continue
@@ -801,7 +803,7 @@ adminRoutes.post('/backfill-stub-actions/:tenantId', async (c) => {
     await deliverBatchToTenant(c.env, tenantId, tenant.queueId ?? null, notifyBodies)
     notified = notifyBodies.length
   } catch (err) {
-    console.error('[backfill-stub-actions] delivery failed after', notified, 'sent:', err)
+    console.error('[backfill-stub-actions] delivery failed after', notified, 'sent:', errorText(err), err)
     return c.json(
       { ok: false, error: 'queue_backpressure', sessionId: sessionIds[0] ?? null, refreshed, sent: notified },
       429,

@@ -11,6 +11,7 @@ import {
 import { billHtmlToText } from '../lib/billText'
 import { parseDeepContent, type DeepKind } from '../../../shared/oca/deepAnalysis'
 import type { AppEnv } from '../types'
+import { errorText } from '../../../shared/errorText'
 
 /**
  * Deep analyses and hearing briefs.
@@ -200,7 +201,7 @@ deepRouter.post('/:kind/:subjectId/request', requireAuth, requireAdmin, async (c
   if (!status) {
     return c.json({ error: kind === 'hearing' ? 'Hearing briefs cover DC Council events only.' : 'Nothing to analyse here.' }, 404)
   }
-  c.executionCtx.waitUntil(fireDeepWorker(c.env, db, { manual: true }).catch(err => console.error('[deep] worker fire failed', err)))
+  c.executionCtx.waitUntil(fireDeepWorker(c.env, db, { manual: true }).catch(err => console.error('[deep] worker fire failed', errorText(err), err)))
   const row = await db.select().from(deepAnalyses)
     .where(and(eq(deepAnalyses.kind, kind), eq(deepAnalyses.subjectId, c.req.param('subjectId')))).get()
   return c.json({ enabled: true, ...view(row) })

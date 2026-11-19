@@ -34,6 +34,12 @@ api/src/lib/signInLink.ts     sendSignInLink(): reads the org name, builds the s
 api/src/lib/feedbackEmail.ts  renderFeedbackEmail(): the feedback email the route sends as operator mail
 api/src/lib/sampleEmails.ts   renderSampleEmail() registry + sendSampleEmail()  ← single source for QA + previews + tests
 shared/emailSender.ts         createSender(): send a message by purpose (see "Sending" below)
+shared/alertThread.ts         alertThreadHeaders(): the In-Reply-To, References, Thread-Index, and Thread-Topic that make
+                              a run of alerts one conversation (central's job alerts with their resolved email, kept
+                              open per job in central/src/lib/alertThread.ts, and an outage's email-health alerts)
+api/src/lib/alertThread.ts    an instance's open conversation per job (job_alert_threads). runJob (lib/jobAlert.ts) joins
+                              it on a failure, and ends it with a resolved email after a run that did its work, or
+                              quietly after a run that found the job switched off
 shared/emailProviders.ts      the Resend and Cloudflare send_email adapters
 api/src/lib/emailHealthRecorder.ts
                               the API's health recorder: email_send_stats and Resend usage
@@ -122,13 +128,13 @@ one that matches what the test is about:
 - **Gray (`surfaceSubtle`) backdrop, 560px column, 32px outer padding.**
 - Masthead: `FloorVote` wordmark → **instance name** (required) → bold signal sentence → optional small date.
 - `bodyHtml`: cards on the gray (each card carries its own white border + shadow).
-- Optional `ctaHtml` (use `emailButton`) → blue, no arrow glyph.
+- Optional `ctaHtml` (use `emailButton`) → blue, no arrow glyph in the button.
 - Footer: `border-top` + centered links (use `emailFooterLink`).
 
 **Rules that prevent drift:**
 - `instanceName` is **required** — every email shows the association name. (Type error if omitted.)
 - Date ranges go through **`formatDateRange`** — never inline a range string (that's how spacing drifted).
-- CTAs go through **`emailButton`** (blue `accentBlue`; navy is reserved for bill chips). No `→`.
+- CTAs go through **`emailButton`** (blue `accentBlue`; navy is reserved for bill chips). No `→` in a CTA button. The one deliberate exception is the abridged summary's "Full summary on FloorVote →" text link, which is a link, not a button (the conformance test skips exactly that link).
 - Footer links go through **`emailFooterLink`**.
 - User-supplied text is escaped before it reaches `signalHtml`/`bodyHtml` (the shell auto-escapes `instanceName`/`dateLabel`).
 

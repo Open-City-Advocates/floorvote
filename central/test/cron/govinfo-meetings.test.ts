@@ -33,7 +33,7 @@ vi.stubGlobal('fetch', fetchMock)
 import { govinfo } from '../../src/providers/govinfo'
 import { clearRollCallCaches } from '../../src/providers/govinfo/client'
 import { clearMeetingCaches, DETAILS_PER_PASS, earlierCongressStillNeeded, LIST_PAGE_SIZE, QUARANTINE_AFTER } from '../../src/providers/govinfo/meetings'
-import { runBodyEventSync } from '../../src/cron/body-events'
+import { runBodyEventJob, runBodyEventSync } from '../../src/cron/body-events'
 import { bodyEventMonths } from '../../src/lib/bodyEvents'
 import { toLegacyHandle } from '../../src/lib/billHandle'
 import { providerContext } from '../../src/lib/providerContext'
@@ -1268,6 +1268,119 @@ describe('what the list does while it is read', () => {
   })
 })
 
+describe('meetings that share an update time', () => {
+  /**
+   * More meetings than a page holds, with `size` of them sharing one update
+   * time across the end of the first page, and the list ordering that group
+   * differently on each page, as the real list does. Returns the shared time.
+   */
+  function tiedAcrossAPage(size = 20, before = 10): string {
+    for (let i = 0; i < 300; i++) feed.add(String(100000 + i), HEARING, m => { m.date = '2025-03-01T15:00:00Z' })
+    const order = feed.sorted()
+    const first = LIST_PAGE_SIZE - before
+    const time = order[first].updateDate
+    for (const m of order.slice(first, first + size)) m.updateDate = time
+    feed.unstableTies = true
+    return time
+  }
+
+  it('reads every meeting of an update time a page ends within, though each page orders them differently', async () => {
+    const time = tiedAcrossAPage()
+    // Paged alone, the group's order changes between the first page and the second: some are listed twice, others never.
+    const paged = new Set([...feed.sorted().slice(0, LIST_PAGE_SIZE), ...feed.sorted(true).slice(LIST_PAGE_SIZE)].map(m => m.eventId))
+    expect(paged.size).toBeLessThan(feed.meetings.size)
+    const reports = await syncCalendar()
+    expect(reports[0]).toMatchObject({ failed: 0 })
+    expect((await events()).events).toHaveLength(IN_WINDOW)
+    // It asked for that second alone. (Here the last look is two pages too, since every meeting here changed in the
+    // last ten minutes, and it splits the same batch, so the second is asked for again.)
+    expect(feed.spanRequests.length).toBeGreaterThan(0)
+    for (const r of feed.spanRequests) {
+      const p = new URL(r.url).searchParams
+      expect([p.get('fromDateTime'), p.get('toDateTime')]).toEqual([time, time])
+    }
+  })
+
+  it('reads the second of a group that only just reaches over the end of a page', async () => {
+    const time = tiedAcrossAPage(2, 1)
+    await syncCalendar()
+    expect(feed.spanRequests.map(r => new URL(r.url).searchParams.get('toDateTime'))).toContain(time)
+    expect((await events()).events).toHaveLength(IN_WINDOW)
+  })
+
+  it('asks for no second alone when a group ends with a page, or no page ends within one', async () => {
+    // The group is the last ten of the first page: the second page starts after it.
+    tiedAcrossAPage(10, 10)
+    await syncCalendar()
+    expect(feed.spanRequests).toHaveLength(0)
+    expect((await events()).events).toHaveLength(IN_WINDOW)
+  })
+
+  it('asks for no second alone when the list is one page', async () => {
+    feed.unstableTies = true
+    await syncCalendar()
+    expect(feed.spanRequests).toHaveLength(0)
+  })
+
+  it('logs the request for a second alone as govinfo:CongressMeetingList, naming the second', async () => {
+    const time = tiedAcrossAPage()
+    await syncCalendar()
+    const rows = (await logged()).filter(r => r.callType === 'govinfo:CongressMeetingList')
+    expect(rows).toHaveLength(feed.listRequests.length + feed.recentRequests.length + feed.spanRequests.length)
+    expect(rows.map(r => JSON.parse(r.params))).toContainEqual({ congress: 119, offset: 0, since: time, until: time })
+  })
+
+  it('still finds a meeting changed while the list is read when it was in a group a page ended within', async () => {
+    tiedAcrossAPage()
+    let changed = false
+    feed.override.list = offset => {
+      if (offset === LIST_PAGE_SIZE && !changed) {
+        changed = true
+        feed.edit(HEARING, m => { m.title = 'Retitled while the list was read' })
+      }
+      return null
+    }
+    await syncCalendar()
+    expect(changed).toBe(true)
+    expect((await eventOf(HEARING)).agenda[0].topic).toBe('Retitled while the list was read')
+  })
+
+  it('reads a batch a page of the last look ends within, when more changed during the read than a page holds', async () => {
+    for (let i = 0; i < 300; i++) feed.add(String(100000 + i), HEARING, m => { m.date = '2025-03-01T15:00:00Z' })
+    let changed = false
+    feed.override.list = offset => {
+      // Once the full list's first page is read, 300 meetings change in one batch at the last of its pages.
+      if (offset === LIST_PAGE_SIZE && !changed) {
+        changed = true
+        const order = feed.sorted()
+        for (const m of order.slice(0, 300)) m.updateDate = '2026-10-17T12:59:00Z'
+        for (const m of order.slice(0, LIST_PAGE_SIZE - 10)) m.updateDate = '2026-10-17T12:59:30Z'
+        feed.unstableTies = true
+      }
+      return null
+    }
+    const reports = await syncCalendar()
+    expect(changed).toBe(true)
+    expect(reports[0]).toMatchObject({ failed: 0 })
+    expect(feed.spanRequests.map(r => new URL(r.url).searchParams.get('toDateTime'))).toContain('2026-10-17T12:59:00Z')
+    expect((await events()).events).toHaveLength(IN_WINDOW)
+  })
+
+  it('still fails the pass, leaving the calendar empty, when more meetings share one update time than a page holds', async () => {
+    for (let i = 0; i < 300; i++) feed.add(String(100000 + i), HEARING, m => { m.date = '2025-03-01T15:00:00Z' })
+    const order = feed.sorted()
+    for (const m of order.slice(0, LIST_PAGE_SIZE + 5)) m.updateDate = order[0].updateDate
+    feed.unstableTies = true
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await syncCalendar()
+    expect((await events()).events).toEqual([])
+    expect(consoleText([errors, warns])).toContain('more than a page holds')
+    // It gives up on the second's first page, rather than paging through it.
+    expect(feed.spanRequests).toHaveLength(1)
+  })
+})
+
 describe('while the meetings are still being read for the first time', () => {
   const isWarm = async () => !!(await env.DB.prepare(`SELECT key FROM provider_cache WHERE provider = 'govinfo' AND key = 'warm/119'`).first())
   /** More new meetings than a pass reads, all with higher event ids than the recorded ones, so they are read first. */
@@ -1781,5 +1894,353 @@ describe('a bill sync between full reads (#616)', () => {
     const kept = await env.DB.prepare(`SELECT key FROM provider_cache WHERE provider = 'govinfo' AND key LIKE 'snapshot/%'`).all()
     expect(kept.results.length).toBeGreaterThan(0)
     expect(kept.results.length).toBeLessThanOrEqual(2)
+  })
+})
+
+describe('before GovInfo owns US (#913)', () => {
+  // A central that tracks Congress through LegiScan, with an instance covering US, and the Congress.gov key set
+  // so that GovInfo's meeting cache can be warmed before the switch. Nothing is claimed.
+  const LS_SESSION = 2199
+  const HB43 = 3000043
+  const HB131 = 3000131
+  const SB296 = 3000296
+  const isWarm = async () => !!(await env.DB.prepare(`SELECT key FROM provider_cache WHERE provider = 'govinfo' AND key = 'warm/119'`).first())
+  const congressCalls = () => calls.filter(u => u.startsWith('https://api.congress.gov/'))
+
+  /** More meetings than a pass reads, so warming takes two passes: 22 recorded and these. */
+  function overfill(n = 80) {
+    for (let i = 0; i < n; i++) feed.add(String(100000 + i), HEARING, m => { m.date = '2025-03-01T15:00:00Z' })
+  }
+
+  async function seedLegiscanUs(coverage = ['US']) {
+    await db().insert(schema.tenants).values({ tenantId: 'usteam', name: 'usteam', stateCoverage: JSON.stringify(coverage), active: true })
+    await db().insert(schema.keywordRegistry).values({ tenantId: 'usteam', keyword: 'alaska native village' })
+    await db().insert(schema.sessions).values({
+      sessionId: LS_SESSION, state: 'US', stateId: 52, special: 0, sessionTitle: 'x', yearStart: 2025, yearEnd: 2026,
+      sessionName: '119th Congress', sessionTag: '119th Congress', slug: '119th-congress',
+    })
+    const bill = (billId: number, billNumber: string) => ({ billId, billNumber, title: `LegiScan's ${billNumber}`, sessionId: LS_SESSION, state: 'US', stateId: 52, changeHash: 'ls-v1', status: 1 })
+    await db().insert(schema.bills).values([bill(HB43, 'HB43'), bill(HB131, 'HB131'), bill(SB296, 'SB296')])
+    await db().insert(schema.billTenants).values([{ billId: HB43, tenantId: 'usteam', matchType: 'keyword' }])
+    // LegiScan's hearings on HB43: one on the day of the October 23 field hearing, and one no meeting matches.
+    await db().insert(schema.billCalendar).values([
+      { id: 'ls-oct23', billId: HB43, typeId: 1, type: 'Hearing', date: '2026-10-23', time: '10:00', location: '', description: 'Hearing on H.R. 43', eventId: null, identityKey: '1|hearing on h.r. 43', eventHash: 'ls1', missedPulls: 0, cancelledAt: null },
+      { id: 'ls-aug01', billId: HB43, typeId: 1, type: 'Hearing', date: '2026-08-01', time: '10:00', location: '', description: 'An earlier hearing', eventId: null, identityKey: '1|an earlier hearing', eventHash: 'ls2', missedPulls: 0, cancelledAt: null },
+    ])
+  }
+
+  /** Every row of the tables a pass must not write before GovInfo owns US. */
+  async function coreRows() {
+    const out: Record<string, unknown[]> = {}
+    for (const table of ['bills', 'sessions', 'bill_calendar', 'body_events', 'body_event_bills', 'committees', 'provider_ids', 'provider_records', 'state_providers']) {
+      out[table] = (await env.DB.prepare(`SELECT * FROM ${table}`).all()).results
+    }
+    return out
+  }
+
+  /** The hourly cron, as Cloudflare runs it: every job, each through runJob. */
+  async function tick(run: Run = makeRun()) {
+    clearMeetingCaches()
+    const { default: worker } = await import('../../src/index')
+    const pending: Promise<unknown>[] = []
+    const ctx = { waitUntil: (p: Promise<unknown>) => { pending.push(p) }, passThroughOnException() {} } as unknown as ExecutionContext
+    await worker.scheduled!({ cron: '0 * * * *', scheduledTime: Date.now() } as ScheduledController, run.env as any, ctx)
+    await Promise.all(pending)
+  }
+
+  async function dryRun() {
+    const res = await seam.central('POST', '/admin/state-providers/US/cutover', makeRun(), { provider: 'govinfo' })
+    expect(res.status, await res.clone().text()).toBe(200)
+    return (await res.json()) as any
+  }
+
+  beforeEach(async () => {
+    await resetCentral('2026-10-17T13:00:00Z')
+    clearMeetingCaches()
+    mail.sent.length = 0
+    feed = new MeetingFeed()
+    calls = []
+    linkBills()
+  })
+
+  it('warms the meeting cache from the hourly cron, writing warm/119 once every meeting has been read, and nothing else', async () => {
+    overfill()
+    await seedLegiscanUs()
+    const before = await coreRows()
+    await tick()
+    // The first pass read its share of the 102 meetings, and the cache isn't warm yet.
+    expect(feed.detailIds).toHaveLength(DETAILS_PER_PASS)
+    expect(await isWarm()).toBe(false)
+    await tick()
+    expect(new Set(feed.detailIds).size).toBe(feed.meetings.size)
+    expect(await isWarm()).toBe(true)
+    // Only GovInfo's own cache and the call log were written: no body events, calendars, committees, ids, or sessions.
+    expect(await coreRows()).toEqual(before)
+    expect((await getJson('/tenants/usteam/body-events?' + WINDOW)).events).toEqual([])
+    expect((await logged()).length).toBeGreaterThan(0)
+  })
+
+  it('reads no meeting without a key, and neither logs nor reports a warm', async () => {
+    await seedLegiscanUs()
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(await runBodyEventJob(govinfo, keyless.makeRun().env as any, db())).toEqual({ synced: [], warmed: [] })
+    expect(consoleText([log])).not.toMatch(/warmed/)
+    const res = await seam.central('POST', '/admin/providers/govinfo/sync', keyless.makeRun())
+    expect(res.status).toBe(200)
+    expect(await res.json()).not.toHaveProperty('warmed')
+    expect(congressCalls()).toEqual([])
+    expect(await isWarm()).toBe(false)
+  })
+
+  it('shows the operator\'s sync what warming came to: a revoked key\'s 403, then a cache that is ready', async () => {
+    await seedLegiscanUs()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    feed.override.list = () => json({ error: { code: 'API_KEY_INVALID', message: 'An invalid api_key was supplied.' } }, 403)
+    clearMeetingCaches()
+    let res = await seam.central('POST', '/admin/providers/govinfo/sync', makeRun())
+    expect(res.status).toBe(200)
+    const failed = await res.json() as any
+    expect(failed).toMatchObject({ ok: true, bodyEvents: [] })
+    expect(failed.warmed).toEqual([{ state: 'US', ok: false, error: expect.stringMatching(/HTTP 403/) }])
+    expect(JSON.stringify(failed)).not.toContain(CONGRESS_KEY)
+    expect(mail.sent).toEqual([])
+
+    feed.override = {}
+    clearMeetingCaches()
+    res = await seam.central('POST', '/admin/providers/govinfo/sync', makeRun())
+    // The recorded meetings are fewer than a pass reads, so one pass warms the cache.
+    expect(((await res.json()) as any).warmed).toEqual([{ state: 'US', ok: true, warm: true }])
+    expect(await isWarm()).toBe(true)
+  })
+
+  it('reads no meeting when no active instance covers US', async () => {
+    await seedLegiscanUs(['DC'])
+    await syncCalendar()
+    expect(congressCalls()).toEqual([])
+    await db().update(schema.tenants).set({ stateCoverage: '["US"]', active: false })
+    await syncCalendar()
+    expect(congressCalls()).toEqual([])
+    expect(await isWarm()).toBe(false)
+  })
+
+  it('logs a failing Congress.gov API and sends no alert on its first failed pass', async () => {
+    await seedLegiscanUs()
+    feed.override.list = () => json({ error: 'down' }, 500)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { runJob } = await import('../../src/lib/jobAlert')
+    const run = makeRun()
+    clearMeetingCaches()
+    let job: Awaited<ReturnType<typeof runBodyEventJob>> | undefined
+    await runJob(run.env as any, 'govinfo-body-events', async () => { job = await runBodyEventJob(govinfo, run.env as any, db()) })
+    expect(job?.warmed).toEqual([{ state: 'US', ok: false, error: expect.stringMatching(/HTTP 500/) }])
+    expect(congressCalls().length).toBeGreaterThan(0)
+    expect(mail.sent).toEqual([])
+    expect(consoleText([err])).toMatch(/\[body-events\] govinfo US/)
+    expect(await isWarm()).toBe(false)
+  })
+
+  describe('a warm that keeps failing (#979)', () => {
+    const HOUR = 3_600_000
+    const START = Date.parse('2026-10-17T13:00:00Z')
+    /** The body-event job's emails: its alerts and its recovery. */
+    const jobMail = () => mail.sent.map(m => ({ subject: String(m.subject), text: String(m.text) })).filter(m => m.subject.includes('govinfo-body-events'))
+    const alerts = () => jobMail().filter(m => m.subject.includes('cron failed'))
+    const recoveries = () => jobMail().filter(m => m.subject.includes('resolved'))
+    const revoked = () => { feed.override.list = () => json({ error: { code: 'API_KEY_INVALID', message: 'An invalid api_key was supplied.' } }, 403) }
+    /** The hourly cron at this many hours after the first, with Congress.gov answering as it is set to. */
+    async function tickAt(hours: number, run: Run = makeRun()) {
+      vi.setSystemTime(START + hours * HOUR + 30_000)
+      await tick(run)
+    }
+    const keylessRun = () => {
+      const run = makeRun()
+      delete (run.env as any).CONGRESS_API_KEY
+      return run
+    }
+
+    beforeEach(async () => {
+      await seedLegiscanUs()
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+    })
+
+    it('sends one operator alert, naming the provider and the Congress, once warming has failed for the alert threshold', async () => {
+      revoked()
+      for (let h = 0; h < 4; h++) await tickAt(h)
+      expect(alerts()).toEqual([])
+      await tickAt(4)
+      expect(alerts()).toHaveLength(1)
+      const [alert] = alerts()
+      expect(alert.text).toContain('GovInfo')
+      expect(alert.text).toContain('119th Congress')
+      expect(alert.text).toMatch(/failed for 4 hours/)
+      expect(alert.text).toMatch(/HTTP 403/)
+      expect(alert.text).not.toContain(CONGRESS_KEY)
+      // The pass after the alert sends nothing new.
+      await tickAt(5)
+      expect(alerts()).toHaveLength(1)
+    })
+
+    it('repeats the alert no more often than the sync alerts\' cadence while warming keeps failing', async () => {
+      revoked()
+      const { ALERT_INTERVAL_HOURS } = await import('../../src/cron/passAlerts')
+      for (let h = 0; h <= 3 * ALERT_INTERVAL_HOURS; h++) {
+        await tickAt(h)
+        // An operator's sync between the hourly passes adds no alert of its own.
+        if (h === ALERT_INTERVAL_HOURS + 1) {
+          vi.setSystemTime(START + h * HOUR + 20 * 60_000)
+          clearMeetingCaches()
+          expect((await seam.central('POST', '/admin/providers/govinfo/sync', makeRun())).status).toBe(200)
+        }
+      }
+      // At 4, 8, and 12 hours.
+      expect(alerts()).toHaveLength(3)
+      expect(alerts().map(a => a.text.match(/failed for (\d+) hours/)?.[1])).toEqual(['4', '8', '12'])
+    })
+
+    it('sends one recovery email when a warm pass succeeds after an alert, and nothing more after', async () => {
+      revoked()
+      for (let h = 0; h <= 4; h++) await tickAt(h)
+      expect(alerts()).toHaveLength(1)
+      feed.override = {}
+      await tickAt(5)
+      expect(recoveries()).toHaveLength(1)
+      expect(recoveries()[0].text).toMatch(/GovInfo Bill Status US: warmed its calendar cache after 5 failed passes over 4 hours/)
+      await tickAt(6)
+      revoked()
+      // A new streak starts over: no alert for its first hours, and no second recovery.
+      for (let h = 7; h <= 9; h++) await tickAt(h)
+      expect(recoveries()).toHaveLength(1)
+      expect(alerts()).toHaveLength(1)
+    })
+
+    it('puts an outage\'s alerts and its recovery in one conversation, and the next outage in a new one', async () => {
+      /** The conversation root each of the job's emails with this subject points at. */
+      const roots = (subject: string) => mail.sent
+        .filter(m => String(m.subject).includes(`${subject}: govinfo-body-events`))
+        .map(m => (m as { headers?: Record<string, string> }).headers?.References)
+      revoked()
+      for (let h = 0; h <= 8; h++) await tickAt(h)
+      feed.override = {}
+      await tickAt(9)
+      revoked()
+      for (let h = 10; h <= 14; h++) await tickAt(h)
+      const failed = roots('cron failed')
+      const resolved = roots('resolved')
+      // Alerts at 4 and 8 hours, the recovery at 9, and the next streak's first alert at 14.
+      expect(failed).toHaveLength(3)
+      expect(resolved).toHaveLength(1)
+      expect(failed[0]).toMatch(/^<alert\.govinfo-body-events\.[a-z0-9]+@/)
+      expect(failed[1]).toBe(failed[0])
+      expect(resolved[0]).toBe(failed[0])
+      expect(failed[2]).toMatch(/^<alert\.govinfo-body-events\./)
+      expect(failed[2]).not.toBe(failed[0])
+    })
+
+    it('sends no recovery email for a warm that succeeds before its failures alerted', async () => {
+      revoked()
+      for (let h = 0; h < 3; h++) await tickAt(h)
+      feed.override = {}
+      await tickAt(3)
+      expect(jobMail()).toEqual([])
+    })
+
+    it('never alerts for a provider with no key configured', async () => {
+      for (let h = 0; h <= 12; h++) await tickAt(h, keylessRun())
+      expect(jobMail()).toEqual([])
+      expect(congressCalls()).toEqual([])
+    })
+
+    it('starts the count over once the key is taken away, so failures on either side of that never add up to an alert', async () => {
+      revoked()
+      for (let h = 0; h < 3; h++) await tickAt(h)
+      for (let h = 3; h < 6; h++) await tickAt(h, keylessRun())
+      for (let h = 6; h < 9; h++) await tickAt(h)
+      expect(jobMail()).toEqual([])
+    })
+
+    it('forgets the streak of a state it stops warming, so warming that resumes later doesn\'t alert on its first failure', async () => {
+      revoked()
+      for (let h = 0; h < 3; h++) await tickAt(h)
+      // No active instance covers US for an hour, so nothing warms it.
+      await db().update(schema.tenants).set({ active: false })
+      await tickAt(3)
+      await db().update(schema.tenants).set({ active: true })
+      for (let h = 4; h < 7; h++) await tickAt(h)
+      expect(alerts()).toEqual([])
+      await tickAt(8)
+      expect(alerts()).toHaveLength(1)
+    })
+
+    it('tells the operators once that the alerts stop when it stops warming a state whose failures alerted', async () => {
+      revoked()
+      for (let h = 0; h <= 4; h++) await tickAt(h)
+      expect(alerts()).toHaveLength(1)
+      // No active instance covers US any more, so nothing warms it.
+      await db().update(schema.tenants).set({ active: false })
+      await tickAt(5)
+      await tickAt(6)
+      expect(recoveries()).toHaveLength(1)
+      expect(recoveries()[0].text).toMatch(/GovInfo Bill Status US: no longer warmed .*after 5 failed passes over 4 hours/)
+      expect(alerts()).toHaveLength(1)
+    })
+
+    it('sends one recovery, not two, when two runs finish the same alerted streak at once', async () => {
+      revoked()
+      for (let h = 0; h <= 4; h++) await tickAt(h)
+      feed.override = {}
+      vi.setSystemTime(START + 5 * HOUR + 30_000)
+      clearMeetingCaches()
+      const run = makeRun()
+      await Promise.all([runBodyEventJob(govinfo, run.env as any, db()), runBodyEventJob(govinfo, run.env as any, db())])
+      expect(recoveries()).toHaveLength(1)
+    })
+
+    it('sends one alert, not two, when two runs fail at the due hour at once', async () => {
+      revoked()
+      for (let h = 0; h < 4; h++) await tickAt(h)
+      vi.setSystemTime(START + 4 * HOUR + 30_000)
+      clearMeetingCaches()
+      const run = makeRun()
+      await Promise.all([runBodyEventJob(govinfo, run.env as any, db()), runBodyEventJob(govinfo, run.env as any, db())])
+      expect(alerts()).toHaveLength(1)
+    })
+  })
+
+  it('fills the cutover dry run\'s calendar preview once warm', async () => {
+    await seedLegiscanUs()
+    // Cold: the preview can't say anything of a bill's calendar.
+    expect((await dryRun()).calendar).toMatchObject({ bills: 0, kept: [], cancelled: [], added: [] })
+    await syncCalendar()
+    expect(await isWarm()).toBe(true)
+    const { calendar } = await dryRun()
+    expect(calendar.bills).toBe(1)
+    expect(calendar.kept.map((k: any) => [k.identityKey, k.kind, k.date])).toEqual([['1|hearing on h.r. 43', 'hearing', '2026-10-23']])
+    expect(calendar.cancelled.map((c: any) => [c.identityKey, c.date])).toEqual([['1|an earlier hearing', '2026-08-01']])
+    expect(calendar.added.map((a: any) => [a.kind, a.date])).toEqual([['markup', '2026-09-15']])
+  })
+
+  it('carries a moved bill\'s LegiScan hearing over on its first ingest when warmed before the cutover', async () => {
+    await seedLegiscanUs()
+    await syncCalendar()
+    const run = makeRun()
+    const res = await seam.central('POST', '/admin/state-providers/US/cutover?confirm=true', run, { provider: 'govinfo' })
+    expect(res.status, await res.clone().text()).toBe(200)
+    await seam.ingest(HB43)
+    const rows = await db().select().from(schema.billCalendar).where(eq(schema.billCalendar.billId, HB43)).all()
+    // The October 23 hearing keeps the identity instances have, now as the meeting that day, on the first ingest.
+    expect(rows.find(r => r.id === 'ls-oct23')).toMatchObject({ cancelledAt: null, identityKey: '1|hearing on h.r. 43', eventId: UPCOMING })
+    expect((await db().select().from(schema.bills).where(eq(schema.bills.billId, HB43)).get())?.carriedFrom).toBeNull()
+  })
+
+  it('syncs the body calendar as before once GovInfo owns US', async () => {
+    await seedLegiscanUs()
+    await db().delete(schema.billCalendar)
+    await db().delete(schema.billTenants)
+    await db().delete(schema.bills)
+    await db().delete(schema.sessions)
+    await seam.claim('US', 'govinfo')
+    await syncCalendar()
+    expect((await eventOf(UPCOMING))).toMatchObject({ date: '2026-10-23' })
   })
 })

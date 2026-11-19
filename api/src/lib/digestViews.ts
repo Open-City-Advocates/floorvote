@@ -10,6 +10,7 @@ import { activeUser } from './accountDeletion'
 import { digestCardKey, type DigestEvent, type NewMatchDigestItem, type ViewDigestSection } from './digestEmail'
 import { userDisplayNameSql } from './displayName'
 import type { AppDb } from '../types'
+import { errorText } from '../../../shared/errorText'
 
 /** The feed events the digest reports: what happened on a bill. Shared with the priority section. */
 export const DIGEST_CATEGORIES = ['bill_updated', 'hearing_added', 'hearing_changed', 'hearing_cancelled', 'position_set', 'comment_added', 'priority_set']
@@ -96,13 +97,14 @@ async function loadViewNews(
 }
 
 /**
- * The view sections of each subscriber's digest. A bill the digest already shows as a priority bill (`shownKeys`,
- * its card keys) is left out of the views, so it appears once, under priority bills. A view whose filter is the
+ * The view sections of each subscriber's digest. A bill their digest already shows as a priority bill
+ * (`shownKeys(userId)`, its card keys) is left out of their views, so it appears once, under priority bills. A
+ * person who doesn't get the priority part has none to leave out. A view whose filter is the
  * same for every member (most are) is read once. One that depends on the member (my bills, unvoted) is read per member.
  */
 export async function buildViewSections(
   db: AppDb,
-  opts: { userIds: readonly string[]; since: string; now: string; shownKeys: ReadonlySet<string> },
+  opts: { userIds: readonly string[]; since: string; now: string; shownKeys: (userId: string) => ReadonlySet<string> },
 ): Promise<Map<string, ViewDigestSection[]>> {
   const { views, byUser } = await loadViewSubscriptions(db, opts.userIds)
   const sections = new Map<string, ViewDigestSection[]>()
@@ -121,7 +123,7 @@ export async function buildViewSections(
     const key = isPerUserListRequest(bf) ? `${view.id}:${userId}` : view.id
     if (!news.has(key)) {
       news.set(key, loadViewNews(db, bf, userId, opts.since, opts.now).catch(err => {
-        console.error(`digest: skipped saved view ${view.id}`, err)
+        console.error(`digest: skipped saved view ${view.id}`, errorText(err), err)
         return null
       }))
     }
@@ -130,12 +132,13 @@ export async function buildViewSections(
 
   for (const [userId, viewIds] of byUser) {
     const own: ViewDigestSection[] = []
+    const shown = opts.shownKeys(userId)
     for (const id of viewIds) {
       const view = byId.get(id)!
       const found = await newsFor(view, userId)
       if (!found) continue
-      const events = found.events.filter(e => !opts.shownKeys.has(digestCardKey(e)))
-      const newBills = found.newBills.filter(b => !opts.shownKeys.has(b.billGroupKey ? `group:${b.billGroupKey}` : b.billId))
+      const events = found.events.filter(e => !shown.has(digestCardKey(e)))
+      const newBills = found.newBills.filter(b => !shown.has(b.billGroupKey ? `group:${b.billGroupKey}` : b.billId))
       if (events.length === 0 && newBills.length === 0) continue
       own.push({ viewId: view.id, name: view.name, slug: view.slug ?? view.id, events, newBills })
     }

@@ -2,14 +2,15 @@ import { Hono } from 'hono'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { drizzle } from 'drizzle-orm/d1'
 import * as schema from './db/schema'
-import { runSync } from './cron/sync'
+import { LEGISCAN_SYNC_JOB, runSync } from './cron/sync'
 import { assignSessionSlugs } from './lib/sessionSlugs'
-import { isSnapshotProvider, runHourlySnapshotSync } from './cron/sync-snapshots'
-import { runBodyEventSync } from './cron/body-events'
+import { isSnapshotProvider, runHourlySnapshotSync, snapshotJobName } from './cron/sync-snapshots'
+import { bodyEventJobName, runBodyEventJob } from './cron/body-events'
+import { queueMissingTexts } from './cron/missing-texts'
 import { PROVIDERS } from './providers'
 import { checkVoteDatasets, VOTE_DATASET_CHECK_HOUR_ET } from './cron/vote-datasets'
 import { getCurrentEtHour } from './lib/sync-schedule'
-import { pullEngagementStats, shouldRunEngagementPull } from './cron/engagement-pull'
+import { pullEngagementStats, ENGAGEMENT_PULL_CRON, fallbackPullDue } from './cron/engagement-pull'
 import { processIngestorQueue } from './queue/processor'
 import { processDeadLetterQueue } from './queue/deadLetters'
 import { billsRoutes } from './routes/bills'
@@ -72,6 +73,9 @@ app.get('*', (c) => {
   return assets ? assets.fetch(c.req.raw) : c.notFound()
 })
 
+/** The hour the hourly tick runs central's daily jobs. */
+const DAILY_JOBS_UTC_HOUR = 6
+
 export default {
   fetch: app.fetch,
 
@@ -92,35 +96,47 @@ export default {
     )
   },
 
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     const db = drizzle(env.DB, { schema })
+    if (event.cron === ENGAGEMENT_PULL_CRON) {
+      ctx.waitUntil(runJob(env, 'engagement-pull', () => pullEngagementStats(env, db)))
+      return
+    }
     // Slugs for sessions written without one: every existing session on the
     // first tick after migration 0031, and any a seed script wrote since. The
     // plain slug goes to the owning provider's session, which it reads from
     // state_providers itself.
     ctx.waitUntil(runJob(env, 'session-slugs', () => assignSessionSlugs(db)))
-    ctx.waitUntil(runJob(env, 'ls-sync', () => runSync(env, db)))
+    // Each sync job alerts for a session once its failed passes have lasted
+    // ALERT_INTERVAL_HOURS, then every that many hours (cron/passAlerts.ts), not
+    // for one dropped connection.
+    ctx.waitUntil(runJob(env, LEGISCAN_SYNC_JOB, () => runSync(env, db)))
     // One job per snapshot provider, so one failing never stops another, run
     // one after another: a pass holds a session's whole snapshot in memory
     // (Virginia's largest session needs a 40 MB heap), and two at
     // once could pass a Worker's 128 MB. See "Memory" in docs/internal/sync-pipeline.md.
-    // A job alerts only for a session that has failed several passes in a
-    // row (FAILED_PASSES_BEFORE_ALERT), not for one dropped connection.
     ctx.waitUntil((async () => {
       for (const provider of PROVIDERS.filter(isSnapshotProvider)) {
-        await runJob(env, `${provider.id}-sync`, () => runHourlySnapshotSync(provider, env, db))
+        await runJob(env, snapshotJobName(provider), () => runHourlySnapshotSync(provider, env, db))
       }
     })())
     // The legislature's own calendar, for providers that publish one, as its own job.
     for (const provider of PROVIDERS.filter(p => p.listBodyEvents)) {
-      ctx.waitUntil(runJob(env, `${provider.id}-body-events`, () => runBodyEventSync(provider, env, db)))
+      ctx.waitUntil(runJob(env, bodyEventJobName(provider), () => runBodyEventJob(provider, env, db)))
     }
+    // Texts an ingest wrote but died before downloading (cron/missing-texts.ts).
+    ctx.waitUntil(runJob(env, 'missing-texts', () => queueMissingTexts(env, db)))
     runOcaCrons(env, ctx, db)
     if (getCurrentEtHour() === VOTE_DATASET_CHECK_HOUR_ET) {
       ctx.waitUntil(runJob(env, 'vote-datasets', () => checkVoteDatasets(env, db)))
     }
-    if (shouldRunEngagementPull(new Date())) {
-      ctx.waitUntil(runJob(env, 'engagement-pull', () => pullEngagementStats(env, db)))
+    // The engagement pull runs on its own cron (ENGAGEMENT_PULL_CRON). This
+    // pulls at 07:00 only for a config that doesn't schedule it.
+    const now = new Date()
+    ctx.waitUntil(runJob(env, 'engagement-pull', async () => {
+      if (await fallbackPullDue(db, now)) await pullEngagementStats(env, db)
+    }))
+    if (now.getUTCHours() === DAILY_JOBS_UTC_HOUR) {
       ctx.waitUntil(runJob(env, 'd1-anomaly-watch', () => runAnomalyWatch(env)))
       ctx.waitUntil(runJob(env, 'prune-revoked-jtis', () => pruneRevokedSuperadminJtis(db)))
       // Its own job, so a failure here never stops the others. See CALL_LOG_RETENTION_DAYS.

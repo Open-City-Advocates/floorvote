@@ -1,6 +1,6 @@
 import { color } from '../styles/tokens'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { BillDetail, countClippedSponsors, largestFittingPrefix } from './BillDetail'
@@ -634,12 +634,17 @@ describe('countClippedSponsors', () => {
   })
 })
 
-// Same reasoning as countClippedSponsors — the abstract's truncation point is
-// layout-driven and jsdom has no layout, so the search lives in a pure helper
-// that takes the fits() predicate rather than measuring anything itself.
+// ── Abstract and sponsor line: the toggle rides the end of the last line ───────
+// Both folds use the shared fold link (FoldToggle), but sit it inline: the abstract by a
+// measured truncation (a line clamp would cut an inline toggle off with the text), the
+// sponsor line in a flex row beside the names. jsdom has no layout, so each test models
+// the geometry it needs.
+
+// Same reasoning as countClippedSponsors: the truncation point is layout-driven, so the
+// search is a pure helper that takes the fits() predicate rather than measuring anything.
 describe('largestFittingPrefix', () => {
-  // fits() is monotonic in the real caller (more characters can only ever be
-  // taller), so a synthetic threshold is a faithful stand-in.
+  // fits() is monotonic in the real caller (more characters can only be taller), so a
+  // synthetic threshold is a faithful stand-in.
   const upTo = (threshold: number) => (n: number) => n <= threshold
 
   it('returns the full length when everything fits', () => {
@@ -658,8 +663,6 @@ describe('largestFittingPrefix', () => {
   })
 
   it('returns 0 when nothing fits, including the empty prefix', () => {
-    // The caller reads 0 as "do not truncate" rather than rendering an empty
-    // abstract, so this must not loop or go negative.
     expect(largestFittingPrefix(10, () => false)).toBe(0)
   })
 
@@ -667,13 +670,394 @@ describe('largestFittingPrefix', () => {
     expect(largestFittingPrefix(0, () => true)).toBe(0)
   })
 
-  // A linear scan would be O(n) calls to a layout-forcing predicate on text
-  // that can run to several hundred characters; the search must stay
-  // logarithmic or every resize janks.
+  // A linear scan would be O(n) calls to a layout-forcing predicate on text that can run
+  // to several hundred characters; the search must stay logarithmic or every resize janks.
   it('probes a logarithmic number of times', () => {
     let calls = 0
     largestFittingPrefix(1000, (n) => { calls++; return n <= 500 })
     expect(calls).toBeLessThan(15)
+  })
+})
+
+// A fake Element.animate, so a test can see whether the fold started a height animation.
+const animations: Array<{ cancel: () => void; onfinish: (() => void) | null; oncancel: (() => void) | null }> = []
+function installAnimate() {
+  animations.length = 0
+  Element.prototype.animate = vi.fn(function () {
+    const a = { cancel: vi.fn(), onfinish: null, oncancel: null }
+    animations.push(a)
+    return a
+  }) as unknown as typeof Element.prototype.animate
+}
+function animateCalls() {
+  return (Element.prototype.animate as unknown as { mock: { calls: unknown[][] } }).mock.calls
+}
+function reduceMotion(reduce: boolean) {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: reduce && query.includes('reduce'), media: query,
+    addEventListener: () => {}, removeEventListener: () => {},
+    addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false, onchange: null,
+  }))
+}
+
+describe('BillDetail abstract fold', () => {
+  beforeEach(() => { vi.restoreAllMocks(); layout.cpl = 30 })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    // @ts-expect-error jsdom has no Element.animate; tests that install one remove it here
+    delete Element.prototype.animate
+  })
+
+  // 12px type at line-height 1.45 gives a 17.4px line; the budget is two lines. The model:
+  // `layout.cpl` characters fit a line, and a box is as many lines tall as its text needs.
+  const ABSTRACT = 'Relates to the administration of ballot access, early voting, and the handling of returned mail ballots by county offices.'
+  const SHORT = 'Relates to ballot access.'
+  const TOGGLE_LEN = 'Show more▼'.length
+  const layout = { cpl: 30 }
+
+  const linesFor = (chars: number) => Math.max(1, Math.ceil(chars / layout.cpl))
+  const measurerChars = (el: HTMLElement) => {
+    const toggle = el.querySelector<HTMLElement>('[data-abstract-measure-toggle]')
+    const hidden = toggle && toggle.style.display === 'none' ? (toggle.textContent ?? '').length : 0
+    return (el.textContent ?? '').length - hidden
+  }
+  function stubLayout() {
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-abstract-measurer') ? linesFor(measurerChars(this)) * 17.4 : 0
+    })
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const width = this.hasAttribute('data-abstract-wrap') ? layout.cpl * 10 : 0
+      const height = this.getAttribute('data-fold-state') === 'open' ? 120 : this.getAttribute('data-fold-state') === 'folded' ? 40 : 0
+      return { x: 0, y: 0, top: 0, left: 0, right: width, bottom: height, width, height, toJSON: () => ({}) } as DOMRect
+    })
+  }
+  const expectedPrefix = () => {
+    let best = 0
+    for (let n = 1; n <= ABSTRACT.length; n++) {
+      if (linesFor(`${ABSTRACT.slice(0, n).trimEnd()}… `.length + TOGGLE_LEN) <= 2) best = n
+    }
+    return best
+  }
+  async function renderBill(abstract: string) {
+    makeMockApiFetch({ abstract })
+    render(<MemoryRouter><BillDetail /></MemoryRouter>)
+    await waitFor(() => expect(document.querySelector('[data-abstract-wrap] p')).not.toBeNull())
+  }
+  const paragraph = () => document.querySelector('[data-abstract-wrap] p') as HTMLElement
+
+  it('shows no toggle while the whole abstract fits two lines', async () => {
+    stubLayout()
+    await renderBill(SHORT)
+    expect(paragraph().textContent).toBe(SHORT)
+    expect(screen.queryByRole('button', { name: /^Show (more|less)$/ })).toBeNull()
+  })
+
+  it('cuts a longer abstract to a prefix, an ellipsis, and the toggle inside the same paragraph', async () => {
+    stubLayout()
+    await renderBill(ABSTRACT)
+    const p = paragraph()
+    const btn = screen.getByRole('button', { name: 'Show more' })
+    expect(p.contains(btn)).toBe(true)
+    expect(btn.parentElement).toBe(p)
+    const n = expectedPrefix()
+    expect(n).toBeGreaterThan(0)
+    expect(n).toBeLessThan(ABSTRACT.length)
+    expect(p.textContent).toBe(`${ABSTRACT.slice(0, n).trimEnd()}… Show more▼`)
+    expect(btn.querySelector('[data-fold-chevron]')).not.toBeNull()
+    expect(btn).toHaveAttribute('aria-expanded', 'false')
+    // Not a line clamp: that would cut the inline toggle off with the text.
+    expect(p.style.getPropertyValue('-webkit-line-clamp') || p.style.webkitLineClamp || '').toBe('')
+  })
+
+  it('keeps the reserved width exact: the measurer carries the same toggle element and style as the real one', async () => {
+    stubLayout()
+    await renderBill(ABSTRACT)
+    const real = screen.getByRole('button', { name: 'Show more' })
+    const stand = document.querySelector('[data-abstract-measurer] button') as HTMLElement
+    expect(stand).not.toBeNull()
+    expect(stand.style.cssText).toBe(real.style.cssText)
+    expect(stand.innerHTML).toBe(real.innerHTML)
+    expect(stand.querySelector('[data-fold-chevron]')).not.toBeNull()
+    // Nothing in the hidden measurer can be focused or read out.
+    expect(document.querySelector('[data-abstract-measurer]')).toHaveAttribute('aria-hidden', 'true')
+    expect(document.querySelector('[data-abstract-measurer]')).toHaveAttribute('inert')
+    expect(screen.getAllByRole('button', { name: 'Show more' })).toHaveLength(1)
+  })
+
+  it('wears the shared fold look: 12px link blue, no chrome', async () => {
+    stubLayout()
+    await renderBill(ABSTRACT)
+    const btn = screen.getByRole('button', { name: 'Show more' })
+    expect(btn.style.fontSize).toBe('12px')
+    expect(btn.style.color).toBe(color.linkBlue)
+    expect(btn.style.whiteSpace).toBe('nowrap')
+    expect(btn.style.marginTop).toBe('0px')
+  })
+
+  it('opens to the whole abstract with "Show less" at the end of its last line, and aria-expanded follows', async () => {
+    stubLayout()
+    await renderBill(ABSTRACT)
+    await userEvent.click(screen.getByRole('button', { name: 'Show more' }))
+    const p = paragraph()
+    const btn = screen.getByRole('button', { name: 'Show less' })
+    expect(btn).toHaveAttribute('aria-expanded', 'true')
+    expect(p.textContent).toBe(`${ABSTRACT}Show less▼`)
+    expect(p.lastElementChild).toBe(btn)
+    expect(btn.parentElement).toBe(p)
+    expect(btn.querySelector('[data-fold-chevron]')?.getAttribute('style')).toContain('rotate(180deg)')
+    expect(document.getElementById(btn.getAttribute('aria-controls')!)).toContainElement(p)
+  })
+
+  it('folds back to the prefix with "Show more"', async () => {
+    stubLayout()
+    await renderBill(ABSTRACT)
+    await userEvent.click(screen.getByRole('button', { name: 'Show more' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Show less' }))
+    expect(screen.getByRole('button', { name: 'Show more' })).toHaveAttribute('aria-expanded', 'false')
+    expect(paragraph().textContent).toBe(`${ABSTRACT.slice(0, expectedPrefix()).trimEnd()}… Show more▼`)
+  })
+
+  it('does not let a click on the toggle reach anything above it', async () => {
+    stubLayout()
+    await renderBill(ABSTRACT)
+    const outer = vi.fn()
+    document.body.addEventListener('click', outer)
+    try {
+      await userEvent.click(screen.getByRole('button', { name: 'Show more' }))
+      expect(outer).not.toHaveBeenCalled()
+    } finally {
+      document.body.removeEventListener('click', outer)
+    }
+  })
+
+  it('leaves 10px after the abstract, toggle included', async () => {
+    stubLayout()
+    await renderBill(ABSTRACT)
+    const wrap = document.querySelector('[data-abstract-wrap]') as HTMLElement
+    expect(wrap.style.marginBottom).toBe('10px')
+    expect(wrap.contains(screen.getByRole('button', { name: 'Show more' }))).toBe(true)
+  })
+
+  it('re-measures when the width changes: the toggle appears when text stops fitting, and the prefix shortens in a narrower column', async () => {
+    let notify: () => void = () => {}
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { notify = cb }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    })
+    stubLayout()
+    layout.cpl = 200
+    await renderBill(ABSTRACT)
+    expect(screen.queryByRole('button', { name: /^Show (more|less)$/ })).toBeNull()
+    act(() => { layout.cpl = 30; notify() })
+    const wide = paragraph().textContent!
+    expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument()
+    act(() => { layout.cpl = 20; notify() })
+    expect(paragraph().textContent!.length).toBeLessThan(wide.length)
+    expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument()
+  })
+
+  it('leaves the hidden measurer empty after measuring, so it cannot hold the page open', async () => {
+    stubLayout()
+    await renderBill(ABSTRACT)
+    const textSpan = document.querySelector('[data-abstract-measurer] [data-abstract-measure-text]') as HTMLElement
+    expect(textSpan).not.toBeNull()
+    expect(textSpan.textContent).toBe('')
+  })
+
+  it('re-measures once web fonts have loaded', async () => {
+    let loaded: () => void = () => {}
+    const ready = new Promise<void>(resolve => { loaded = resolve })
+    Object.defineProperty(document, 'fonts', { configurable: true, value: { ready } })
+    try {
+      stubLayout()
+      layout.cpl = 200
+      await renderBill(ABSTRACT)
+      expect(screen.queryByRole('button', { name: /^Show (more|less)$/ })).toBeNull()
+      // The fallback font fit the text; the real one is wider.
+      layout.cpl = 30
+      await act(async () => { loaded(); await ready })
+      expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument()
+    } finally {
+      // @ts-expect-error remove the stub; jsdom has no document.fonts
+      delete document.fonts
+    }
+  })
+
+  it('folding keeps the open text until the motion ends, then shows the prefix with "Show more"', async () => {
+    installAnimate(); reduceMotion(false); stubLayout()
+    await renderBill(ABSTRACT)
+    await userEvent.click(screen.getByRole('button', { name: 'Show more' }))
+    act(() => { animations[0].onfinish?.() })
+    expect(paragraph().textContent).toBe(`${ABSTRACT}Show less▼`)
+    await userEvent.click(screen.getByRole('button', { name: 'Show less' }))
+    expect(animations).toHaveLength(2)
+    // Mid-motion: still the whole abstract, the toggle still at its end.
+    expect(paragraph().textContent!.startsWith(ABSTRACT)).toBe(true)
+    expect(paragraph().lastElementChild).toBe(screen.getByRole('button', { name: /^Show (more|less)$/ }))
+    act(() => { animations[1].onfinish?.() })
+    expect(paragraph().textContent).toBe(`${ABSTRACT.slice(0, expectedPrefix()).trimEnd()}… Show more▼`)
+    expect(screen.getByRole('button', { name: 'Show more' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('animates the height between folded and open when motion is allowed', async () => {
+    installAnimate(); reduceMotion(false); stubLayout()
+    await renderBill(ABSTRACT)
+    await userEvent.click(screen.getByRole('button', { name: 'Show more' }))
+    expect(animateCalls()).toHaveLength(1)
+    const [keyframes, options] = animateCalls()[0]
+    expect(keyframes).toEqual([{ height: '40px' }, { height: '120px' }])
+    expect(options).toMatchObject({ duration: 240 })
+  })
+
+  it('does not animate with reduced motion, and still opens and folds', async () => {
+    installAnimate(); reduceMotion(true); stubLayout()
+    await renderBill(ABSTRACT)
+    await userEvent.click(screen.getByRole('button', { name: 'Show more' }))
+    expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true')
+    await userEvent.click(screen.getByRole('button', { name: 'Show less' }))
+    expect(screen.getByRole('button', { name: 'Show more' })).toHaveAttribute('aria-expanded', 'false')
+    expect(animateCalls()).toHaveLength(0)
+  })
+})
+
+describe('BillDetail sponsor line fold', () => {
+  beforeEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    // @ts-expect-error jsdom has no Element.animate; tests that install one remove it here
+    delete Element.prototype.animate
+  })
+  const RIGHTS: Record<string, number> = { 'Prime Sponsor': 60, 'Cosponsor 1': 140, 'Cosponsor 2': 320, 'Cosponsor 3': 410 }
+  const coSponsors = [1, 2, 3].map(i => ({ name: `Cosponsor ${i}`, party: null, url: null, primary: false }))
+
+  // The line is 250px wide: Cosponsor 2 and 3 fall past its right edge.
+  function stubSponsorGeometry(boundary = 250) {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const right = this.hasAttribute('data-sponsor-flow') ? boundary
+        : this.hasAttribute('data-sponsor-item') ? (RIGHTS[this.textContent ?? ''] ?? 0)
+        : 0
+      const height = this.getAttribute('data-fold-state') === 'open' ? 60 : this.getAttribute('data-fold-state') === 'folded' ? 20 : 0
+      return { x: 0, y: 0, top: 0, left: 0, right, bottom: height, width: 0, height, toJSON: () => ({}) } as DOMRect
+    })
+  }
+  async function renderOverflowing(boundary = 250) {
+    stubSponsorGeometry(boundary)
+    makeMockApiFetch({ sponsor: 'Prime Sponsor', coSponsors })
+    render(<MemoryRouter><BillDetail /></MemoryRouter>)
+    await screen.findByText('Prime Sponsor')
+  }
+
+  it('offers a "+N more" count-fold toggle with the clipped count, and no chevron', async () => {
+    await renderOverflowing()
+    const btn = screen.getByRole('button', { name: '+2 more' })
+    expect(btn).toHaveAttribute('aria-expanded', 'false')
+    expect(btn.querySelector('[data-fold-chevron]')).toBeNull()
+    expect(btn.style.fontSize).toBe('12px')
+    expect(btn.style.color).toBe(color.linkBlue)
+  })
+
+  it('counts only the sponsors clipped off the line', async () => {
+    await renderOverflowing(330)
+    expect(screen.getByRole('button', { name: '+1 more' })).toBeInTheDocument()
+  })
+
+  it('shows no toggle when every sponsor fits the line', async () => {
+    await renderOverflowing(450)
+    expect(screen.queryByRole('button', { name: /more$|^Show less$/ })).toBeNull()
+  })
+
+  it('wraps the whole line when opened and relabels the toggle "Show less"', async () => {
+    await renderOverflowing()
+    const flow = document.querySelector('[data-sponsor-flow]') as HTMLElement
+    expect(flow.style.whiteSpace).toBe('nowrap')
+    await userEvent.click(screen.getByRole('button', { name: '+2 more' }))
+    expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true')
+    expect(flow.style.whiteSpace).toBe('normal')
+    await userEvent.click(screen.getByRole('button', { name: 'Show less' }))
+    expect(screen.getByRole('button', { name: '+2 more' })).toBeInTheDocument()
+    expect(flow.style.whiteSpace).toBe('nowrap')
+  })
+
+  it('puts "+N more" in the same row as the names, after them', async () => {
+    await renderOverflowing()
+    const flow = document.querySelector('[data-sponsor-flow]') as HTMLElement
+    const btn = screen.getByRole('button', { name: '+2 more' })
+    expect(flow.contains(btn)).toBe(false)
+    expect(btn.parentElement).toBe(flow.parentElement)
+    expect(flow.parentElement!.style.display).toBe('flex')
+    expect(flow.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // A few pixels off the names, and never squeezed out of the row.
+    expect(btn.style.marginLeft).toBe('6px')
+    expect(btn.style.flexShrink).toBe('0')
+    expect(btn.style.marginTop).toBe('0px')
+  })
+
+  it('shows every name with "Show less" after them when opened, in one flow', async () => {
+    await renderOverflowing()
+    await userEvent.click(screen.getByRole('button', { name: '+2 more' }))
+    const flow = document.querySelector('[data-sponsor-flow]') as HTMLElement
+    const btn = screen.getByRole('button', { name: 'Show less' })
+    for (const name of ['Prime Sponsor', 'Cosponsor 1', 'Cosponsor 2', 'Cosponsor 3']) expect(flow).toHaveTextContent(name)
+    expect(flow.parentElement!.style.display).toBe('block')
+    expect(btn.parentElement).toBe(flow.parentElement)
+    expect(flow.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(btn.querySelector('[data-fold-chevron]')).toBeNull()
+  })
+
+  it('does not let a click on the toggle reach anything above it', async () => {
+    await renderOverflowing()
+    const outer = vi.fn()
+    document.body.addEventListener('click', outer)
+    try {
+      await userEvent.click(screen.getByRole('button', { name: '+2 more' }))
+      expect(outer).not.toHaveBeenCalled()
+    } finally {
+      document.body.removeEventListener('click', outer)
+    }
+  })
+
+  it('animates the height when motion is allowed', async () => {
+    installAnimate(); reduceMotion(false)
+    await renderOverflowing()
+    await userEvent.click(screen.getByRole('button', { name: '+2 more' }))
+    expect(animateCalls()).toHaveLength(1)
+    expect(animateCalls()[0][0]).toEqual([{ height: '20px' }, { height: '60px' }])
+  })
+
+  it('does not animate with reduced motion', async () => {
+    installAnimate(); reduceMotion(true)
+    await renderOverflowing()
+    await userEvent.click(screen.getByRole('button', { name: '+2 more' }))
+    expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true')
+    await userEvent.click(screen.getByRole('button', { name: 'Show less' }))
+    expect(animateCalls()).toHaveLength(0)
+  })
+
+  it('shows no toggle while every sponsor fits, and adds or drops the count as the line resizes', async () => {
+    let notify: () => void = () => {}
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { notify = cb }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    })
+    const geometry = { boundary: 1000 }
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const right = this.hasAttribute('data-sponsor-flow') ? geometry.boundary
+        : this.hasAttribute('data-sponsor-item') ? (RIGHTS[this.textContent ?? ''] ?? 0)
+        : 0
+      return { x: 0, y: 0, top: 0, left: 0, right, bottom: 0, width: 0, height: 0, toJSON: () => ({}) } as DOMRect
+    })
+    makeMockApiFetch({ sponsor: 'Prime Sponsor', coSponsors })
+    render(<MemoryRouter><BillDetail /></MemoryRouter>)
+    await screen.findByText('Prime Sponsor')
+    expect(screen.queryByRole('button', { name: /more$|^Show less$/ })).toBeNull()
+    act(() => { geometry.boundary = 250; notify() })
+    expect(screen.getByRole('button', { name: '+2 more' })).toHaveAttribute('aria-expanded', 'false')
+    act(() => { geometry.boundary = 1000; notify() })
+    expect(screen.queryByRole('button', { name: /more$|^Show less$/ })).toBeNull()
   })
 })
 

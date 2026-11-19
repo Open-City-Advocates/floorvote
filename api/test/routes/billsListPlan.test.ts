@@ -45,7 +45,7 @@ describe('GET /bills query plans', () => {
     return planned
   }
   function pageOf(plans: Planned[]): Planned {
-    const page = plans.find(p => /ORDER BY/.test(p.sql) && /LIMIT/.test(p.sql))
+    const page = plans.find(p => /SELECT gk FROM/.test(p.sql) || (/ORDER BY/.test(p.sql) && /LIMIT/.test(p.sql)))
     expect(page, 'the list prepared no group page statement').toBeDefined()
     return page!
   }
@@ -112,6 +112,37 @@ describe('GET /bills query plans', () => {
     expect(page.plan, page.plan).not.toMatch(NO_TABLE_SCAN)
   })
 
+  it('keeps the list seeking a year or a stage on that column\'s own index, and its tracked count on the tracked index (#1023)', async () => {
+    // The facets write the year and stage tests as `+column` so they read the facets index whole. The list must not: its
+    // page would then skip-scan an 11-column index that nothing pins, and the tracked count would read the table.
+    for (const [qs, index] of [['year=2025', 'idx_bills_year_start (year_start=?)'], ['stage=passed', 'idx_bills_status_stage (status_stage=?)']]) {
+      const page = pageOf(await listPlans(`${qs}&sort=status&dir=desc&pageSize=20`))
+      expect(page.plan, `${qs}\n${page.plan}`).toContain(`SEARCH c USING INDEX ${index}`)
+      expect(page.plan, `${qs}\n${page.plan}`).not.toContain('idx_bills_facets')
+      expect(page.plan, `${qs}\n${page.plan}`).not.toMatch(NO_TABLE_SCAN)
+      const tracked = (await listPlans(`${qs}&pageSize=20`)).find(p => /WHERE m\.match_type IS NOT NULL/.test(p.sql))
+      expect(tracked, `${qs}: no count of tracked bills`).toBeDefined()
+      expect(tracked!.plan, `${qs}\n${tracked!.plan}`).toMatch(/SEARCH m USING (COVERING )?INDEX idx_bills_(match_type|tracked_cover)/)
+      expect(tracked!.plan, `${qs}\n${tracked!.plan}`).not.toContain('idx_bills_facets')
+    }
+  })
+
+  it("counts the tracked bills of a stage from the tracked index whatever else the filter holds, and still counts them right", async () => {
+    // The stage test is written non-indexable in this count, as one value or several, alone or joined with a status
+    // (which ORs into the same fact) or a year. The plans may differ between SQLite builds; the count may not.
+    for (const qs of ['stage=passed&stage=introduced', 'stage=passed&status=Introduced', 'stage=passed&year=2025']) {
+      const tracked = (await listPlans(`${qs}&pageSize=20`)).find(p => /WHERE m\.match_type IS NOT NULL/.test(p.sql))
+      expect(tracked, `${qs}: no count of tracked bills`).toBeDefined()
+      expect(tracked!.plan, `${qs}\n${tracked!.plan}`).not.toMatch(NO_TABLE_SCAN)
+      expect(tracked!.plan, `${qs}\n${tracked!.plan}`).not.toContain('idx_bills_facets')
+    }
+    // Tracked bills (every 30th of 30,000) in the stage "passed" (every 5th): every 30th is a multiple of 5.
+    const passed = await statementsFor('stage=passed&pageSize=20')
+    const countStmt = passed.find(s => /WHERE m\.match_type IS NOT NULL/.test(s.sql))!
+    const { results } = await env.DB.prepare(countStmt.sql).bind(...countStmt.params).all<{ n: number }>()
+    expect(results[0].n).toBe(1000)
+  })
+
   it('starts a rare filter from the rows that hold it, not from the bills', async () => {
     // Twenty bills have a position, fewer than a page of 30, so the full path runs.
     const page = pageOf(await listPlans('position=Support&pageSize=30'))
@@ -119,10 +150,52 @@ describe('GET /bills query plans', () => {
     expect(page.plan, page.plan).not.toMatch(NO_TABLE_SCAN)
   })
 
-  it('sorts groups in one pass over the table and a single sorter', async () => {
-    // An unoptimizable sort reads every group once. The natural bill number is computed once per group, then sorted.
-    const page = pageOf(await listPlans('sort=bill&dir=asc&pageSize=20'))
-    expect((page.plan.match(/SCAN c\b(?! USING)/g) ?? []).length, page.plan).toBe(1)
+  it('sorts a filtered bill-number page in one pass over the table and a single sorter', async () => {
+    // A filtered bill-number sort reads every group the filter keeps once. The natural bill number is computed once per group, then sorted.
+    const page = pageOf(await listPlans('status=Passed&sort=bill&dir=asc&pageSize=20'))
+    expect((page.plan.match(/SCAN c\b(?! USING)/g) ?? []).length, page.plan).toBeLessThanOrEqual(1)
+    expect(page.plan, page.plan).toContain('MATERIALIZE k')
+  })
+
+  // The bill-number sort orders by the group's state first, so its page lies in the first states: a bill with no
+  // companions is in the first n groups only when its state is no later than the n-th such bill's. The route reads
+  // that state from the state index, then only the groups in states up to it (#1021).
+  const BILLS_READ_WHOLE = /(SCAN|SEARCH) (bills|c|g|m|b|s)\b(?! USING)/
+  for (const [dir, range] of [['asc', 'state<?'], ['desc', 'state>?']] as const) {
+    it(`reads a bill-number page (${dir}) from the first states' groups, never the whole table`, async () => {
+      const page = pageOf(await listPlans(`sort=bill&dir=${dir}&pageSize=20`))
+      expect(page.plan, page.plan).toContain(`SEARCH c USING INDEX idx_bills_state (${range})`)
+      expect(page.plan, page.plan).not.toMatch(BILLS_READ_WHOLE)
+      // The grouped bills are read from the group key index, the group's state from its covering entries.
+      expect(page.plan, page.plan).toContain('COVERING INDEX idx_bills_group_key')
+    })
+
+    it(`finds the cut state (${dir}) from the state index in a read of the first bills, with no sort`, async () => {
+      const stmts = await statementsFor(`sort=bill&dir=${dir}&pageSize=20`)
+      const probe = stmts.find(s => /ORDER BY s\.state/.test(s.sql))
+      expect(probe, 'the list prepared no read of the cut state').toBeDefined()
+      const probePlan = await plan(probe!)
+      expect(probePlan, probePlan).toContain('USING INDEX idx_bills_state')
+      expect(probePlan, probePlan).not.toContain('TEMP B-TREE')
+      expect(probePlan, probePlan).not.toMatch(BILLS_READ_WHOLE)
+    })
+  }
+
+  it('reads no cut state for a filtered, a searched, or a deep bill-number page', async () => {
+    for (const qs of [
+      'status=Passed&sort=bill&dir=asc&pageSize=20',
+      'search=Title&sort=bill&dir=asc&pageSize=20',
+      'sort=bill&dir=asc&pageSize=20&page=51',
+      'sort=bill&dir=desc&pageSize=200&page=6',
+    ]) {
+      const probes = (await statementsFor(qs)).filter(s => /ORDER BY s\.state/.test(s.sql))
+      expect(probes.length, qs).toBe(0)
+    }
+  })
+
+  it('reads the whole table for a bill-number sort when the page reaches past the bills with no companions', async () => {
+    // 22,500 bills have no companions; a page past them can't be cut by state, and reads every group as before.
+    const page = pageOf(await listPlans('sort=bill&dir=asc&pageSize=200&page=120'))
     expect(page.plan, page.plan).toContain('MATERIALIZE k')
   })
 
