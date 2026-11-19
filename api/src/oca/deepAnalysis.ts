@@ -15,6 +15,7 @@ import { legacyHandle, parseHandle } from '../../../shared/billHandle'
 import { ASSOCIATION_NAME_PLACEHOLDER, buildDefaultAiContext, isAiConfigDefault } from '../../../shared/aiDefaults'
 import { DEEP_PROMPT_VERSION, billInstructions, hearingInstructions, type DeepKind } from '../../../shared/oca/deepAnalysis'
 import type { AppDb, Env } from '../types'
+import { errorText } from '../../../shared/errorText'
 
 /**
  * The deep-analysis queue (see migration 0071). FloorVote decides what needs a
@@ -296,7 +297,7 @@ export async function fetchBillText(env: Env, externalId: string): Promise<{ typ
     if (!res.ok) return 'unavailable'
     return await res.json() as { type: 'html' | 'pdf'; content: string }
   } catch (err) {
-    console.error('[deep] bill text fetch failed', err)
+    console.error('[deep] bill text fetch failed', errorText(err), err)
     return 'unavailable'
   }
 }
@@ -323,7 +324,7 @@ async function votesFor(env: Env, externalIds: string[]): Promise<Map<string, Ce
       if (votes?.length) out.set(externalId, votes)
     }
   } catch (err) {
-    console.error('[deep] vote lookup failed', err)
+    console.error('[deep] vote lookup failed', errorText(err), err)
   }
   return out
 }
@@ -375,7 +376,7 @@ async function councilRoster(env: Env): Promise<{ committees: unknown[]; council
       councilmembers: (d.councilmembers ?? []).map(m => ({ name: m.name, role: m.role, termStart: m.termStart, termEnd: m.termEnd, status: m.current ? 'current' : 'former', ...(m.note ? { note: m.note } : {}) })),
     }
   } catch (err) {
-    console.error('[deep] council roster lookup failed', err)
+    console.error('[deep] council roster lookup failed', errorText(err), err)
     return { committees: [], councilmembers: [] }
   }
 }

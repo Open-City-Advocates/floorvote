@@ -5,6 +5,7 @@ import { deepRouter } from './deepApi'
 import { linksRouter } from './linksApi'
 import { fireDeepWorker, reconcileDeepRequests, requestDeepForPrioritized } from './deepAnalysis'
 import type { AppDb, AppEnv, Env } from '../types'
+import { errorText } from '../../../shared/errorText'
 
 // OCA's hooks into the tenant Worker, each called from one line in an upstream
 // file so an upstream merge only has those lines to keep
@@ -45,7 +46,7 @@ export async function runOcaHourly(env: Env, db: AppDb) {
 /** After a priority change, singly or in bulk: request a deep analysis at an automatic priority, or withdraw a waiting one below it. */
 export function ocaPriorityChanged(c: Context<AppEnv>, db: AppDb, billIds: string[]) {
   c.executionCtx.waitUntil(requestDeepForPrioritized(c.env, db, billIds)
-    .catch(err => console.error('[deep] request after priority change failed', err)))
+    .catch(err => console.error('[deep] request after priority change failed', errorText(err), err)))
 }
 
 // A copy of src/index.ts's describeErrorCauseChain, which isn't exported: Drizzle

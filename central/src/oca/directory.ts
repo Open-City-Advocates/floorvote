@@ -9,6 +9,7 @@ import { diffCommittees, diffTerms, isCurrentMember, linkCommittees, periodMembe
 import { fetchCommittees, fetchCouncilmembers, fetchDirectory } from './dccouncil-directory'
 import { clean, limsDate } from './names'
 import type { Db, Env } from '../types'
+import { errorText } from '../../../shared/errorText'
 
 /**
  * The fork's DC Council directory and membership history: committees, staff,
@@ -93,7 +94,7 @@ export async function syncCouncilDirectory(db: Db): Promise<{ committees: number
   try {
     await syncSeated(db, now)
   } catch (err) {
-    console.warn('[dc-directory] Councilmembers page skipped:', err)
+    console.warn('[dc-directory] Councilmembers page skipped:', errorText(err), err)
   }
   let committeeCount = 0
   let committeeError: unknown = null
