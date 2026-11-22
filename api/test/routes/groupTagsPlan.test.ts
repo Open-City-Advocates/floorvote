@@ -88,4 +88,44 @@ describe('tag filter query plans', () => {
     expect(tags.length, 'the facets counted no tags through group tags').toBeGreaterThanOrEqual(2)
     for (const t of tags) expect(t.plan, `${t.sql}\n${t.plan}`).toContain('idx_bills_group_tags')
   })
+
+  // Under a tag filter, every other facet counts from the bills with group tags too (#1016 follow-up): on an
+  // instance where a tenth of the bills carry tags, the planner read every bill through the grouped column's
+  // own index (idx_bills_state, …) to skip the sort, 107,000 rows a count and six counts a request, and the
+  // request alone spent most of D1's ten-second budget.
+  it("counts every facet under a tag filter from the bills with group tags, not from the grouped column's index", async () => {
+    const plans = await plansFor('bills/facets?tag=Energy&omit=subject%2Ccommittee')
+    // The five bill-column facets are two statements, the whole cube and the grouped one (#1022).
+    const counts = plans.filter(p => /COUNT\(|SUM\(/i.test(p.sql) && readsGroupTags(p) && /GROUP BY ("m"\."group_key", )?"m"\."status", "m"\."status_stage"/.test(p.sql))
+    expect(counts.length, 'no facet counted under the tag filter').toBe(2)
+    for (const c of counts) expect(c.plan, `${c.sql}\n${c.plan}`).toMatch(/(SCAN|SEARCH) m USING (COVERING )?INDEX idx_bills_group_tags/)
+  })
+
+  // A grouped bill's companions are read through the group key index (#1019): with the priority, its time, and the
+  // group tags added to it (0124), the tag test on a group and the holder test on a companion read the index alone.
+  it('counts the grouped bills of every facet under a tag filter with match=any from the group key index, a covering one', async () => {
+    const plans = await plansFor('bills/facets?tag=Energy&state=NJ&match=any&omit=subject%2Ccommittee')
+    // The facets' counts (each names its column AS v0), not the special counts of the match type or the triage.
+    const reads = plans.filter(p => /COUNT\(|SUM\(/i.test(p.sql) && /AS v0/.test(p.sql) && /idx_bills_group_key/.test(p.plan))
+    expect(reads.length, 'no grouped count read the group key index under the tag filter').toBeGreaterThanOrEqual(5)
+    for (const r of reads) {
+      for (const line of r.plan.split('\n').filter(l => /idx_bills_group_key/.test(l))) {
+        expect(line, `${r.sql}\n${r.plan}`).toMatch(/USING COVERING INDEX idx_bills_group_key/)
+      }
+    }
+  })
+
+  // A grouped bill's companions are read through the group key index (#1019): with the priority, its time, and the
+  // group tags added to it (0124), the tag test on a group and the holder test on a companion read the index alone.
+  it('counts the grouped bills of every facet under a tag filter with match=any from the group key index, a covering one', async () => {
+    const plans = await plansFor('bills/facets?tag=Energy&state=NJ&match=any&omit=subject%2Ccommittee')
+    // The facets' counts (each names its column AS v0), not the special counts of the match type or the triage.
+    const reads = plans.filter(p => /COUNT\(|SUM\(/i.test(p.sql) && /AS v0/.test(p.sql) && /idx_bills_group_key/.test(p.plan))
+    expect(reads.length, 'no grouped count read the group key index under the tag filter').toBeGreaterThanOrEqual(5)
+    for (const r of reads) {
+      for (const line of r.plan.split('\n').filter(l => /idx_bills_group_key/.test(l))) {
+        expect(line, `${r.sql}\n${r.plan}`).toMatch(/USING COVERING INDEX idx_bills_group_key/)
+      }
+    }
+  })
 })

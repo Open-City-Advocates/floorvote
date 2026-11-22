@@ -46,6 +46,7 @@ import { notifyInviteBounces } from './lib/inviteBounceEmail'
 import { ensureDemoSession, demoSessionCookie } from './lib/demoSession'
 import { demoReadOnly } from './middleware/auth'
 import type { Env, AppEnv, QueueMessage, InviteEmailMessage, TenantQueueMessage } from './types'
+import { errorText } from '../../shared/errorText'
 
 const app = new Hono<AppEnv>()
 
@@ -150,22 +151,6 @@ app.route('/api/mute-link', muteLinkRouter)
 registerOcaRoutes(app)
 
 app.get('/api/health', (c) => c.json({ ok: true, build: BUILD_SHA }))
-
-// Drizzle wraps a D1 error as `Failed query: <sql>` and hangs the real error
-// off `.cause` (see the heal-ai hourly branch below for why that matters).
-// A plain `console.error(err)` on the wrapper stringifies only its own
-// message, so this walks `.cause` and joins every message in the chain.
-function describeErrorCauseChain(err: unknown): string {
-  const messages: string[] = []
-  const seen = new Set<unknown>()
-  let current: unknown = err
-  while (current != null && !seen.has(current)) {
-    seen.add(current)
-    messages.push(current instanceof Error ? current.message : String(current))
-    current = current instanceof Error ? current.cause : undefined
-  }
-  return messages.join(' | caused by: ')
-}
 
 // Returns true when the request should be rejected: secret unset (prod lockdown)
 // or header mismatch (wrong caller). In local dev CENTRAL_ADMIN_SECRET is set in
@@ -291,7 +276,7 @@ export default {
           // Same reasoning as heal-ai below: a transient D1 read failure (or a
           // tenant running before migration 0073) must not email ALERT_EMAILS
           // "cron failed: email-health". Log the cause chain and try next hour.
-          console.error(`[email-health] check failed, skipping this run: ${describeErrorCauseChain(err)}`)
+          console.error(`[email-health] check failed, skipping this run: ${errorText(err)}`)
         }
       }))
       // Bounced invites: record delivery outcomes of emails to pending invites,
@@ -307,7 +292,7 @@ export default {
           const bounces = await runInviteBounceCheck(env, db, new Date(event.scheduledTime))
           await notifyInviteBounces(env, db, bounces)
         } catch (err) {
-          console.error(`[invite-bounces] check failed, skipping this run: ${describeErrorCauseChain(err)}`)
+          console.error(`[invite-bounces] check failed, skipping this run: ${errorText(err)}`)
         }
       }))
       ctx.waitUntil(runJob(env, 'heal-ai', async () => {
@@ -330,7 +315,7 @@ export default {
           // that would have told us what actually went wrong never reached the
           // logs. Walk the cause chain so a recurring failure is diagnosable
           // from Workers Logs alone, without needing to reproduce it again.
-          console.error(`[heal-ai] sweep failed, skipping this run: ${describeErrorCauseChain(err)}`)
+          console.error(`[heal-ai] sweep failed, skipping this run: ${errorText(err)}`)
           return
         }
         if (result.queued > 0 || result.cappedOut > 0) {
@@ -362,7 +347,7 @@ export default {
             console.log(`[body-events] upserted=${r.upserted} cancelled=${r.cancelled} removed=${r.removed} covered=${r.covered}`)
           }
         } catch (err) {
-          console.error(`[body-events] sync failed, skipping this run: ${describeErrorCauseChain(err)}`)
+          console.error(`[body-events] sync failed, skipping this run: ${errorText(err)}`)
         }
         await runOcaHourly(env, db)
       }))
@@ -373,7 +358,7 @@ export default {
           const n = await purgeAttachments(env, db, new Date(event.scheduledTime))
           if (n > 0) console.log(`[attachments-purge] purged=${n}`)
         } catch (err) {
-          console.error(`[attachments-purge] failed, skipping this run: ${describeErrorCauseChain(err)}`)
+          console.error(`[attachments-purge] failed, skipping this run: ${errorText(err)}`)
         }
       }))
       return

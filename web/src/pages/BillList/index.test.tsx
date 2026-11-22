@@ -15,6 +15,8 @@ function LocationProbe() {
 // through apiFetch. We route by path and record the calls so we can assert the
 // list both renders the fixture and re-fetches when a filter changes.
 const apiCalls: string[] = []
+// While set, an on-demand facets reply (only=) waits for it, so a test can act while that request is out.
+const lazyHold = vi.hoisted(() => ({ gate: null as Promise<void> | null }))
 
 // Lets a test hold the `/bills/:id` prefetch open so it can observe the
 // navigation-pending window (when the body should carry the wait-cursor class).
@@ -133,10 +135,10 @@ const FACETS = {
 // What the instance covers, as GET /config reports it, handed to BillList
 // through ConfigContext. Null = config not loaded, which is what every test
 // that doesn't care about covered states gets.
-const configState: { value: { states: string[]; modules?: Record<string, unknown> } | null } = { value: null }
+const configState: { value: { states: string[]; modules?: Record<string, unknown>; notificationEmailsEnabled?: boolean } | null } = { value: null }
 
 // #449: the member's own digest switch as GET /auth/me reports it, and what the envelope on a view row sent.
-const digestState = { memberOn: false }
+const digestState = { memberOn: false, weeklyDay: null as number | null }
 const digestCalls: Array<{ method: string; path: string; body: unknown }> = []
 
 // The signed-in user's role as GET /auth/me reports it. Defaults to an owner, which
@@ -149,6 +151,7 @@ vi.mock('../../lib/api', () => {
   }
   async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     apiCalls.push(path)
+    if (lazyHold.gate && path.startsWith('/bills/facets') && path.includes('only=')) await lazyHold.gate
     const putViewMatch = init?.method === 'PUT' && path.match(/^\/admin\/views\/([^/]+)$/)
     if (putViewMatch) {
       const body = init?.body ? JSON.parse(init.body as string) : {}
@@ -171,7 +174,7 @@ vi.mock('../../lib/api', () => {
     }
     if (path === '/auth/me') {
       return { id: 'demo-user', email: 'demo@example.com', name: 'Demo', role: authState.role,
-        title: null, canVote: true, emailDigestEnabled: digestState.memberOn, lastSeenFeed: null } as T
+        title: null, canVote: true, emailDigestEnabled: digestState.memberOn, emailDigestMatchesEnabled: digestState.memberOn, emailDigestWeeklyDay: digestState.weeklyDay, lastSeenFeed: null } as T
     }
     if (path === '/config') return CONFIG as T
     if (path === '/users/me/bills') return [] as T
@@ -187,7 +190,12 @@ vi.mock('../../lib/api', () => {
       }
       return viewsState.response as T
     }
-    if (path.startsWith('/bills/facets')) return (facetsState.respond ? facetsState.respond(path) : FACETS) as T
+    if (path.startsWith('/bills/facets')) {
+      if (facetsState.respond) return facetsState.respond(path) as T
+      // As the API answers `omit` and `only`: the page loads without the Subject and Committee counts.
+      const { facetsReply } = await import('../../test/facetsContract')
+      return facetsReply(path, FACETS) as T
+    }
     if (init?.method === 'POST' && path === '/bills/bulk-delete') {
       const body = JSON.parse(init.body as string) as BulkDeleteBody
       const shown = (facetsState.bills ?? BILLS) as Array<{ id: string; isDraft?: boolean }>
@@ -282,6 +290,7 @@ class FakeIntersectionObserver {
 
 beforeEach(() => {
   apiCalls.length = 0
+  lazyHold.gate = null
   overwriteCalls.length = 0
   saveViewCalls.length = 0
   deferred.resolveBillDetail = null
@@ -305,6 +314,7 @@ beforeEach(() => {
   resolveCustomFields = null
   configState.value = null
   digestState.memberOn = false
+  digestState.weeklyDay = null
   digestCalls.length = 0
   authState.role = 'owner'
   FACETS.subject = { 'UT:Counties': 1 }
@@ -503,9 +513,10 @@ describe('BillList page', () => {
       expect(await screen.findByText(CAVEAT)).toBeInTheDocument()
     })
 
+    // The instance has subjects elsewhere (so the control is offered), but not in the one state it covers.
     it('adds the caveat on a single covered state that has no subjects', async () => {
       configState.value = { states: ['NJ'] }
-      FACETS.subjectStates = []
+      FACETS.subjectStates = ['UT']
       await hoverSubjectFilter()
       expect(await screen.findByText(CAVEAT)).toBeInTheDocument()
     })
@@ -547,15 +558,26 @@ describe('BillList page', () => {
 
     it('is just the short text while the config has not loaded', async () => {
       configState.value = null
-      FACETS.subjectStates = []
+      FACETS.subjectStates = ['UT']
       await hoverSubjectFilter()
       expect(await screen.findByText(SHORT)).toBeInTheDocument()
     })
 
+    // Not knowing which states have subjects, the page offers Subject only where one is picked.
     it('is just the short text while the facets carry no subjectStates yet', async () => {
       configState.value = { states: ['NJ', 'UT'] }
       FACETS.subjectStates = undefined
-      await hoverSubjectFilter()
+      render(
+        <MemoryRouter initialEntries={['/bills?subject=UT%3ACounties']}>
+          <ConfigContext value={{ config: configState.value as never, multiState: true, loading: false }}>
+            <AuthProvider>
+              <SidebarRefreshProvider><BillList /></SidebarRefreshProvider>
+            </AuthProvider>
+          </ConfigContext>
+        </MemoryRouter>,
+      )
+      await screen.findByText('Early Voting Centers')
+      fireEvent.pointerEnter(await screen.findByRole('button', { name: 'Subject (1)' }), { pointerType: 'mouse' })
       expect(await screen.findByText(SHORT)).toBeInTheDocument()
     })
   })
@@ -663,8 +685,10 @@ describe('BillList with a link already over the subject limit', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: new RegExp(`Subject.*\\(${MAX_SUBJECT_FILTERS + 1}\\)`) }))
     expect(screen.getByText(`${HINT} This filter has ${MAX_SUBJECT_FILTERS + 1}. Remove 1 to continue.`)).toBeInTheDocument()
-    // The same names also label the active-filter chips, so look only inside the open picker.
+    // The same names also label the active-filter chips, so look only inside the open picker. Its counts load once it
+    // opens.
     const picker = () => within(screen.getByRole('group', { name: /subject/i }))
+    await picker().findByText('Elections')
     const option = (label: string) => picker().getByText(label).closest('label')!.querySelector('input') as HTMLInputElement
     expect(option('Elections').disabled).toBe(true)
 
@@ -677,6 +701,7 @@ describe('BillList with a link already over the subject limit', () => {
     // The toolbar remounts on the new URL, which closes the picker; open it again.
     fireEvent.click(await screen.findByRole('button', { name: new RegExp(`Subject.*\\(${MAX_SUBJECT_FILTERS}\\)`) }))
     expect(screen.getByText(HINT)).toBeInTheDocument()
+    await picker().findByText('Elections')
     expect(option('Elections').disabled).toBe(true)
   })
 })
@@ -817,11 +842,12 @@ describe('BillList mobile filter sheet — reset', () => {
   })
 })
 
-// #449: the envelope on a view row includes the view in the member's own digest. It is
-// offered only where the instance's digest is on, and asks first when the member's is off.
+// #449, #1035: the envelope on a view row follows the view in the member's own email. It is
+// offered while the admin's "Send email to members" is on (or not heard from), and a click follows or unfollows
+// directly, whatever the member's own switches say.
 describe('BillList saved views — include in the digest', () => {
   const VIEW = { id: 'v1', name: 'Passed bills', query: 'status=4', slug: 'passed-bills', subscribed: false }
-  const digestOn = { states: ['RI'], modules: { 'email-digest': { enabled: true } } }
+  const digestOn = { states: ['RI'], notificationEmailsEnabled: true }
 
   async function openMenu() {
     render(<BillList />, { wrapper: Wrapper })
@@ -830,18 +856,26 @@ describe('BillList saved views — include in the digest', () => {
     await screen.findByText('Passed bills')
   }
 
-  it('offers no envelope when the admin has turned the digest off for the instance', async () => {
+  it('offers no envelope when the admin has turned off email to members', async () => {
     viewsState.response = { views: [VIEW] }
-    configState.value = { states: ['RI'], modules: { 'email-digest': { enabled: false } } }
+    configState.value = { states: ['RI'], notificationEmailsEnabled: false }
     await openMenu()
-    expect(screen.queryByRole('button', { name: /in your daily digest/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Email me ".*" (daily|weekly)$/ })).toBeNull()
   })
 
-  it('offers an envelope when the instance digest is on, and the cadence follows its setting', async () => {
+  it("offers an envelope when email to members is on, and the cadence follows the person's own choice", async () => {
+    digestState.weeklyDay = 5
     viewsState.response = { views: [VIEW] }
-    configState.value = { states: ['RI'], modules: { 'email-digest': { enabled: true, settings: { frequency: 'weekly' } } } }
+    configState.value = digestOn
     await openMenu()
-    expect(screen.getByRole('button', { name: 'Include "Passed bills" in your weekly digest' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Email me "Passed bills" weekly' })).toBeInTheDocument()
+  })
+
+  it('offers the envelope, daily for someone with no weekday, when the setting is missing from the config', async () => {
+    viewsState.response = { views: [VIEW] }
+    configState.value = { states: ['RI'] }
+    await openMenu()
+    expect(screen.getByRole('button', { name: 'Email me "Passed bills" daily' })).toBeInTheDocument()
   })
 
   it('includes the view for a member whose digest is on: saves it and fills the envelope', async () => {
@@ -850,9 +884,9 @@ describe('BillList saved views — include in the digest', () => {
     configState.value = digestOn
     await openMenu()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Include "Passed bills" in your daily digest' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Email me "Passed bills" daily' }))
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove "Passed bills" from your daily digest' })).toHaveAttribute('aria-pressed', 'true'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Email me "Passed bills" daily' })).toHaveAttribute('aria-pressed', 'true'))
     expect(digestCalls).toEqual([{ method: 'PUT', path: '/views/v1/subscription', body: { subscribed: true } }])
   })
 
@@ -862,26 +896,24 @@ describe('BillList saved views — include in the digest', () => {
     configState.value = digestOn
     await openMenu()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove "Passed bills" from your daily digest' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Email me "Passed bills" daily' }))
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Include "Passed bills" in your daily digest' })).toHaveAttribute('aria-pressed', 'false'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Email me "Passed bills" daily' })).toHaveAttribute('aria-pressed', 'false'))
     expect(digestCalls).toEqual([{ method: 'PUT', path: '/views/v1/subscription', body: { subscribed: false } }])
   })
 
-  it('offers to turn the digest on for a member whose digest is off, then turns it on and includes the view', async () => {
+  it('follows the view in one click, with no prompt, for a member with both parts off', async () => {
+    digestState.memberOn = false
     viewsState.response = { views: [VIEW] }
     configState.value = digestOn
     await openMenu()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Include "Passed bills" in your daily digest' }))
-    expect(digestCalls).toEqual([])
-    fireEvent.click(screen.getByRole('button', { name: 'Turn on digest' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Email me "Passed bills" daily' }))
 
-    await waitFor(() => expect(digestCalls).toHaveLength(2))
-    expect(digestCalls).toEqual([
-      { method: 'PATCH', path: '/users/me', body: { emailDigestEnabled: true } },
-      { method: 'PUT', path: '/views/v1/subscription', body: { subscribed: true } },
-    ])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Email me "Passed bills" daily' })).toHaveAttribute('aria-pressed', 'true'))
+    expect(screen.queryByText(/turn on your email digest/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Turn on digest' })).toBeNull()
+    expect(digestCalls).toEqual([{ method: 'PUT', path: '/views/v1/subscription', body: { subscribed: true } }])
   })
 })
 
@@ -1693,6 +1725,52 @@ describe('BillList delete selected drafts', () => {
     expect(screen.getByRole('button', { name: /Apply to 1 bill/ })).toBeInTheDocument()
     // The sidebar's draft count and the Drafts chip are refetched.
     await waitFor(() => expect(refresh).toHaveBeenCalled())
+  })
+
+  // Deleting drafts can change the Subject and Committee counts, so once they were wanted they are asked for again,
+  // under the same filter, and not before.
+  it('asks again for the on-demand Subject and Committee counts after a delete, once they were wanted', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    facetsState.bills = [DRAFT_A, FILED]
+    renderWithSidebarSpy()
+    const lazy = () => apiCalls.filter(c => c.startsWith('/bills/facets') && c.includes('only='))
+    fireEvent.pointerEnter(await screen.findByRole('button', { name: 'Subject' }), { pointerType: 'mouse' })
+    await waitFor(() => expect(lazy()).toHaveLength(1))
+    await select('First Draft')
+    fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(1\)/ }))
+    await waitFor(() => expect(screen.queryByText('First Draft')).toBeNull())
+    await waitFor(() => expect(lazy()).toHaveLength(2))
+    expect(lazy()[1]).toBe(lazy()[0])
+  })
+
+  // A request for the on-demand counts already out when the member deletes drafts may be answered with counts from
+  // before the delete (the server keeps a member's counts for a minute), so the delete asks again rather than wait on it.
+  it('asks again for the on-demand counts after a delete, even while an earlier request for them is out', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    let release!: () => void
+    lazyHold.gate = new Promise(resolve => { release = resolve })
+    facetsState.bills = [DRAFT_A, FILED]
+    renderWithSidebarSpy()
+    const lazy = () => apiCalls.filter(c => c.startsWith('/bills/facets') && c.includes('only='))
+    fireEvent.pointerEnter(await screen.findByRole('button', { name: 'Subject' }), { pointerType: 'mouse' })
+    await waitFor(() => expect(lazy()).toHaveLength(1))
+    await select('First Draft')
+    fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(1\)/ }))
+    await waitFor(() => expect(screen.queryByText('First Draft')).toBeNull())
+    await waitFor(() => expect(lazy()).toHaveLength(2))
+    release()
+  })
+
+  it('does not ask for the on-demand counts after a delete when nobody wanted them', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    facetsState.bills = [DRAFT_A, FILED]
+    renderWithSidebarSpy()
+    const pageFacets = () => apiCalls.filter(c => c.startsWith('/bills/facets') && !c.includes('only='))
+    await select('First Draft')
+    const before = pageFacets().length
+    fireEvent.click(await screen.findByRole('button', { name: /Delete drafts \(1\)/ }))
+    await waitFor(() => expect(pageFacets().length).toBeGreaterThan(before))
+    expect(apiCalls.filter(c => c.includes('only='))).toEqual([])
   })
 
   it('leaves the bar once the last selected bill was a deleted draft', async () => {

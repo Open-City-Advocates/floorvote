@@ -124,12 +124,77 @@ The line under a member's name is called "Title" everywhere now, on the Profile 
 Central can now sync Congress (`US`) from GovInfo's public Bill Status data, with roll calls from the House Clerk and the Senate, in place of LegiScan. Nothing changes until an operator claims or cuts over `US`. Bills and votes need no key. An optional Congress.gov API key, `CONGRESS_API_KEY`, adds committee meetings. The steps are on the new operator page, **Congress from GovInfo** (`docs/content/self-hosting/congress.md`).
 
 - **Cut over before January 3, 2027,** if you track Congress through LegiScan now. After that date, a cutover matches only the 120th Congress's bills, and GovInfo's 120th session loses the plain slug.
-- **Wait for the follow-ups before confirming a cutover.** A cutover today leaves a second legislator row for anyone who sponsors none of the bills it reads (#912), and it can't fill the committee-meeting cache before the switch (#913). The dry run (`POST /api/admin/state-providers/US/cutover`, without `confirm`) is safe to run now.
+- **Every legislator with a Bioguide id keeps one row.** A cutover matches each LegiScan US legislator that has a Bioguide id on it, whether or not they sponsor a bill the plan reads, so none gets a second `people` row when GovInfo first names them. Members of earlier Congresses move to GovInfo too, and their names on LegiScan's frozen bills lose the LegiScan profile link, as every matched legislator's do. The dry run (`POST /api/admin/state-providers/US/cutover`, without `confirm`) is safe to run at any time.
+- **Set `CONGRESS_API_KEY` and wait for the `warm/119` row before confirming.** With the key set and an instance covering `US`, central reads Congress's committee meetings into its cache every hour while LegiScan still owns `US`. That fills the cache only: nothing reaches a calendar or a bill until the switch. The first read takes one to two days, and `POST /api/admin/providers/govinfo/sync` starts it at once. Once the row exists, the dry run previews each moved bill's calendar, and the cutover carries LegiScan's hearings over on each bill's first ingest. The operator page says how to check for the row.
 
 ## One feed, with a daily row for bills with no priority
 
-The Feed is one view now. Its scope dropdown, with the "All analyzed bills" scope, is gone. Legislative activity on analyzed bills with no priority gets one row a day instead: "Updates on 9 bills with no priority," then the two most relevant bills as chips and a count of the rest. Opening the row lists every bill that moved, most relevant first, with that day's changes. Admins can set a priority from the row, which takes the bill out of it and gives the bill a card of its own from then on. A day when only one such bill moved shows that bill as a regular card, with "Set priority" at its top right for admins. Team activity keeps its full cards, as before.
+The Feed is one view now. Its scope dropdown, with the "All analyzed bills" scope, is gone. Legislative activity on analyzed bills with no priority gets one row a day instead: "Updates on 9 bills with no priority," then the two most relevant bills as chips and a count of the rest. Opening the row lists every bill that moved, most relevant first, with that day's changes. Admins can set a priority from the row, which takes the bill out of it and gives the bill a card of its own from then on. A day when only one such bill moved shows that bill as a regular card, with "Set priority" at its top right for admins. A companion group is one entry, and it counts when any of its bills is an analyzed match at or above the minimum relevance, so movement on an identical companion that didn't match the keywords shows under its group. The group's entry and its card are named by the group's lead bill, with the group's summary, and a priority set from either is set on the lead. Team activity keeps its full cards, as before.
 
 - **Instance migration only.** Instance migration 0121 adds the row's event type, `no_priority_updates`, to `feed_events`. Central doesn't change. `GET /feed` reads no `scope` any more, so an old client or bookmark that sends `scope=analyzed` gets the one feed.
 - **The row starts with the deploy.** The queue processor writes it as legislative changes land, so days before the deploy have no row, and the movement on them isn't listed anywhere on the Feed. The bills' own pages still show it.
 - **Notifications don't change.** The row and the one-bill card never light the Feed dot, raise the "New activity" banner, or appear in the digest email.
+
+## The engagement pull runs at 06:15 UTC
+
+Central's daily engagement pull now runs on its own cron, `15 6 * * *`, instead of on the 06:00 hourly tick. On that tick it shared Workers' per-invocation limit on outbound calls with the hourly sync, which held its calls to the instances back for up to a minute, so the "slow or failing" email named every instance as slow when none was.
+
+- **Add the cron to your central's config:** `crons = ["0 * * * *", "15 6 * * *"]` under `[env.legiscan.triggers]`, as in `wrangler.example.toml`.
+- **Without it, the pull still runs**, from the 07:00 hourly tick, with the sync's calls competing for the same limit as before.
+
+## Sync alerts: every four hours, LegiScan states, and a resolved email
+
+Central's sync failure emails change in four ways.
+
+- **Fewer repeats, on a clock.** A session that keeps failing emails once its failed passes have lasted four hours (the time from the first failed pass to the current one), then at most once every four hours while it goes on, not on every pass from the 4th on. A session that passes hourly emails at about 4, 8, and 12 hours of an outage instead of every hour. One that passes daily emails on its 2nd failed pass, about a day in, and on each later one.
+- **LegiScan states alert now.** A LegiScan pass that failed used to be logged only to the Worker's console. It now writes a failed row to the sync log, shows as failed on the States and Sync pages, and alerts by the same rule, with every state on an alerting pass in one `cron failed: ls-sync` email. On LegiScan's default hours, the first alert comes six to ten hours into an outage. A session with no bills, or a light check that finds no changes, never counts as a failure.
+- **A resolved email.** A session that alerted gets one `resolved: <job>` email on the pass that finishes, naming the sessions that recovered, how long they failed, and since when. If other sessions in the same job are still failing, the email lists them under "Still failing" and never says the whole job is syncing again. A failure that clears before it alerted sends nothing.
+- **GovInfo's meeting cache alerts when it can't warm.** While LegiScan still owns `US` and `CONGRESS_API_KEY` is set, a warm of GovInfo's committee-meeting cache that keeps failing (a revoked key, say, or one missing a scope) emails `cron failed: govinfo-body-events` by the same rule, naming the Congress and the latest error, and `resolved: govinfo-body-events` once a warm works again. Without a key, nothing warms and nothing alerts.
+
+**Nothing to configure.** The emails go to `ALERT_EMAILS`, as every job alert does, and there's no migration. A failing warm's streak is kept in the `settings` table, one `warm-streak:` row a state. The cadence is measured in hours, so it is the same however often a session passes.
+
+## Alert emails arrive as one conversation per outage
+
+Job alerts, from central and from each instance, and an instance's email-outage alerts now group in the inbox. A job's `cron failed: <job>` emails and the `resolved: <job>` email that ends them are one conversation, and so are an outage's email-health alerts, from the first to the recovery. Cloudflare Email Service doesn't let a sender set `Message-ID`, so each email of a conversation carries the same made-up `In-Reply-To` and `References`, plus the `Thread-Index` and `Thread-Topic` that Outlook groups on. Outlook and Apple Mail keep the resolved email in the conversation although its subject differs. Other mail apps weren't checked. An alert that no provider takes with these headers goes once more without them.
+
+- **One conversation per outage.** A job's next failure after a resolved email starts a new conversation, unless that email listed other sessions in the job as still failing (for a calendar job, another state that still fails to warm), or couldn't read whether any were. A central job that crashes outright never sends a resolved email, so its conversation also ends after three days with no alert. An email outage's conversation ends with its recovery.
+- **An instance's job alerts name the instance, and say when they're resolved.** Their subject is now `cron failed: <job> on <host>`. Once the job next runs and does its work, it sends `resolved: <job> on <host>` in the same conversation. A run that isn't the job's day (the week-ahead email) doesn't count, and a run that finds the job switched off ends its conversation without an email. No amount of time ends an instance's conversation, so a weekly job's failed weeks stay one conversation. Only the daily digest, the week-ahead email, and a demo's reset can alert. The hourly jobs log their errors and retry.
+- **One migration on each instance, and nothing to configure.** `0122_job_alert_threads` adds a table, one row a job, and applies with the deploy. Central keeps its jobs' open conversations in its `settings` table, one `alert-thread:` row a job.
+
+## The hourly text sweep no longer stalls central's other jobs
+
+The hourly `missing-texts` sweep looked for undownloaded texts by walking every one of them, most on bulk-seeded bills no instance reads, which took several seconds on a large central. D1 runs one query at a time, so the hourly sync and calendar jobs queued behind it, with no room to spare. When D1 ran slower than usual, they failed with `cron failed:` emails for nearly every job at once, and instances' calendar requests to central got errors at the top of the hour. The sweep now starts from the bills instances read and finds the same bills in milliseconds. Nothing to configure, and no migration.
+
+## Error logs and job alerts say why
+
+Workers Logs drops the message of an error passed to `console.error` and keeps only its stack, so a failure reached the dashboard as `[job:ls-sync] failed     at D1PreparedQuery…` with no reason. Every log of a caught error, in central and in instances, now also prints the error's message and each message down its cause chain. A `cron failed:` email does the same, so a database error shows D1's own message rather than only the query that hit it. Nothing to configure.
+
+## Congress committee meetings no longer fail on a batch update
+
+Congress.gov's committee-meeting list orders meetings that share an update time differently on every request, so where a page of the list ended inside such a batch, some meetings came back twice and others never. The meeting read then fell short of the list's own count and failed every pass, and a central syncing Congress from GovInfo sent `cron failed: govinfo-body-events` every four hours. Central now reads each such update time again on its own and merges it in. A pass makes one more Congress.gov request for each page that ends inside a batch, usually a handful. Nothing to configure.
+
+## Email to members, and a Notifications tab that is each person's own
+
+Admins gate email and members choose. No email has both a team switch and a personal switch. This replaces the admin notifications tab, the Notifications card on the Account page, and the `email-digest` and `week-ahead` modules (floorvote/floorvote#1033).
+
+- **One admin switch, "Send email to members," in a new Emails box on the Config page.** It is `association_config.notification_emails_enabled`, on unless saved false. Off stops the email digest, the week ahead email, and mention and reply emails. Sign-in links, invites, and email-change confirmations keep sending. Turning it off asks first.
+- **The week ahead day is the admin's, for everyone.** "Week ahead email day" in the same box stores `week_ahead_day` (0 Sunday to 6 Saturday, UTC). A new instance reads Friday.
+- **Everything else is each person's own, on the Notifications tab** (`/notifications`, next to Account), the same for every role: the email digest with a How often menu (every morning, or once a week on a weekday each person picks, `users.email_digest_weekly_day`) and three parts ("Changes to priority bills," "New bills that may be relevant to your {org noun}," and the saved views they follow), the week ahead email, and comments. Mentions always email; the replies switch covers FloorVote and email. Admins and owners can now turn off new bills, which they always got before. When email to members is off, one line at the top says so and every control is disabled.
+- **Defaults are the same for every role:** every digest part on, every morning, week ahead on, replies on. A person added later starts on the instance's old weekly digest day, if its digest was weekly (`digest_weekly_day_for_new_people`).
+- **A followed view is sent on its own,** needing only email to members on. The envelope on the Bills page follows a view in one click and shows only while email to members is on.
+- **Each digest schedule keeps its own window:** `last_digest_at` for daily, `last_weekly_digest_at_<day>` for each weekday. A digest run does work every day, so it no longer reports `not-today`.
+- **Links moved.** Email footers and List-Unsubscribe headers link to `/notifications#setting-…`. `/admin/notifications`, and the old `/account#setting-…` and `/profile#setting-…` anchors, redirect there. The Account page no longer has notification settings.
+
+**Migration `0127_notification_settings_per_person` keeps everyone's email as it was.**
+
+- **New bills switch.** Set to what each person got: off with the digest switch off, on for an admin or owner with it on, and unchanged for a member.
+- **Followed views of someone with the digest switch off** are unfollowed. They got no digest at all, views included, and a followed view now sends on its own.
+- **An instance whose digest was weekly:** everyone goes weekly on its day (Monday if none was saved). That day's window carries on from `last_digest_at` as `last_weekly_digest_at_<day>`, and people added later start on that day.
+- **An instance whose digest was off,** including one that never saved its modules: each person's digest switches go off, and their followed views are unfollowed. Turning email on again later doesn't bring them back.
+- **An instance whose week ahead email was off:** each person's week ahead switch goes off.
+- **The week ahead day** moves to `week_ahead_day`: the saved day, or Monday when none was saved, as before. An instance with no people saves nothing and gets Friday, so a new database has the defaults.
+- **Comment emails:** an instance that had them off gets them back on, because the switch is gone, unless an admin turns off email to members.
+
+**Removed keys.** The `email-digest` and `week-ahead` entries leave `modules`, and `mention_emails_enabled` is deleted. The module `frequency` and `weeklyDay` settings are gone with them.
+
+**Rolling back.** An earlier build after this migration sends no digest and no week ahead email, because their module entries are gone, and it sends comment emails again. It ignores each person's How often and the Send email to members switch. Redeploy the new build to bring the digest and week ahead email back.

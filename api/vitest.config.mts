@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config'
 import { relative } from 'node:path'
 import { BaseSequencer, type TestSpecification } from 'vitest/node'
-import { cloudflarePool, cloudflareTest } from '@cloudflare/vitest-pool-workers'
+import { cloudflarePool, cloudflareTest } from '@cloudflare/vitest-plugin'
 
 // CI runs this suite in three shards (`--shard=n/3`, .github/workflows/ci.yml),
 // and the run takes as long as the slowest one. Vitest's own split hashes each
@@ -36,6 +36,8 @@ const HEAVY_FILE_SECONDS: Record<string, number> = {
   'test/routes/groupFacetsRandom3.test.ts': 10,
   'test/routes/groupFacetsRandom4.test.ts': 10,
   'test/routes/groupFacetsRandom5.test.ts': 9,
+  'test/routes/groupFacetsRandom6.test.ts': 12,
+  'test/routes/groupFacetsRandom7.test.ts': 12,
 }
 const DEFAULT_FILE_SECONDS = 1.5
 
@@ -86,6 +88,8 @@ export default defineConfig({
           GEMINI_API_KEY: 'test-gemini-key',
           APP_URL: 'http://localhost:5173',
           TENANT_ID: 'bpc-test',
+          // The facets cache (lib/facetsCache.ts) is off here so a test that asks twice is counted twice; its own tests turn it on.
+          FACETS_CACHE_TTL: '0',
           CENTRAL_API_URL: 'https://central.test',
           SUPERADMIN_JWT_PUBLIC_KEY: '{"key_ops":["verify"],"ext":true,"kty":"EC","x":"jMeKJ1Tf0sgE37Rzg02ARwUKvJ2hF6Zy2gI3mluSjpg","y":"vJ0-S0RvpYh3Z87ti61CrBjprBhpmiA4WujS6_Yb_lQ","crv":"P-256"}',
           CF_AIG_TOKEN: 'test-aig-token',

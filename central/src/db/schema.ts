@@ -219,7 +219,10 @@ export const billTexts = sqliteTable('bill_texts', {
    */
   fetchError:       text('fetch_error'),
   fetchAttemptedAt: text('fetch_attempted_at'),
-}, (t) => [index('idx_bill_texts_bill').on(t.billId)])
+}, (t) => [
+  index('idx_bill_texts_bill').on(t.billId),
+  index('idx_bill_texts_unattempted').on(t.billId).where(sql`r2_key IS NULL AND fetch_attempted_at IS NULL AND state_link IS NOT NULL`),
+])
 
 export const billSupplements = sqliteTable('bill_supplements', {
   supplementId:   integer('supplement_id').primaryKey(),
@@ -407,7 +410,7 @@ export const sessionSyncLog = sqliteTable('session_sync_log', {
   billsChecked: integer('bills_checked').notNull().default(0),
   billsChanged: integer('bills_changed').notNull().default(0),
   billsQueued:  integer('bills_queued').notNull().default(0),
-  /** 'failed' for a snapshot provider's pass that threw; 'ok' for every pass that finished (0045). */
+  /** 'failed' for a pass that threw, from any provider; 'ok' for every pass that finished (0045). */
   status:       text('status', { enum: ['ok', 'failed'] }).notNull().default('ok'),
   /** The message of the error that ended a failed pass, truncated; null for a pass that finished (0045). */
   error:        text('error'),

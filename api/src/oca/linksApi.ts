@@ -6,6 +6,7 @@ import { bills, calendarEvents } from '../db/schema'
 import { deepAnalyses, teamLinks } from './schema'
 import { ensureDeepRequest, fireDeepWorker, requestDeepForPrioritized } from './deepAnalysis'
 import type { AppEnv } from '../types'
+import { errorText } from '../../../shared/errorText'
 
 /**
  * Team documents: links admins attach to a bill or calendar event. Members see
@@ -34,7 +35,7 @@ function refreshAnalysis(c: { env: AppEnv['Bindings']; executionCtx: { waitUntil
       if (has) await ensureDeepRequest(db, 'hearing', subjectId)
     }
     await fireDeepWorker(c.env, db, { manual: true })
-  })().catch(err => console.error('[links] analysis refresh failed', err)))
+  })().catch(err => console.error('[links] analysis refresh failed', errorText(err), err)))
 }
 
 async function subjectExists(db: ReturnType<typeof getDb>, kind: Kind, id: string): Promise<boolean> {

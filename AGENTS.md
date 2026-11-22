@@ -48,7 +48,7 @@ This is the canonical project layout — the README intentionally does not dupli
 | Email | Cloudflare Email Service or Resend, through one purpose-level sender (`shared/emailSender.ts`). With both configured, `EMAIL_PROVIDER` picks the first one tried and the other is the fallback for sign-in, account, notification, and operator email. Digests and week-ahead mail never fall back |
 | AI | Google Gemini 2.5 Flash via Cloudflare AI Gateway. `api/src/lib/llm.ts` holds the default; override per env with the `GEMINI_MODEL` and `GEMINI_THINKING_BUDGET` vars |
 | Legislative data | LegiScan by default, plus opt-in providers for DC (LIMS), Maryland (MGA), Virginia (LIS), and Congress (GovInfo) |
-| Testing | Vitest + @cloudflare/vitest-pool-workers; Vitest + jsdom |
+| Testing | Vitest + @cloudflare/vitest-plugin; Vitest + jsdom |
 
 ---
 
@@ -131,7 +131,7 @@ Tenant migrations: `api/migrations/`. Central migrations: `central/migrations/` 
 
 **Keep `;` out of SQL comments in `api/migrations/`.** The api test helper (`parseMigration` in `api/test/helpers.ts`) splits a file on `;` before it strips comments, so the words after the semicolon run as SQL. Every test that calls `applyMigrations()` then fails with a syntax error that points at the prose, not the cause. A period or an em dash does the same job.
 
-**A migration with a trigger** (0103 is the first) registers in `applyMigrations` through `splitStatements`, not `parseMigration`, which would split the trigger's body apart. Wrangler ends a `CREATE TRIGGER` at the first `END` that follows a `;` and is followed by `;` (whitespace between, any case), and `splitStatements` follows the same rule. A migration that rebuilds `bills` must keep 0113's six group-tags triggers (which replaced 0106's, which replaced 0103's) and `idx_bills_group_tags`: drop the three on `bill_texts` (`bill_texts_group_tags_insert`, `_update`, `_delete`, whose bodies read `bills`, so the rename that puts the new table in place would fail on them) before the rename, then recreate all six, those three and `bills_group_tags_insert`, `_update`, `_delete`, and nothing may write `bills` with `INSERT OR REPLACE`, which skips the delete trigger and leaves a stale group tag that matches.
+**A migration with a trigger** (0103 is the first) registers in `applyMigrations` through `splitStatements`, not `parseMigration`, which would split the trigger's body apart. Wrangler ends a `CREATE TRIGGER` at the first `END` that follows a `;` and is followed by `;` (whitespace between, any case), and `splitStatements` follows the same rule. A migration that rebuilds `bills` must keep 0113's six group-tags triggers (which replaced 0106's, which replaced 0103's) and `idx_bills_group_tags`: drop the three on `bill_texts` (`bill_texts_group_tags_insert`, `_update`, `_delete`, whose bodies read `bills`, so the rename that puts the new table in place would fail on them) before the rename, then recreate all six, those three and `bills_group_tags_insert`, `_update`, `_delete`, and nothing may write `bills` with `INSERT OR REPLACE`, which skips the delete trigger and leaves a stale group tag that matches. Migration 0126's `group_subjects` triggers (#1030) follow the same rule: `bills_group_subjects_update` and `_delete` on `bills` go with the rebuild and are recreated after it, and the three on `bill_subjects` (`bill_subjects_group_subjects_insert`, `_delete`, and `_update`) read `bills`, so a rebuild of `bills` drops them before the rename and recreates them after, and a rebuild of `bill_subjects` itself drops and recreates those three too. The table itself is kept by those four triggers and nothing else writes it, and an `INSERT OR REPLACE` into `bills` would leave it stale too.
 
 **Numbers and names a downstream fork owns.** Open-City-Advocates' fork applied its own migrations in production, and moving it onto upstream depends on these staying free (`docs/internal/fork-upgrade.md`):
 
@@ -228,12 +228,16 @@ Route loaders must use `apiFetchForLoader` (not raw `apiFetch`) — a raw 401 by
 7. Use `apiFetchForLoader` in route loaders, not raw `apiFetch`.
 8. Every color works in both light and dark mode: use a token, never a literal. No full-page spinners on navigation.
 9. Never run `wrangler deploy` directly — use `npm run deploy:tenant`.
-10. Don't mock D1 in tests — use real @cloudflare/vitest-pool-workers bindings.
+10. Don't mock D1 in tests — use real @cloudflare/vitest-plugin bindings.
 11. Don't leave `web/dist` around during local dev — it breaks the Vite `/api` proxy.
 12. Stub `fetch` per test with `stubFetch` (`api/test/helpers.ts`). An unstubbed request fails the test and names its URL (`api/test/setup.ts`).
 13. Send requests that start background work (`ctx.waitUntil`, such as email) through `appFetch`, not `SELF.fetch`. The work then finishes, and a failure in it fails the test.
 
 ### Conventions
+
+- **This repo is public.** Issues, PRs, commits, code, comments, tests, and docs never name a tenant, customer, or member, or the place they're in when that would identify them. When a report includes real tenant content, invent the example text and copy only the shape of the bug: its length, punctuation, and structure.
+- **Issues** take one GitHub issue type, one triage label, and any of the `user-facing`, `operator-facing`, and `security` labels ([`docs/agents/triage-labels.md`](docs/agents/triage-labels.md)).
+- **Sign-offs.** Never add a `Signed-off-by` trailer for a person. A sign-off is that person certifying the commit, so only they add it.
 
 - **Working in a fork.** If your checkout carries operator-specific files not tracked upstream (e.g. deploy configs, an internal ops runbook), decide up front whether a change belongs upstream or stays fork-only before creating a worktree or branch — see [Forking and operator overlays](https://floorvote.org/docs/contributing/#forking-and-operator-overlays).
 - **Button labels.** A label ends in a single ellipsis character (`…`) when its click opens a step that asks for input or a choice, or shows something new, before the action happens ("Feedback…" opens a form). A confirmation that only warns does not count, since the label already says what will happen ("Delete role" keeps its plain label); if a confirmation would reveal something new, show it beside the button instead, as the bulk bar does with its AI analysis count.

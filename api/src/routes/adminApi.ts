@@ -7,6 +7,7 @@ import { pendingInviteBounces } from '../lib/inviteBounces'
 import { users, sessions, magicLinks, associationConfig, bills, comments, commentReactions, memberVotes, notes, feedEvents, officialPositions, roles, userRoles, authEvents } from '../db/schema'
 import { generateToken, hashToken } from '../lib/crypto'
 import { sendSignInLinkLogged } from '../lib/signInLink'
+import { notificationEmailsEnabled, readWeekAheadDay, digestDayForNewPeople } from '../lib/notificationEmails'
 import { registerWithCentral } from '../cron/sync'
 import { matchesKeywords, billMatchText } from '../lib/keywords'
 import { summarizeKeywordMatches } from '../lib/keywordMatchSummary'
@@ -36,6 +37,7 @@ import { mayChangeEmail, refuseSuperadmin, requestEmailChange } from '../lib/ema
 import { centralEmail, type DeliveryStatus, type SuppressionStatus } from '../lib/centralEmail'
 import { AI_SETTING_KEYS, changedAiSettings, readAiSettingRecordFields, recordStatements } from '../lib/aiSettingAudit'
 import { readClaimLinksSetting, writeClaimLinksSetting } from '../lib/claimLinksSetting'
+import { errorText } from '../../../shared/errorText'
 
 export const adminApiRouter = new Hono<AppEnv>()
 
@@ -154,7 +156,7 @@ adminApiRouter.get('/members', async (c) => {
 const INVITE_SEND_STAGGER_SECONDS = 3
 const INVITE_SEND_MAX_DELAY_SECONDS = 3600
 const BULK_INVITE_MAX = 500
-const USER_INSERT_CHUNK = 10      // 5 bound params/row (id,email,name,role,invitedBy — default cols aren't bound); 10*5=50, safely under D1's 100-param ceiling
+const USER_INSERT_CHUNK = 9       // 11 bound params/row (id,email,name,role,invitedBy, emailDigestWeeklyDay, and the five columns with a default value, which drizzle binds too), so 9*11=99, under D1's 100-param ceiling
 const QUEUE_SEND_CHUNK = 100      // Cloudflare Queues sendBatch max per call
 
 // POST /admin/members/bulk-invite
@@ -187,9 +189,12 @@ adminApiRouter.post('/members/bulk-invite', async (c) => {
     c.env, db, checks.filter(ch => ch.status === 'available').map(ch => ch.email),
   )
 
+  // People added now start on the instance's old weekly digest day, if it had one.
+  const digestDay = await digestDayForNewPeople(db)
+
   type RowStatus = 'invited' | 'exists' | 'duplicate' | 'invalid' | 'bounced'
   const results: { email: string; status: RowStatus; userId?: string }[] = []
-  const toInsert: { id: string; email: string; name: string; role: 'admin' | 'member'; invitedBy: string }[] = []
+  const toInsert: { id: string; email: string; name: string; role: 'admin' | 'member'; invitedBy: string; emailDigestWeeklyDay: number | null }[] = []
   const created: { userId: string; email: string }[] = []
   const seen = new Set<string>()
 
@@ -201,7 +206,7 @@ adminApiRouter.post('/members/bulk-invite', async (c) => {
     if (status === 'taken') { results.push({ email, status: 'exists' }); return }
     if (bounced.has(email)) { results.push({ email, status: 'bounced' }); return }
     const id = crypto.randomUUID()
-    toInsert.push({ id, email, name: (inv.name ?? '').trim().slice(0, 100), role, invitedBy: inviterId })
+    toInsert.push({ id, email, name: (inv.name ?? '').trim().slice(0, 100), role, invitedBy: inviterId, emailDigestWeeklyDay: digestDay })
     created.push({ userId: id, email })
     results.push({ email, status: 'invited', userId: id })
   })
@@ -224,7 +229,7 @@ adminApiRouter.post('/members/bulk-invite', async (c) => {
         await c.env.BILL_QUEUE.sendBatch(messages.slice(i, i + QUEUE_SEND_CHUNK))
       }
     } catch (err) {
-      console.error('[bulk-invite] enqueue failed; users created, invites recoverable via resend', err)
+      console.error('[bulk-invite] enqueue failed; users created, invites recoverable via resend', errorText(err), err)
     }
   }
 
@@ -718,7 +723,7 @@ adminApiRouter.get('/members/:id/auth-events', async (c) => {
   let suppression: SuppressionStatus = { suppressed: null }
   try {
     if (member?.email && central.emailSuppression) suppression = await central.emailSuppression(member.email)
-  } catch (e) { console.error('[auth-events] suppression lookup failed', e) }
+  } catch (e) { console.error('[auth-events] suppression lookup failed', errorText(e), e) }
   const sentMsgIds = events.filter(e => e.event === 'email_sent' && e.messageId).map(e => e.messageId as string)
   let delivery: Record<string, DeliveryStatus> = {}
   try {
@@ -726,7 +731,7 @@ adminApiRouter.get('/members/:id/auth-events', async (c) => {
       const since = new Date(Date.now() - 31 * 86400_000).toISOString()
       delivery = await central.emailDeliveryStatus(sentMsgIds, since)
     }
-  } catch (e) { console.error('[auth-events] delivery lookup failed', e) }
+  } catch (e) { console.error('[auth-events] delivery lookup failed', errorText(e), e) }
   return c.json({ events, suppression, delivery })
 })
 
@@ -769,7 +774,7 @@ adminApiRouter.delete('/roles/:id', async (c) => {
   return new Response(null, { status: 204 })
 })
 
-const ALLOWED_CONFIG_KEYS = ['association_name', 'sync_frequency', 'keywords', 'org_noun', 'position_label', 'ai_context', 'relevance_question', 'tag_taxonomy', 'modules', 'mention_emails_enabled', 'new_match_min_relevance'] as const
+const ALLOWED_CONFIG_KEYS = ['association_name', 'sync_frequency', 'keywords', 'org_noun', 'position_label', 'ai_context', 'relevance_question', 'tag_taxonomy', 'modules', 'notification_emails_enabled', 'week_ahead_day', 'new_match_min_relevance'] as const
 
 // GET /admin/config
 adminApiRouter.get('/config', async (c) => {
@@ -805,6 +810,8 @@ adminApiRouter.get('/config', async (c) => {
     typeof result.position_label === 'string' ? result.position_label : null,
   )
   result.accountDeletionEnabled = await getAccountDeletionEnabled(db)
+  result.notification_emails_enabled = await notificationEmailsEnabled(db)
+  result.week_ahead_day = await readWeekAheadDay(db)
   const claimLinks = await readClaimLinksSetting(db)
   result.claim_links_enabled = claimLinks.enabled
   result.claim_links_changed_at = claimLinks.changedAt
@@ -859,6 +866,16 @@ adminApiRouter.put('/config', async (c) => {
     }
   }
 
+  if ('notification_emails_enabled' in body && typeof body.notification_emails_enabled !== 'boolean') {
+    return c.json({ error: 'notification_emails_enabled must be a boolean' }, 400)
+  }
+  if ('week_ahead_day' in body) {
+    const d = body.week_ahead_day
+    if (typeof d !== 'number' || !Number.isInteger(d) || d < 0 || d > 6) {
+      return c.json({ error: 'week_ahead_day must be a whole number from 0 (Sunday) to 6 (Saturday)' }, 400)
+    }
+  }
+
   if ('modules' in body) {
     const m = body.modules
     if (m === null) {
@@ -909,7 +926,7 @@ adminApiRouter.put('/config', async (c) => {
     try {
       await registerWithCentral(c.env, db)
     } catch (err) {
-      console.error('[admin/config] registerWithCentral failed:', err)
+      console.error('[admin/config] registerWithCentral failed:', errorText(err), err)
       // Don't fail the PUT — tenant config was saved. Central sync can be retried.
     }
   }
@@ -980,7 +997,7 @@ adminApiRouter.post('/keyword-resync', async (c) => {
     }
   } catch (err) {
     centralStatus = 'failed'
-    console.error('[keyword-resync] central sync-keywords call failed:', err)
+    console.error('[keyword-resync] central sync-keywords call failed:', errorText(err), err)
   }
 
   // ── Cleanup pass: demote or protect stale keyword matches ──
@@ -1040,7 +1057,7 @@ adminApiRouter.post('/keyword-resync', async (c) => {
       })
       if (!mtRes.ok) console.warn(`[keyword-resync] central update-bill-match-types returned ${mtRes.status}`)
     } catch (err) {
-      console.error('[keyword-resync] central update-bill-match-types failed:', err)
+      console.error('[keyword-resync] central update-bill-match-types failed:', errorText(err), err)
     }
   }
 
